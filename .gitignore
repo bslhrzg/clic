@@ -1,0 +1,26 @@
+# Python build artifacts
+__pycache__/
+*.pyc
+build/
+dist/
+*.egg-info/
+*.so
+*.pyd
+*.whl
+
+# Virtual environment
+venv/
+
+# Documentation build output
+docs/build/
+
+# IDE and OS specific files
+.vscode/
+.idea/
+*.DS_Store
+
+# Temporary files from tests/scripts
+makeout
+
+# CMake user files (if any)
+CMakeUserPresets.json
