@@ -34,7 +34,6 @@ from .clic_clib import (
 )
 
 # 3. Import your Python helper functions from the tools submodule.
-from . import basis_1p,basis_Np,gfs,hamiltonians
 
 # 4. Expose the most important Python functions to the top level.
 from .hamiltonians import (
@@ -44,12 +43,28 @@ from .hamiltonians import (
     get_two_body_terms
 )
 
-from .basis_1p import transform_integrals_interleaved_to_alphafirst
+from .basis_1p import (
+    transform_integrals_interleaved_to_alphafirst,
+    umo2so,
+    double_h,
+    basis_change_h0_U
+)
 
-from .basis_Np import get_fci_basis
+from .basis_Np import (
+    get_fci_basis,
+    partition_by_Sz,
+    subbasis_by_Sz,
+    get_starting_basis
+)
+
+from .ops import one_rdm, get_ham
 
 from .gfs import(
     wf_to_vec,
     expand_basis_by_H,
     green_function_block_lanczos_fixed_basis
 )
+
+from .mf import mfscf
+
+from .sci import selective_ci, cipsi_one_iter

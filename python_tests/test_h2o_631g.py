@@ -2,7 +2,8 @@ import numpy as np
 import h5py
 from itertools import combinations
 from scipy.sparse.linalg import eigsh
-import clic_clib as qc
+#import clic_clib as qc
+from clic import *
 import time
 
 # --- Integral Transformation Functions ---
@@ -19,46 +20,6 @@ def load_spatial_integrals(filename):
     print(f"  Spatial Orbitals (M) = {M}, Nuclear Repulsion (Enuc) = {Enuc:.8f}")
     return hcore, ee, Enuc, M
 
-def double_h(h_core, M):
-    """Converts spatial one-electron integrals to spin-orbital form (AlphaFirst)."""
-    K = 2 * M
-    h0 = np.zeros((K, K))
-    for p in range(M):
-        for q in range(M):
-            # Alpha-alpha block
-            h0[p, q] = h_core[p, q]
-            # Beta-beta block
-            h0[p + M, q + M] = h_core[p, q]
-    return h0
-
-def umo2so(U_mo, M):
-    """
-    Converts spatial physicist's integrals <pq|V|rs> to spin-orbital
-    physicist's integrals <ij|V|kl> in AlphaFirst ordering.
-    """
-    K = 2 * M
-    U_so = np.zeros((K, K, K, K))
-    # U_mo[p,q,r,s] = <pq|V|rs>
-    for p in range(M):
-        for q in range(M):
-            for r in range(M):
-                for s in range(M):
-                    val = U_mo[p, q, r, s]
-                    if abs(val) > 1e-12:
-                        p_a, p_b = p, p + M
-                        q_a, q_b = q, q + M
-                        r_a, r_b = r, r + M
-                        s_a, s_b = s, s + M
-                        
-                        # αααα
-                        U_so[p_a, q_a, r_a, s_a] = val
-                        # ββββ
-                        U_so[p_b, q_b, r_b, s_b] = val
-                        # αβαβ
-                        U_so[p_a, q_b, r_a, s_b] = val
-                        # βαβα
-                        U_so[p_b, q_a, r_b, s_a] = val
-    return U_so
 
 # --- Helper to create sparse operator terms from dense Numpy arrays ---
 def get_one_body_terms(h1_matrix, M):
@@ -66,8 +27,8 @@ def get_one_body_terms(h1_matrix, M):
     for i in range(2*M):
         for j in range(2*M):
             if abs(h1_matrix[i, j]) > 1e-12:
-                spin_i = qc.Spin.Alpha if i < M else qc.Spin.Beta
-                spin_j = qc.Spin.Alpha if j < M else qc.Spin.Beta
+                spin_i = Spin.Alpha if i < M else Spin.Beta
+                spin_j = Spin.Alpha if j < M else Spin.Beta
                 orb_i = i if i < M else i - M
                 orb_j = j if j < M else j - M
                 terms.append((orb_i, orb_j, spin_i, spin_j, complex(h1_matrix[i, j])))
@@ -80,7 +41,7 @@ def get_two_body_terms(v2_tensor, M):
             for k in range(2*M):
                 for l in range(2*M):
                     if abs(v2_tensor[i, j, k, l]) > 1e-12:
-                        spins = [qc.Spin.Alpha if idx < M else qc.Spin.Beta for idx in [i, j, k, l]]
+                        spins = [Spin.Alpha if idx < M else Spin.Beta for idx in [i, j, k, l]]
                         orbs = [idx if idx < M else idx - M for idx in [i, j, k, l]]
                         terms.append((orbs[0], orbs[1], orbs[2], orbs[3],
                                       spins[0], spins[1], spins[2], spins[3],
@@ -112,7 +73,7 @@ def test_h2o_iterative_ci():
     
     # --- 2. Define HF and run calculations at each CI level ---
     Ne = 10
-    hf_det = qc.SlaterDeterminant(M, list(range(Ne//2)), list(range(Ne//2)))
+    hf_det = SlaterDeterminant(M, list(range(Ne//2)), list(range(Ne//2)))
     
     ref_energies = {
         "HF": -75.98394138177851,
@@ -130,8 +91,8 @@ def test_h2o_iterative_ci():
         if level != "HF":
             print(f"Expanding basis from {len(current_basis)} determinants...")
             t_start = time.time()
-            connected_by_H1 = qc.get_connections_one_body(current_basis, one_body_terms)
-            connected_by_H2 = qc.get_connections_two_body(current_basis, two_body_terms)
+            connected_by_H1 = get_connections_one_body(current_basis, one_body_terms)
+            connected_by_H2 = get_connections_two_body(current_basis, two_body_terms)
             
             new_basis_set = set(current_basis) | set(connected_by_H1) | set(connected_by_H2)
             current_basis = sorted(list(new_basis_set))
@@ -140,7 +101,7 @@ def test_h2o_iterative_ci():
 
         print(f"Building {level} Hamiltonian ({len(current_basis)}x{len(current_basis)})...")
         t_start = time.time()
-        H_sparse = qc.build_hamiltonian_openmp(current_basis, h0_clean, U_clean)
+        H_sparse = build_hamiltonian_openmp(current_basis, h0_clean, U_clean)
         t_end = time.time()
         print(f"  Hamiltonian built in {t_end - t_start:.2f}s")
         

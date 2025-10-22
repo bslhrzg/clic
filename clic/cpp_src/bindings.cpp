@@ -220,6 +220,21 @@ m.doc() = R"doc(
     m.def("apply_annihilation", &apply_annihilation, py::arg("wf"), py::arg("i0"), py::arg("spin"),
           py::arg("order") = SpinOrbitalOrder::AlphaFirst);
 
+    // Some useful accesses 
+    // Return coeff if present, else 0+0j
+    m.attr("Wavefunction").cast<py::class_<Wavefunction>>()
+        .def("amplitude", [](const Wavefunction& wf, const SlaterDeterminant& det) {
+            const auto& M = wf.data();                // const ref to unordered_map
+            auto it = M.find(det);
+            return (it == M.end()) ? cx{0.0, 0.0} : it->second;
+        }, py::arg("det"), R"doc(Returns ⟨det|ψ⟩, or 0 if absent.)doc")
+
+
+        // Pythonic containment test: `det in wf`
+        .def("__contains__", [](const Wavefunction& wf, const SlaterDeterminant& det) {
+            return wf.data().find(det) != wf.data().end();
+        }, py::arg("det"));
+
     // --- Wavefunction Operator Functions (MODIFIED SECTION) ---
     // Use lambdas to convert Python list of tuples to C++ vector of structs
     m.def("apply_one_body_operator",
