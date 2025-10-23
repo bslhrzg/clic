@@ -1,0 +1,1409 @@
+# clic/__init__.py
+
+"""
+CLIC: Configuration interaction and Lanczos for Impurity Calculations
+"""
+
+# 1. Import the compiled C++ extension module.
+#    The name 'clic_clib' comes from CMakeLists.txt
+from . import clic_clib
+
+# 2. Expose the most important C++ classes to the top level of the package.
+#    This allows users to write `clic.Wavefunction` instead of
+#    `clic.clic_clib.Wavefunction`.
+from .clic_clib import (
+   
+    SlaterDeterminant,
+    Wavefunction,
+    Spin,
+    SpinOrbitalOrder,
+
+    apply_creation,
+    apply_annihilation,
+    get_creation_operator,
+    get_annihilation_operator,
+
+    apply_one_body_operator,
+    apply_two_body_operator,
+
+    get_connections_one_body,
+    get_connections_two_body,
+
+
+    build_hamiltonian_openmp,
+)
+
+# 3. Import your Python helper functions from the tools submodule.
+
+# 4. Expose the most important Python functions to the top level.
+from .hamiltonians import (
+    get_impurity_integrals,
+    create_hubbard_V,
+    get_one_body_terms,
+    get_two_body_terms
+)
+
+from .basis_1p import (
+    transform_integrals_interleaved_to_alphafirst,
+    umo2so,
+    double_h,
+    basis_change_h0_U
+)
+
+from .basis_Np import (
+    get_fci_basis,
+    partition_by_Sz,
+    subbasis_by_Sz,
+    get_starting_basis
+)
+
+from .ops import one_rdm, get_ham
+
+from .gfs import(
+    wf_to_vec,
+    expand_basis_by_H,
+    green_function_block_lanczos_fixed_basis
+)
+
+from .mf import mfscf
+
+from .sci import selective_ci, hamiltonian_generator,cipsi_one_iter# basis_1p.py
+import numpy as np
+from . import clic_clib as cc
+
+def transform_integrals_interleaved_to_alphafirst(h0_int, U_int, M):
+    """
+    Transforms integrals from spin-interleaved to AlphaFirst ordering.
+    """
+    K = 2 * M
+    af_map = np.zeros(K, dtype=int)
+    for i in range(M):
+        af_map[i] = 2 * i
+        af_map[i + M] = 2 * i + 1
+
+    h0_af = np.zeros_like(h0_int)
+    for p_af in range(K):
+        for q_af in range(K):
+            h0_af[p_af, q_af] = h0_int[af_map[p_af], af_map[q_af]]
+            
+    U_af = np.zeros_like(U_int)
+    for p_af in range(K):
+        for q_af in range(K):
+            for r_af in range(K):
+                for s_af in range(K):
+                    p_int, q_int = af_map[p_af], af_map[q_af]
+                    r_int, s_int = af_map[r_af], af_map[s_af]
+                    U_af[p_af, q_af, r_af, s_af] = U_int[p_int, q_int, r_int, s_int]
+    
+    h0_af = np.ascontiguousarray(h0_af, dtype=np.complex128)
+    U_af = np.ascontiguousarray(U_af, dtype=np.complex128)
+    return h0_af, U_af
+
+
+def double_h(h_core, M):
+    """Converts spatial one-electron integrals to spin-orbital form (AlphaFirst)."""
+    K = 2 * M
+    h0 = np.zeros((K, K))
+    for p in range(M):
+        for q in range(M):
+            # Alpha-alpha block
+            h0[p, q] = h_core[p, q]
+            # Beta-beta block
+            h0[p + M, q + M] = h_core[p, q]
+    return h0
+
+def umo2so(U_mo, M):
+    """
+    Converts spatial physicist's integrals <pq|V|rs> to spin-orbital
+    physicist's integrals <ij|V|kl> in AlphaFirst ordering.
+    """
+    K = 2 * M
+    U_so = np.zeros((K, K, K, K))
+    # U_mo[p,q,r,s] = <pq|V|rs>
+    for p in range(M):
+        for q in range(M):
+            for r in range(M):
+                for s in range(M):
+                    val = U_mo[p, q, r, s]
+                    if abs(val) > 1e-12:
+                        p_a, p_b = p, p + M
+                        q_a, q_b = q, q + M
+                        r_a, r_b = r, r + M
+                        s_a, s_b = s, s + M
+                        
+                        # αααα
+                        U_so[p_a, q_a, r_a, s_a] = val
+                        # ββββ
+                        U_so[p_b, q_b, r_b, s_b] = val
+                        # αβαβ
+                        U_so[p_a, q_b, r_a, s_b] = val
+                        # βαβα
+                        U_so[p_b, q_a, r_b, s_a] = val
+    return U_so
+
+def basis_change_h0_U(A, B, C):
+    """
+    Performs a basis change on a 2-electron operator (U) and a 1-electron operator (A).
+
+    This version uses a single, optimized einsum call for the 4D tensor transformation.
+
+    Args:
+        A (np.ndarray): A 2D array (matrix).
+        B (np.ndarray): A 4D array (tensor).
+        C (np.ndarray): The 2D transformation matrix.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: A tuple containing the transformed Anew and Unew.
+    """
+    # Same calculation for the 2D matrix A
+    Anew = C.T.conj() @ A @ C
+    Unew = np.einsum('ai,bj,abgd,gk,dl->ijkl', C.conj(), C.conj(), B, C, C, optimize=True)
+    
+    return Anew, Unew
+
+
+def get_one_body_terms(h0, M, thr=1e-12):
+    """
+    The non-zeros (above threshold) elements of the one-body hamiltonian
+    Args:
+        h0 (np.ndarray): the one-body hamiltonian, A 2D array (matrix).
+        M: the number of spatial orbitals.
+        thr: optional, a threshold value for the returned elements
+
+    Returns:
+        list: A list containing the non zeros elements and the corresponding orbitals
+    """
+    terms = []
+    for i in range(2*M):
+        for j in range(2*M):
+            if abs(h0[i, j]) > thr:
+                spin_i = cc.Spin.Alpha if i < M else cc.Spin.Beta
+                spin_j = cc.Spin.Alpha if j < M else cc.Spin.Beta
+                orb_i = i if i < M else i - M
+                orb_j = j if j < M else j - M
+                terms.append((orb_i, orb_j, spin_i, spin_j, complex(h0[i, j])))
+    return terms
+
+def get_two_body_terms(U, M, thr=1e-12):
+    """
+    The non-zeros (above threshold) elements of the two-body hamiltonian
+    Args:
+        U (np.ndarray): the two-body hamiltonian, A 4D array (tensor).
+        M: the number of spatial orbitals.
+        thr: optional, a threshold value for the returned elements
+
+    Returns:
+        list: A list containing the non zeros elements and the corresponding orbitals
+    """
+    terms = []
+    for i in range(2*M):
+        for j in range(2*M):
+            for k in range(2*M):
+                for l in range(2*M):
+                    if abs(U[i, j, k, l]) > thr:
+                        spins = [cc.Spin.Alpha if idx < M else cc.Spin.Beta for idx in [i, j, k, l]]
+                        orbs = [idx if idx < M else idx - M for idx in [i, j, k, l]]
+                        terms.append((orbs[0], orbs[1], orbs[2], orbs[3],
+                                      spins[0], spins[1], spins[2], spins[3],
+                                      complex(U[i, j, k, l])))
+    return terms
+# basis_Np.py
+from . import clic_clib as cc
+from itertools import combinations
+import numpy as np
+from . import mf 
+
+def get_fci_basis(num_spatial, num_electrons):
+    """
+    Return the Full Configuration Interaction (fci) basis 
+    for N_electrons among M spatial orbitals, as a list of 
+    SlaterDeterminants objects 
+    """
+    num_spin_orbitals = 2 * num_spatial
+    basis_dets = []
+    for occupied_indices in combinations(range(num_spin_orbitals), num_electrons):
+        occ_a = [i for i in occupied_indices if i < num_spatial]
+        occ_b = [i - num_spatial for i in occupied_indices if i >= num_spatial]
+        det = cc.SlaterDeterminant(num_spatial, occ_a, occ_b)
+        basis_dets.append(det)
+    return sorted(basis_dets)
+
+from collections import defaultdict
+
+def partition_by_Sz(basis):
+    """
+    Group a list of SlaterDeterminant objects into S_z sectors.
+
+    Returns
+    -------
+    inds : list[list[int]]
+        For each block (ordered by Sz), the sorted indices of determinants in `basis`.
+    blocks : list[float]
+        The corresponding S_z values (in the same order as `inds`).
+    """
+    sz_to_inds = defaultdict(list)
+
+    for idx, det in enumerate(basis):
+        nα = len(det.alpha_occupied_indices())
+        nβ = len(det.beta_occupied_indices())
+        Sz = 0.5 * (nα - nβ)
+        sz_to_inds[Sz].append(idx)
+
+    blocks = sorted(sz_to_inds.keys())
+    inds = [sorted(sz_to_inds[Sz]) for Sz in blocks]
+    return inds, blocks
+
+def subbasis_by_Sz(basis, target_Sz):
+    """
+    Extract the sub-basis with a given S_z.
+
+    Returns
+    -------
+    subbasis : list[SlaterDeterminant]
+    indices  : list[int]
+        Indices (wrt the original `basis`) of the determinants in the subbasis.
+    """
+    inds, blocks = partition_by_Sz(basis)
+    table = dict(zip(blocks, inds))
+    idxs = table.get(target_Sz, [])
+    return [basis[i] for i in idxs], idxs
+
+
+def _extract_spatial_energies(h0, order="AlphaFirst", tol=1e-12):
+    """
+    Return spatial orbital energies eps (length M) from either
+    spatial h0 (M×M) or spin-orbital h0 (2M×2M).
+    """
+    h0 = np.asarray(h0)
+    if h0.ndim != 2 or h0.shape[0] != h0.shape[1]:
+        raise ValueError("h0 must be square")
+
+    K = h0.shape[0]
+    diag = np.real_if_close(np.diag(h0).astype(float))
+
+    # Already spatial?
+    if K % 2 != 0:
+        return diag, K
+
+    M = K // 2
+    if order == "AlphaFirst":
+        d_a = diag[:M]
+        d_b = diag[M:]
+    elif order == "Interleaved":
+        d_a = diag[0::2]
+        d_b = diag[1::2]
+    else:
+        raise ValueError("order must be 'AlphaFirst' or 'Interleaved'")
+
+    if np.allclose(d_a, d_b, atol=tol, rtol=0):
+        # Consistent spin-orbital HF: same energies for α and β
+        return d_a, M
+    else:
+        # Just treat as spatial
+        return diag, K
+
+def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
+    """
+    Build a starting CI basis by filling lowest spatial orbital energies.
+
+    - Accepts spatial h0 (M×M) or spin-orbital h0 (2M×2M).
+    - Fills 2e per spatial orbital (α and β).
+    - If boundary falls in a degenerate block, return all consistent determinants.
+    - If Nelec odd, put unpaired electron in lowest-energy block available,
+      return both Ms = ±1/2 variants.
+
+    Returns
+    -------
+    list[cc.SlaterDeterminant]
+    """
+    eps, M = _extract_spatial_energies(h0, order=order, tol=tol)
+    if not (0 <= Nelec <= 2*M):
+        raise ValueError("Nelec must be between 0 and 2*M")
+
+    # sort orbitals by energy, stable to preserve degeneracies
+    order_idx = np.argsort(eps, kind="mergesort")
+    eps_sorted = eps[order_idx]
+
+    # group into degeneracy blocks
+    blocks = []
+    s = 0
+    for i in range(1, M):
+        if abs(eps_sorted[i] - eps_sorted[s]) > tol:
+            blocks.append(order_idx[s:i].tolist())
+            s = i
+    blocks.append(order_idx[s:M].tolist())
+
+    # how many pairs (doubly occupied orbitals) and whether odd electron
+    pairs = Nelec // 2
+    has_single = (Nelec % 2 == 1)
+
+    # collect fully filled blocks and detect boundary
+    fixed_blocks = []
+    boundary_block = []
+    pairs_left = pairs
+    for blk in blocks:
+        if pairs_left >= len(blk):
+            fixed_blocks.append(blk)
+            pairs_left -= len(blk)
+        else:
+            boundary_block = blk
+            break
+
+    # all fixed paired orbitals
+    fixed_pairs = [i for blk in fixed_blocks for i in blk]
+
+    # choose pairs out of the boundary block if needed
+    pair_sets = []
+    if pairs_left == 0:
+        pair_sets.append(tuple(sorted(fixed_pairs)))
+    else:
+        for subset in combinations(boundary_block, pairs_left):
+            pair_sets.append(tuple(sorted(fixed_pairs + list(subset))))
+
+    dets = []
+    if not has_single:
+        # even number: fill pairs only
+        for P in pair_sets:
+            occ_a = sorted(P)
+            occ_b = sorted(P)
+            dets.append(cc.SlaterDeterminant(M, occ_a, occ_b))
+    else:
+        # odd number: put unpaired electron in lowest-energy remaining orbitals
+        for P in pair_sets:
+            Pset = set(P)
+            remaining = [i for i in order_idx if i not in Pset]
+            if not remaining:
+                continue
+            # lowest energy among remaining
+            e0 = eps[remaining[0]]
+            singles_block = [i for i in remaining if abs(eps[i]-e0) <= tol]
+
+            for s in singles_block:
+                # unpaired alpha
+                occ_a = sorted(list(Pset) + [s])
+                occ_b = sorted(Pset)
+                dets.append(cc.SlaterDeterminant(M, occ_a, occ_b))
+                # unpaired beta
+                occ_a2 = sorted(Pset)
+                occ_b2 = sorted(list(Pset) + [s])
+                dets.append(cc.SlaterDeterminant(M, occ_a2, occ_b2))
+
+    return sorted(dets)
+
+
+
+def expand_basis(current_basis,one_body_terms,two_body_terms):
+    """Given a basis, return the basis accessible through the hamiltonian 
+    (i.e. the unique set of all slater determinant generated by application of the hamiltonian onto 
+    each elements of the basis)
+    """
+
+    connected_by_H1 = cc.get_connections_one_body(current_basis, one_body_terms)
+    connected_by_H2 = cc.get_connections_two_body(current_basis, two_body_terms)
+    
+    new_basis_set = set(current_basis) | set(connected_by_H1) | set(connected_by_H2)
+    return sorted(list(new_basis_set))
+
+
+
+# gfs.py
+import numpy as np
+from . import clic_clib as cc
+import scipy.sparse as sp
+import numpy.linalg as npl
+
+# -----------------------------
+# Helpers: wavefunction <-> basis
+# -----------------------------
+
+def wavefunction_support(wf, coeff_thresh=1e-14):
+    """
+    Return the set of determinants in a Wavefunction with |coeff|>coeff_thresh.
+    Assumes wf.data() is a mapping {SlaterDeterminant: complex}.
+    """
+    data = wf.data()
+    return {det for det, c in data.items() if abs(c) > coeff_thresh}
+
+def wf_to_vec(wf, basis_list):
+    """
+    Project wavefunction onto a given determinant basis ordering -> dense vector.
+    """
+    data = wf.data()
+    idx = {det: k for k, det in enumerate(basis_list)}
+    v = np.zeros(len(basis_list), dtype=np.complex128)
+    for det, c in data.items():
+        k = idx.get(det, None)
+        if k is not None:
+            v[k] += c
+    return v
+
+# -----------------------------
+# Build fixed Krylov basis by repeated H-applications at determinant level
+# -----------------------------
+
+def expand_basis_by_H(seed_dets, one_body_terms, two_body_terms, NappH):
+    """
+    Determinant-level expansion:
+    B_0 = seed_dets
+    B_{t+1} = B_t ∪ H*B_t connections (via one- and two-body graph expansion)
+    Stop after NappH expansions.
+    """
+    current = set(seed_dets)
+    for _ in range(NappH):
+        conn1 = cc.get_connections_one_body(list(current), one_body_terms)
+        conn2 = cc.get_connections_two_body(list(current), two_body_terms)
+        current |= set(conn1)
+        current |= set(conn2)
+    return sorted(list(current))
+
+def build_sector_basis_from_seeds(seeds_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=1e-14):
+    """
+    seeds_wf: list of seed Wavefunctions for a given particle sector.
+    1) collect support determinants from all seeds
+    2) expand that set by NappH applications of H
+    """
+    if not seeds_wf:
+        return []
+    seed_support = set()
+    for wf in seeds_wf:
+        seed_support |= wavefunction_support(wf, coeff_thresh=coeff_thresh)
+    return expand_basis_by_H(seed_support, one_body_terms, two_body_terms, NappH)
+
+# -----------------------------
+# Hamiltonian restricted to a fixed determinant basis
+# -----------------------------
+
+def build_H_in_basis(basis_dets, h0_clean, U_clean):
+    """
+    Use your fast OpenMP builder on the restricted basis.
+    Returns a scipy.spmatrix (CSR).
+    """
+    if len(basis_dets) == 0:
+        return sp.csr_matrix((0,0), dtype=np.complex128)
+    H = cc.build_hamiltonian_openmp(basis_dets, h0_clean, U_clean)
+    return H
+
+# -----------------------------
+# Block Lanczos on a fixed basis with dense/sparse @
+# -----------------------------
+
+def gram_schmidt_qr_dense(block_V, reorth=False, eps=1e-24):
+    """
+    Gram-Schmidt QR on a list of dense vectors (numpy arrays), returns (Q_list, R).
+    Q_list contains orthonormal dense vectors (same length as v).
+    """
+    n = len(block_V)
+    if n == 0:
+        return [], np.array([[]], dtype=np.complex128)
+    # Copy inputs
+    V = [v.astype(np.complex128, copy=True) for v in block_V]
+    Q = []
+    R = np.zeros((n, n), dtype=np.complex128)
+    for j in range(n):
+        vj = V[j]
+        for i, qi in enumerate(Q):
+            hij = np.vdot(qi, vj)
+            R[i, j] = hij
+            vj -= hij * qi
+        if reorth:
+            # one extra pass
+            for i, qi in enumerate(Q):
+                hij = np.vdot(qi, vj)
+                R[i, j] += hij
+                vj -= hij * qi
+        nrm2 = np.vdot(vj, vj).real
+        if nrm2 > eps:
+            nrm = np.sqrt(nrm2)
+            R[j, j] = nrm
+            Q.append(vj / nrm)
+        else:
+            break
+    r = len(Q)
+    return Q, R[:r, :n]
+
+def block_lanczos_fixed_basis(H, seed_vecs, L, reorth=False):
+    """
+    Standard block-Lanczos where H is a matrix in the fixed basis (dense or sparse),
+    and seed_vecs is a list of dense vectors (already in that basis).
+    Returns As, Bs, Qblocks, R0, where:
+      - Qblocks[k] is a list of orthonormal vectors (columns) at block k
+      - As[k], Bs[k] are the small block matrices like in your previous routine
+    """
+    Q0, R0 = gram_schmidt_qr_dense(seed_vecs, reorth=reorth)
+    if len(Q0) == 0:
+        return [], [], [], R0
+
+    # Convert block list to column-block matrix helpers
+    def block_to_mat(Qblock):
+        return np.column_stack(Qblock) if len(Qblock) else np.zeros((H.shape[0], 0), dtype=np.complex128)
+
+    Qblocks = [Q0]
+    As, Bs = [], []
+
+    Qk = block_to_mat(Q0)
+    HQk = H @ Qk
+    Ak = Qk.conj().T @ HQk
+    As.append(Ak)
+
+    Qkm1 = np.zeros((H.shape[0], 0), dtype=np.complex128)  # empty previous block
+
+    for k in range(L):
+        # W = H Qk - Qk Ak - Q_{k-1} B_{k-1}^H
+        W = HQk - Qk @ Ak
+        if k > 0:
+            W -= Qkm1 @ Bs[-1].conj().T
+
+        # Orthonormalize W
+        W_cols = [W[:, j].copy() for j in range(W.shape[1])]
+        Qnext_list, Bk = gram_schmidt_qr_dense(W_cols, reorth=reorth)
+        if len(Qnext_list) == 0:
+            break
+
+        Bs.append(Bk)
+        Qkm1 = Qk
+        Qk = np.column_stack(Qnext_list)
+
+        # Update Ak+1
+        HQk = H @ Qk
+        Ak = Qk.conj().T @ HQk
+        As.append(Ak)
+
+        Qblocks.append(Qnext_list)
+
+        if len(Qblocks) >= L + 1:
+            break
+
+    return As, Bs, Qblocks, R0
+
+# -----------------------------
+# Continued fraction for top-left block (unchanged)
+# -----------------------------
+
+def block_cf_top_left(As, Bs, z):
+    if not As:
+        return np.array([[]], dtype=np.complex128)
+    m0 = As[0].shape[0]
+    Id = np.eye(m0, dtype=np.complex128)
+    Sigma = np.zeros_like(As[-1], dtype=np.complex128)
+    for k in range(len(As)-2, -1, -1):
+        Bkp1 = Bs[k]
+        Ikp1 = np.eye(As[k+1].shape[0], dtype=np.complex128)
+        try:
+            Sigma = Bkp1.conj().T @ npl.inv(z*Ikp1 - As[k+1] - Sigma) @ Bkp1
+        except npl.LinAlgError:
+            return np.full_like(Id, np.nan)
+    return npl.inv(z*Id - As[0] - Sigma)
+
+# -----------------------------
+# Top-level: fixed-basis block-Lanczos Green's function
+# -----------------------------
+
+def green_function_block_lanczos_fixed_basis(
+    M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
+    h0_clean, U_clean, one_body_terms, two_body_terms, coeff_thresh=1e-12, L=100, reorth=False
+):
+    """
+    For each sector (N+1 and N-1):
+      1) Build seed wavefunctions by applying creation/annihilation on psi0
+      2) Build fixed Krylov determinant basis by NappH H-expansions
+      3) Build H_in_basis once
+      4) Run block-Lanczos using plain matrix multiplications with H_in_basis
+      5) Assemble G(ω) on the subspace of selected impurity indices, embedded back
+         into the full spin-orbital space (size 2M), like your previous routine.
+    """
+    Norb = 2*M
+    Nw = len(ws)
+
+    # 1) seeds in each sector
+    seed_add_wf = []
+    seed_rem_wf = []
+    for i in impurity_indices:
+        si = cc.Spin.Alpha if i < M else cc.Spin.Beta
+        oi = i % M
+        wa = cc.apply_creation(psi0_wf, oi, si)
+        if wa.data():  # non-empty
+            seed_add_wf.append(wa)
+        wr = cc.apply_annihilation(psi0_wf, oi, si)
+        if wr.data():
+            seed_rem_wf.append(wr)
+
+    # 2) fixed determinant bases
+    basis_add = build_sector_basis_from_seeds(seed_add_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+    basis_rem = build_sector_basis_from_seeds(seed_rem_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+
+    # 3) build H in those bases
+    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
+    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
+
+    # 4) initial block vectors Q0 in each sector: project seeds to the fixed bases
+    seed_vecs_add = [wf_to_vec(wf, basis_add) for wf in seed_add_wf] if len(basis_add) else []
+    seed_vecs_rem = [wf_to_vec(wf, basis_rem) for wf in seed_rem_wf] if len(basis_rem) else []
+
+    # Run block-Lanczos on the fixed bases
+    As_g, Bs_g, Qs_g, R0_g = ([], [], [], np.array([]))
+    As_l, Bs_l, Qs_l, R0_l = ([], [], [], np.array([]))
+
+    if len(seed_vecs_add):
+        # convert CSR to linear operator by dense/sparse @ in the iteration
+        As_g, Bs_g, Qs_g, R0_g = block_lanczos_fixed_basis(H_add, seed_vecs_add, L=L, reorth=reorth)
+
+    if len(seed_vecs_rem):
+        As_l, Bs_l, Qs_l, R0_l = block_lanczos_fixed_basis(H_rem, seed_vecs_rem, L=L, reorth=reorth)
+
+    have_g = (R0_g.size != 0 and len(As_g) > 0)
+    have_l = (R0_l.size != 0 and len(As_l) > 0)
+
+    # Indices in the *small* blocks correspond one-to-one to the seed order
+    add_idx_map = list(range(len(seed_vecs_add)))
+    rem_idx_map = list(range(len(seed_vecs_rem)))
+
+    # 5) Evaluate G(ω) in the seed subspace and embed back to [Norb x Norb] using impurity_indices
+    G_all = np.zeros((Nw, Norb, Norb), dtype=np.complex128)
+
+    for iw, w in enumerate(ws):
+        z_g = (w + e0) + 1j*eta
+        z_l = (-w + e0) - 1j*eta
+
+        Gg_eff = None
+        if have_g:
+            G00_g = block_cf_top_left(As_g, Bs_g, z_g)
+            if G00_g.size != 0 and not np.isnan(G00_g).any():
+                # Note: here R0_g is the QR R factor. The "impurity block" in this fixed-basis variant
+                #       corresponds to the seed subspace, so the correct coupling into CF top-left is
+                #       exactly like before: G_eff = R^H G00 R.
+                Gg_eff = R0_g.conj().T @ G00_g @ R0_g
+
+        Gl_eff = None
+        if have_l:
+            G00_l = block_cf_top_left(As_l, Bs_l, z_l)
+            if G00_l.size != 0 and not np.isnan(G00_l).any():
+                Gl_eff = R0_l.conj().T @ G00_l @ R0_l
+
+        # place back into the full Norb x Norb with the seed ordering matching impurity_indices
+        # seed ordering for addition/removal is exactly the order we built seeds_wf with
+        if Gg_eff is not None:
+            for a, ia in enumerate(impurity_indices):
+                for b, ib in enumerate(impurity_indices):
+                    if a < len(add_idx_map) and b < len(add_idx_map):
+                        G_all[iw, ia, ib] += Gg_eff[a, b]
+
+        if Gl_eff is not None:
+            for a, ia in enumerate(impurity_indices):
+                for b, ib in enumerate(impurity_indices):
+                    if a < len(rem_idx_map) and b < len(rem_idx_map):
+                        G_all[iw, ia, ib] -= Gl_eff[a, b]
+
+    return G_all, dict(
+        basis_add_size=len(basis_add), basis_rem_size=len(basis_rem),
+        have_g=have_g, have_l=have_l
+    )    
+
+
+def green_function_scalar_fixed_basis(
+    M, psi0_wf, e0, ws, eta, i, NappH,
+    h0_clean, U_clean, one_body_terms, two_body_terms,
+    coeff_thresh=1e-12, L=100, reorth=False
+):
+    """
+    Compute the single-diagonal element G_ii(ω) for a given spin-orbital index i (0..2M-1)
+    using the fixed-basis block-Lanczos approach specialized to a scalar seed subspace.
+
+    Returns
+    -------
+    Gii : np.ndarray of shape (Nw,), complex128
+        The diagonal Green's function element G_ii(ω) for each ω in `ws`.
+    info : dict
+        Diagnostics: sizes of addition/removal bases, flags for having each sector, etc.
+    """
+    Norb = 2*M
+    assert 0 <= i < Norb, "i must be in [0, 2M)"
+
+    Nw = len(ws)
+    Gii = np.zeros(Nw, dtype=np.complex128)
+
+    # --- Build the two sector seeds only for index i
+    si = cc.Spin.Alpha if i < M else cc.Spin.Beta
+    oi = i % M
+
+    wf_add = cc.apply_creation(psi0_wf, oi, si)
+    wf_rem = cc.apply_annihilation(psi0_wf, oi, si)
+
+    have_add_seed = bool(wf_add.data())
+    have_rem_seed = bool(wf_rem.data())
+
+    # Early exit if both seeds vanish (matrix element zero)
+    if not have_add_seed and not have_rem_seed:
+        return Gii, dict(
+            basis_add_size=0, basis_rem_size=0,
+            have_g=False, have_l=False,
+            seed_nonzero=False
+        )
+
+    # --- Determinant bases by H-expansion from the single seeds
+    basis_add = build_sector_basis_from_seeds(
+        [wf_add] if have_add_seed else [],
+        one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
+    )
+    basis_rem = build_sector_basis_from_seeds(
+        [wf_rem] if have_rem_seed else [],
+        one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
+    )
+
+    # --- Restrict H
+    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
+    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
+
+    # --- Project seeds into their bases (each is a single dense vector)
+    seed_vecs_add = [wf_to_vec(wf_add, basis_add)] if have_add_seed and len(basis_add) else []
+    seed_vecs_rem = [wf_to_vec(wf_rem, basis_rem)] if have_rem_seed and len(basis_rem) else []
+
+    # --- Block Lanczos in each sector (block size will be 1 if present)
+    As_g, Bs_g, R0_g = [], [], np.array([])
+    As_l, Bs_l, R0_l = [], [], np.array([])
+
+    if seed_vecs_add:
+        As_g, Bs_g, _, R0_g = block_lanczos_fixed_basis(H_add, seed_vecs_add, L=L, reorth=reorth)
+
+    if seed_vecs_rem:
+        As_l, Bs_l, _, R0_l = block_lanczos_fixed_basis(H_rem, seed_vecs_rem, L=L, reorth=reorth)
+
+    have_g = (R0_g.size != 0 and len(As_g) > 0)
+    have_l = (R0_l.size != 0 and len(As_l) > 0)
+
+    # --- Evaluate scalar CFs and assemble G_ii(ω) = (R* G00 R)_{00}^add - (R* G00 R)_{00}^rem
+    # For 1×1 blocks: G_eff = |R0|^2 * G00
+    for iw, w in enumerate(ws):
+        # particle sector: z_g = w + e0 + iη
+        if have_g:
+            z_g = (w + e0) + 1j*eta
+            G00_g = block_cf_top_left(As_g, Bs_g, z_g)  # shape (1,1)
+            if G00_g.size and not np.isnan(G00_g).any():
+                r = R0_g[0, 0] if R0_g.ndim == 2 else R0_g
+                Gii[iw] += (abs(r)**2) * G00_g[0, 0]
+
+        # hole sector: z_l = -w + e0 - iη
+        if have_l:
+            z_l = (-w + e0) - 1j*eta
+            G00_l = block_cf_top_left(As_l, Bs_l, z_l)  # shape (1,1)
+            if G00_l.size and not np.isnan(G00_l).any():
+                r = R0_l[0, 0] if R0_l.ndim == 2 else R0_l
+                Gii[iw] -= (abs(r)**2) * G00_l[0, 0]
+
+    return Gii, dict(
+        basis_add_size=len(basis_add), basis_rem_size=len(basis_rem),
+        have_g=have_g, have_l=have_l, seed_nonzero=True
+    )# hamiltonians.py
+import numpy as np 
+from . import clic_clib as cc
+import scipy.sparse
+
+
+# --- Integral Generation for Anderson Impurity Model ---
+def get_impurity_integrals(M, u, e_bath, V_bath, mu):
+    """Builds the one- and two-electron integrals for the Anderson Impurity Model.
+
+        This function sets up the Hamiltonian terms in the spin-orbital basis,
+        where alpha-spin orbitals are indexed first, followed by beta-spin orbitals.
+
+        Args:
+            M (int): Total number of spatial orbitals (impurity + bath).
+            u (float): The on-site Hubbard interaction for the impurity orbital.
+            e_bath (np.ndarray): Array of energies for the bath orbitals.
+            V_bath (np.ndarray): Array of hybridization strengths between the
+                                impurity and bath orbitals.
+            mu (float): The chemical potential.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray]: A tuple containing:
+                - **h0** (np.ndarray): The (2M, 2M) one-electron integral matrix.
+                - **U** (np.ndarray): The (2M, 2M, 2M, 2M) two-electron integral tensor.
+    """
+    K = 2 * M
+    h_spatial = np.zeros((M, M))
+    diagonal_elements = np.concatenate(([-mu], e_bath))
+    np.fill_diagonal(h_spatial, diagonal_elements)
+    h_spatial[0, 1:] = V_bath
+    h_spatial[1:, 0] = np.conj(V_bath)
+
+    h0 = np.zeros((K, K))
+    h0[0:M, 0:M] = h_spatial
+    h0[M:K, M:K] = h_spatial
+    
+    U = np.zeros((K, K, K, K))
+    imp_alpha_idx, imp_beta_idx = 0, M
+    U[imp_alpha_idx, imp_beta_idx, imp_alpha_idx, imp_beta_idx] = u
+    U[imp_beta_idx, imp_alpha_idx, imp_beta_idx, imp_alpha_idx] = u
+
+    h0 = np.ascontiguousarray(h0, dtype=np.complex128)
+    U = np.ascontiguousarray(U, dtype=np.complex128)
+    return h0, U
+
+
+def create_hubbard_V(M, U_val):
+    """Builds the hubbard two-electron integrals in the spin-orbital basis,
+        where alpha-spin orbitals are indexed first, followed by beta-spin orbitals.
+
+        Args:
+            M (int): Total number of spatial orbitals
+            U_val (float): The on-site Hubbard interaction
+
+        Returns:
+            np.ndarray: The (2M, 2M, 2M, 2M) two-electron integral tensor.
+    """
+    K = 2 * M
+    V = np.zeros((K, K, K, K), dtype=np.complex128)
+    for i in range(M):
+        alpha_i = i
+        beta_i  = i + M
+        V[alpha_i, beta_i, alpha_i, beta_i] = 2.0 * U_val
+    V = np.ascontiguousarray(V, dtype=np.complex128)
+    return V
+
+
+def get_hubbard_dimer_ed_ref(t, U, M):
+    K = 2 * M
+    c_dag = [cc.get_creation_operator(K, i + 1) for i in range(K)]
+    c = [cc.get_annihilation_operator(K, i + 1) for i in range(K)]
+    H = scipy.sparse.csr_matrix((2**K, 2**K), dtype=np.complex128)
+    if M == 2:
+        H += -t * (c_dag[0] @ c[1] + c_dag[1] @ c[0])
+        H += -t * (c_dag[0+M] @ c[1+M] + c_dag[1+M] @ c[0+M])
+    for i in range(M):
+        n_up = c_dag[i] @ c[i]
+        n_down = c_dag[i+M] @ c[i+M]
+        H += U * (n_up @ n_down)
+    return H
+
+
+
+# ---
+
+def get_one_body_terms(h1, M, thr=1e-14):
+    """Get a list of non zeros (above thr) one body operators"""
+    terms = []
+    for i in range(2*M):
+        for j in range(2*M):
+            if abs(h1[i, j]) > thr:
+                si = cc.Spin.Alpha if i < M else cc.Spin.Beta
+                sj = cc.Spin.Alpha if j < M else cc.Spin.Beta
+                oi, oj = (i % M), (j % M)
+                terms.append((oi, oj, si, sj, complex(h1[i, j])))
+    return terms
+
+def get_two_body_terms(U, M, thr=1e-14):
+    """Get a list of non zeros (above thr) two body operators"""
+    terms = []
+    for i,j,k,l in np.argwhere(np.abs(U) > thr):
+        spins = [cc.Spin.Alpha if idx < M else cc.Spin.Beta for idx in [i,j,k,l]]
+        orbs  = [idx % M for idx in [i,j,k,l]]
+        terms.append((orbs[0],orbs[1],orbs[2],orbs[3],
+                      spins[0],spins[1],spins[2],spins[3], complex(0.5*U[i,j,k,l])))
+    return terms
+
+# mf.py
+import numpy as np
+
+def mfscf(h0_0, U_0, Ne, maxiter=100):
+    """
+    Mean-field self-consistent field (MF-SCF) loop with simple linear mixing,
+    in a basis where spins are BLOCKED (↑ then ↓):
+        h0_0[:K,:K]   = spin-↑ block
+        h0_0[K:,K:]   = spin-↓ block
+
+    Args:
+        h0_0 : (NF, NF) ndarray (complex or real)
+            One-particle Hamiltonian in spin-block basis.
+        U_0  : (NF, NF, NF, NF) ndarray (real or complex)
+            Two-body interaction tensor U[i, j, k, l].
+        Ne   : int
+            Target total particle number.
+        maxiter : int
+            Maximum SCF iterations.
+
+    Returns:
+        hmf : (K, K) ndarray
+            Mean-field spin-↑ block Hamiltonian (the one diagonalized).
+        es  : (2K,) ndarray (complex)
+            Spin-doubled eigenvalues (degenerate pairs).
+        Vs  : (2K, 2K) ndarray (complex)
+            Spin-doubled eigenvectors (columns).
+        rho : (2K, 2K) ndarray (complex)
+            Final density matrix in the full (↑⊕↓) basis.
+
+    Notes:
+        We diagonalize only the ↑ block (assuming spin symmetry at start)
+        and then duplicate to build the full (↑,↓) structure. The MF potential
+        is built on the full NF×NF space.
+    """
+    NF = h0_0.shape[0]
+    K = NF // 2
+
+    # Spin-up block (top-left K×K)
+    h0_up = h0_0[:K, :K]
+
+    print("starting from ρ(h0) in spin-up block")
+    es_up, Vs_up = solve_h0(h0_up)
+    es, Vs = double_es_Vs_blocked(es_up, Vs_up)  # build (↑,↓) structure with contiguous blocks
+    print(f"iter 0, E = {np.real(es[:Ne]).sum()}, es = {es}")
+    rho = get_rho(es, Vs, Ne)
+
+    alpha = 0.2
+    print(f"mixing parameter: α = {alpha}")
+
+    hmf = None
+    E0 = 1_000.0
+    threshold = 1e-6
+
+    # Report sparsity info (optional)
+    nz_count = int(np.count_nonzero(U_0))
+    print(f"number of non-zero U elements : {nz_count}")
+
+    DE = -1.0
+    print(f"{'Iter':>4s} {'E_total':>12s} {'EC':>12s} {'es[1:Ne]':>20s} {'ΔE[n-1]':>15s}")
+
+    it = 0
+    for it in range(1, maxiter + 1):
+        # Vectorized mean-field build on the FULL space
+        Vmf, ec = get_mean_field(U_0, rho, use_einsum=True)
+
+        # Work in spin-up block for diagonalization
+        hmf = h0_up + Vmf[:K, :K]
+
+        es_up, Vs_up = solve_h0(hmf)
+        es, Vs = double_es_Vs_blocked(es_up, Vs_up)
+        E = np.real(es[:Ne]).sum()
+
+        if it % 10 == 0:
+            es_occ = np.real(es[:Ne])
+            es_occ_str = "[" + ", ".join(f"{x:.3f}" for x in es_occ) + "]"
+            print(f"{it:4d} {np.real(E + ec):12.8f} {np.real(ec):12.8f} {es_occ_str:>20s} {DE:15.4e}")
+
+        DE = abs(E - E0)
+        if DE < threshold:
+            print(f"converged in {it} iterations")
+            break
+        else:
+            E0 = E
+
+        rho_new = get_rho(es, Vs, Ne)
+        rho = alpha * rho_new + (1.0 - alpha) * rho
+
+    if it == maxiter:
+        print(f"NOT CONVERGED IN {maxiter} ITERATIONS")
+
+    print(f"HF energies : {es}")
+
+    return hmf, es, Vs, rho
+
+
+def get_rho(es, Vs, Ne, beta=1e3):
+    """
+    rho = sum_n f(ε_n; μ,β) |v_n><v_n|
+    μ via bisection so that sum_n f(ε_n) = Ne.
+    """
+    es = np.real(np.asarray(es))
+    M = Vs.shape[0]
+
+    def total_occ(mu):
+        x = beta * (es - mu)
+        x = np.clip(x, -700, 700)
+        return (1.0 / (1.0 + np.exp(x))).sum()
+
+    lo = es.min() - 10.0
+    hi = es.max() + 10.0
+    mu = _bisection(lambda m: total_occ(m) - Ne, lo, hi, tol=1e-12, maxiter=200)
+
+    x = beta * (es - mu)
+    x = np.clip(x, -700, 700)
+    f = 1.0 / (1.0 + np.exp(x))
+    rho = (Vs * f[np.newaxis, :]) @ Vs.conj().T
+    return rho
+
+
+def solve_h0(h0):
+    """
+    Hermitian eigenproblem for h0.
+    Returns real-sorted eigenvalues and eigenvectors (columns).
+    """
+    es, Vs = np.linalg.eigh(h0)
+    return np.real(es), Vs
+
+
+def double_es_Vs_blocked(es_up, Vs_up):
+    """
+    Spin-doubling for BLOCKED basis with BLOCK-DIAGONAL rotation:
+      rows 0..K-1  = ↑, rows K..2K-1 = ↓
+      columns 0..K-1   are ↑ orbitals
+      columns K..2K-1  are ↓ orbitals (identical rotation)
+
+    Returns:
+        es_ : (2K,)
+        Vs_ : (2K,2K)
+    """
+    K = len(es_up)
+    # concatenate eigenvalues: [all spin-up, then all spin-down]
+    es_ = np.zeros(2 * K, dtype=np.complex128)
+    es_[:K] = es_up
+    es_[K:] = es_up
+
+    Vs_ = np.zeros((2 * K, 2 * K), dtype=np.complex128)
+    # block-diagonal: diag(Vs_up, Vs_up)
+    Vs_[:K, :K] = Vs_up          # spin-up block columns
+    Vs_[K:, K:] = Vs_up          # spin-down block columns
+    return es_, Vs_
+
+def get_mean_field(U, rho, use_einsum=True, nz=None):
+    """
+    V_{ik} = sum_{j,l} rho_{jl} * ( U_{i j k l} - U_{i j l k} )
+    EC     = -1/2 * Tr( rho V )
+
+    Args:
+        U  : (NF,NF,NF,NF) ndarray
+        rho: (NF,NF) ndarray
+        use_einsum : bool
+            If True, build V with a fully vectorized contraction via np.einsum.
+        nz : optional list of (i,j,k,l) tuples (fallback loop if provided and use_einsum=False)
+
+    Returns:
+        V  : (NF,NF) complex ndarray
+        EC : float
+    """
+    NF = U.shape[0]
+
+    if use_einsum:
+        # A_{ik} = Σ_{j,l} U_{i j k l} rho_{j l}
+        # B_{ik} = Σ_{j,l} U_{i j l k} rho_{j l}
+        A = np.einsum('ijkl,jl->ik', U, rho, optimize=True)
+        B = np.einsum('ijlk,jl->ik', U, rho, optimize=True)
+        V = A - B
+    else:
+        # Fallback: Python loop (kept for completeness)
+        if nz is None:
+            nz = [tuple(idx) for idx in np.argwhere(U != 0)]
+        V = np.zeros((NF, NF), dtype=np.complex128)
+        for (i, j, k, l) in nz:
+            V[i, k] += rho[j, l] * (U[i, j, k, l] - U[i, j, l, k])
+
+    EC = -0.5 * np.trace(rho @ V)
+    return V, float(np.real(EC))
+
+
+def _bisection(f, a, b, tol=1e-12, maxiter=200):
+    """
+    Simple bisection for root of f on [a,b] with sign change (or expanded bracket).
+    """
+    fa = f(a)
+    fb = f(b)
+    if fa == 0.0:
+        return a
+    if fb == 0.0:
+        return b
+    if fa * fb > 0:
+        for scale in [2, 4, 8, 16]:
+            aa = a - scale * (b - a)
+            bb = b + scale * (b - a)
+            fa = f(aa)
+            fb = f(bb)
+            if fa * fb <= 0:
+                a, b = aa, bb
+                break
+        else:
+            return 0.5 * (a + b)
+
+    for _ in range(maxiter):
+        m = 0.5 * (a + b)
+        fm = f(m)
+        if abs(b - a) < tol or fm == 0.0:
+            return m
+        if np.sign(fa) * np.sign(fm) <= 0:
+            b, fb = m, fm
+        else:
+            a, fa = m, fm
+    return 0.5 * (a + b)# ops.py
+from . import clic_clib as cc
+import numpy as np
+
+def one_rdm(wf,M):
+    """ 
+    Compute the one-body reduced density matrix given a wavefunction
+    Args:
+        wf : a wavefunction object
+        M  : number of spatial orbitals 
+    Returns:
+        np.ndarray: the 1-rdm
+    """
+
+    K = 2*M
+
+    rdm = np.zeros((K, K), dtype=np.complex128)
+    for i in range(K):
+        for j in range(K):
+            # Create the operator term c†_i c_j
+            spin_i = cc.Spin.Alpha if i < M else cc.Spin.Beta
+            spin_j = cc.Spin.Alpha if j < M else cc.Spin.Beta
+            orb_i = i if i < M else i - M
+            orb_j = j if j < M else j - M
+            
+            # The operator term is a list containing a single tuple (h_ij = 1.0)
+            op_term = [(orb_i, orb_j, spin_i, spin_j, 1.0)]
+            
+            # Apply the operator c†_i c_j to the ground state
+            # This creates the state |Φ⟩ = c†_i c_j |Ψ⟩
+            phi_wf = cc.apply_one_body_operator(wf, op_term)
+            
+            # The RDM element is <Ψ|Φ>
+            rdm[i, j] = wf.dot(phi_wf)
+
+    return rdm
+
+
+def get_ham(basis,h0,U,method="openmp"):
+    """TO ADD : DETECT SPIN FLIPS TERMS"""
+    h0 = np.ascontiguousarray(h0, dtype=np.complex128)
+    U = np.ascontiguousarray(U, dtype=np.complex128)
+
+    if method == "openmp":
+        H = cc.build_hamiltonian_openmp(basis, h0, U)
+    else : 
+        print("method not implemented yet")
+        assert 1==2
+    return H # sci.py
+from . import clic_clib as cc
+from itertools import combinations
+import numpy as np
+from . import basis_Np, hamiltonians,ops
+from scipy.sparse.linalg import eigsh 
+
+def selective_ci(
+    h0, U,
+    M, Nelec,
+    generator,
+    selector,
+    one_bh=None,
+    two_bh=None,
+    max_iter=5,
+    conv_tol=1e-6,
+    prune_thr=1e-7,
+    Nmul = None,
+    verbose=True,
+):
+    """
+    Generic selective-CI driver.
+
+    Parameters
+    ----------
+    h0 : (K,K) array_like
+        One-particle Hamiltonian (spin-orbital or spatial; your helpers decide).
+    U  : (K,K,K,K) array_like
+        Two-particle Hamiltonian (spin-orbital convention matching `get_*_terms`).
+    M  : int
+        Number of spatial orbitals.
+    Nelec : int
+        Total number of electrons.
+    generator : callable
+        Expansion proposal function. Must have signature:
+            generator(wf, ewf, one_body_terms, two_body_terms, K, h0, U, thr=...)
+        and return an *iterable of SlaterDeterminant* to add.
+    one_bh : list
+        one body non zero terms of the hamiltonians, computed if not given 
+    two_bh : list
+        wo body ... 
+    max_iter : int
+        Maximum number of CI selection iterations.
+    conv_tol : float
+        Convergence threshold on energy change |E_new - E_old|.
+    prune_thr : float
+        Wavefunction prune threshold passed to `generator`.  
+    Nmul : float 
+        If positive, the size of the retained elements in generated basis is Nmul * len(current basis)
+        If None, we keep the full generated basis.
+    verbose : bool
+        Print iteration logs.
+
+    Returns
+    -------
+    result : dict
+        {
+          "energy": E0,
+          "wavefunction": psi0,
+          "basis": basis0,
+          "energies": energies_per_iter,
+          "sizes": sizes_per_iter,
+        }
+
+    Note: called with generator=cipsi_one_iter, max_iter=5, Nmul=None, this is CISD
+    """
+
+    if generator == hamiltonian_generator:
+        # Precompute operator terms once
+        if one_bh == None:
+            one_bh = hamiltonians.get_one_body_terms(h0, M)
+        if two_bh == None:
+            two_bh = hamiltonians.get_two_body_terms(U, M)
+
+    # Initial basis 
+    basis0 = basis_Np.get_starting_basis(np.real(h0), Nelec)  # returns list of SlaterDeterminant
+    # Initial Hamiltonian and ground state
+    H = ops.get_ham(basis0, h0, U)
+    # For small bases, a dense eig can be faster / safer; otherwise eigsh.
+    dim0 = H.shape[0]
+    if dim0 <= 64:
+        from numpy.linalg import eigh
+        evals, evecs = eigh(H.toarray())
+        e0 = float(evals[0])
+        psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
+    else:
+        evals, evecs = eigsh(H, k=1, which='SA')
+        e0 = float(evals[0])
+        psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
+
+    if verbose:
+        print(f"[init] dim={len(basis0)}  E0={e0:.12f}")
+
+    energies = [e0]
+    sizes = [len(basis0)]
+
+    # Main selection loop
+    for it in range(max_iter):
+        # Propose new determinants using the provided generator
+
+        lenb = len(basis0)
+
+        gen_basis,hwf = generator(psi0,one_bh,two_bh,thr=prune_thr,return_hwf=True)
+        selected_basis = selector(hwf,e0,gen_basis,2*M,h0,U)
+
+
+        # If Nmul = 1.0, at each iteration we double the basis size 
+        if Nmul != None : 
+            nkeep = Nmul * lenb 
+            nkeep = int(min(nkeep, len(selected_basis)))
+            selected_basis = selected_basis[:nkeep]
+
+        # Merge and sort the basis
+        new_basis = set(basis0) | set(selected_basis)
+        if len(new_basis) == len(basis0):
+            if verbose:
+                print(f"[iter {it}] no new determinants proposed; stopping.")
+            break
+        basis0 = sorted(list(new_basis))
+
+
+        
+
+        # Rebuild H and solve ground state
+        H = ops.get_ham(basis0, h0, U)
+        dim = H.shape[0]
+
+        if dim <= 64:
+            from numpy.linalg import eigh
+            evals, evecs = eigh(H.toarray())
+            e_new = float(evals[0])
+            psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
+        else:
+            evals, evecs = eigsh(H, k=1, which='SA')
+            e_new = float(evals[0])
+            psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
+
+        dE = abs(e_new - energies[-1])
+        energies.append(e_new)
+        sizes.append(dim)
+
+        if verbose:
+            print(f"[iter {it}] dim={dim:>6}  E0={e_new:.12f}  |dE|={dE:.3e}")
+
+        if dE < conv_tol:
+            if verbose:
+                print(f"[conv] reached |dE| < {conv_tol}")
+            break
+
+    return {
+        "energy": energies[-1],
+        "wavefunction": psi0,
+        "basis": basis0,
+        "energies": energies,
+        "sizes": sizes,
+    }
+
+
+# -----------
+# Generators
+# -----------
+
+def hamiltonian_generator(wf,one_body_terms,two_body_terms,thr=1e-7,return_hwf=True):
+    r"""
+    The basis is expanded by acting on a state with the hamiltonian
+
+    Args : 
+        wf: the input wavefunction :math:`|\psi\rangle`, a Wavefunction object 
+        one_body_terms: the one_body part of the hamiltonian 
+        two_body_terms: ..
+        h0: the one particle hamiltonian 
+        U : the two particle hamitlonian 
+        thr : Basis elements with absolute coefficient below threshold are pruned before expansion
+        return_hwf: if True, return the new wavefunction :math:`H|\psi\rangle` as well
+
+    Returns: 
+        diffbasis: the unique new basis terms 
+        hwf: optional, the new wavefunction
+
+    """
+    wf.prune(thr)
+
+    if return_hwf:
+        hwf = cc.apply_one_body_operator(wf,one_body_terms) + cc.apply_two_body_operator(wf,two_body_terms)
+
+        basis_hwf = hwf.get_basis()
+        diffbasis = list(set(basis_hwf) - set(wf.get_basis()))
+
+        return diffbasis,hwf 
+    
+    else:
+        print("hamiltonian generator with return_hwf not implemented yet")
+
+
+# -----------
+# Selectors
+# -----------
+
+def cipsi_one_iter(hwf,ewf,diffbasis,K, h0,U):
+    r"""
+    One iteration of the CIPSI method. 
+
+    For a given Slater determinant :math:`|a\rangle` accessible from a given wavefunction :math:`|\psi\rangle`, 
+    the estimated coefficient at 2nd order Nesbet perturbation theory is
+    .. math::
+
+        c^{PT2}_a = \frac{|\langle a | H | \psi \rangle|^2}
+                         {\langle \psi | H | \psi \rangle - \langle a | H | a \rangle}
+
+    Args : 
+        hwf: :math:`H|\psi\rangle`, a Wavefunction object 
+        ewf: the energy :math:`\langle \psi|H|\psi\rangle`, a scalar
+        one_body_terms: the one_body part of the hamiltonian 
+        two_body_terms: ..
+        K : the number of spin-orbitals 
+        h0: the one particle hamiltonian 
+        U : the two particle hamitlonian 
+        thr : Basis elements with absolute coefficient below threshold are pruned before expansion
+
+    Returns:
+        diffbasis_sorted : the new basis elements sorted according to their PT2 coefficients
+
+    """
+    c_PT2 = np.zeros(len(diffbasis))
+
+    for i,d in enumerate(diffbasis):
+        occ_i = d.get_occupied_spin_orbitals()
+        ahwf = hwf.amplitude(d)
+        aha = cc.KL(occ_i, occ_i, K, h0, U)
+
+        c_PT2[i] = np.abs(ahwf)**2 / np.real(ewf - aha + 1e-8)
+
+    indsort = np.argsort(np.abs(c_PT2))[::-1]
+    diffbasis_sorted = [diffbasis[i] for i in indsort]
+
+    return diffbasis_sorted
+
+
+
+

@@ -11,6 +11,13 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Basile Herzog", email = "basile.herzog@gmail.com" }]
 
+dependencies = [
+    "numpy",
+    "scipy",
+    "pydantic",
+    "tomli; python_version < '3.11'",
+]
+
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: C++",
@@ -18,9 +25,12 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
+[project.scripts]
+clic-run = "clic.scripts.cli:main"
+
 [tool.scikit-build]
 # This tells scikit-build where your CMakeLists.txt is relative to this file.
 cmake.source-dir = "."
 # This tells scikit-build where to put the compiled .so file.
-# It will place qmcisolver_core.so inside the clic/ directory.
+# It will place clic_clib.so inside the clic/ directory.
 wheel.packages = ["clic"]

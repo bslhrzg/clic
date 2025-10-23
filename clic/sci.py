@@ -1,3 +1,4 @@
+# sci.py
 from . import clic_clib as cc
 from itertools import combinations
 import numpy as np
@@ -8,7 +9,7 @@ def selective_ci(
     h0, U,
     M, Nelec,
     generator,
-    *,
+    selector,
     one_bh=None,
     two_bh=None,
     max_iter=5,
@@ -64,19 +65,17 @@ def selective_ci(
     Note: called with generator=cipsi_one_iter, max_iter=5, Nmul=None, this is CISD
     """
 
+    if generator == hamiltonian_generator:
+        # Precompute operator terms once
+        if one_bh == None:
+            one_bh = ops.get_one_body_terms(h0, M)
+        if two_bh == None:
+            two_bh = ops.get_two_body_terms(U, M)
 
-    # Precompute operator terms once
-    if one_bh == None:
-        one_bh = hamiltonians.get_one_body_terms(h0, M)
-    if two_bh == None:
-        two_bh = hamiltonians.get_two_body_terms(U, M)
-
-    # Initial basis (HF-like, accounting for degeneracy and odd N if needed)
+    # Initial basis 
     basis0 = basis_Np.get_starting_basis(np.real(h0), Nelec)  # returns list of SlaterDeterminant
-
     # Initial Hamiltonian and ground state
     H = ops.get_ham(basis0, h0, U)
-
     # For small bases, a dense eig can be faster / safer; otherwise eigsh.
     dim0 = H.shape[0]
     if dim0 <= 64:
@@ -101,18 +100,18 @@ def selective_ci(
 
         lenb = len(basis0)
 
-        conn_basis = generator(
-            psi0, e0, one_bh, two_bh, 2*M, h0, U, thr=prune_thr
-        )
+        gen_basis,hwf = generator(psi0,one_bh,two_bh,thr=prune_thr,return_hwf=True)
+        selected_basis = selector(hwf,e0,gen_basis,2*M,h0,U)
+
 
         # If Nmul = 1.0, at each iteration we double the basis size 
         if Nmul != None : 
             nkeep = Nmul * lenb 
-            nkeep = int(min(nkeep, len(conn_basis)))
-            conn_basis = conn_basis[:nkeep]
+            nkeep = int(min(nkeep, len(selected_basis)))
+            selected_basis = selected_basis[:nkeep]
 
         # Merge and sort the basis
-        new_basis = set(basis0) | set(conn_basis)
+        new_basis = set(basis0) | set(selected_basis)
         if len(new_basis) == len(basis0):
             if verbose:
                 print(f"[iter {it}] no new determinants proposed; stopping.")
@@ -161,7 +160,43 @@ def selective_ci(
 # Generators
 # -----------
 
-def cipsi_one_iter(wf,ewf,one_body_terms,two_body_terms,K, h0,U,thr=1e-7):
+def hamiltonian_generator(wf,one_body_terms,two_body_terms,thr=1e-7,return_hwf=True):
+    r"""
+    The basis is expanded by acting on a state with the hamiltonian
+
+    Args : 
+        wf: the input wavefunction :math:`|\psi\rangle`, a Wavefunction object 
+        one_body_terms: the one_body part of the hamiltonian 
+        two_body_terms: ..
+        h0: the one particle hamiltonian 
+        U : the two particle hamitlonian 
+        thr : Basis elements with absolute coefficient below threshold are pruned before expansion
+        return_hwf: if True, return the new wavefunction :math:`H|\psi\rangle` as well
+
+    Returns: 
+        diffbasis: the unique new basis terms 
+        hwf: optional, the new wavefunction
+
+    """
+    wf.prune(thr)
+
+    if return_hwf:
+        hwf = cc.apply_one_body_operator(wf,one_body_terms) + cc.apply_two_body_operator(wf,two_body_terms)
+
+        basis_hwf = hwf.get_basis()
+        diffbasis = list(set(basis_hwf) - set(wf.get_basis()))
+
+        return diffbasis,hwf 
+    
+    else:
+        print("hamiltonian generator with return_hwf not implemented yet")
+
+
+# -----------
+# Selectors
+# -----------
+
+def cipsi_one_iter(hwf,ewf,diffbasis,K, h0,U):
     r"""
     One iteration of the CIPSI method. 
 
@@ -173,8 +208,8 @@ def cipsi_one_iter(wf,ewf,one_body_terms,two_body_terms,K, h0,U,thr=1e-7):
                          {\langle \psi | H | \psi \rangle - \langle a | H | a \rangle}
 
     Args : 
-        wf: the input wavefunction :math:`|\psi\rangle`, a Wavefunction object 
-        ewf: the corresponding energy :math:`\langle \psi|H|\psi\rangle`, a scalar
+        hwf: :math:`H|\psi\rangle`, a Wavefunction object 
+        ewf: the energy :math:`\langle \psi|H|\psi\rangle`, a scalar
         one_body_terms: the one_body part of the hamiltonian 
         two_body_terms: ..
         K : the number of spin-orbitals 
@@ -182,13 +217,10 @@ def cipsi_one_iter(wf,ewf,one_body_terms,two_body_terms,K, h0,U,thr=1e-7):
         U : the two particle hamitlonian 
         thr : Basis elements with absolute coefficient below threshold are pruned before expansion
 
+    Returns:
+        diffbasis_sorted : the new basis elements sorted according to their PT2 coefficients
+
     """
-    wf.prune(thr)
-    hwf = cc.apply_one_body_operator(wf,one_body_terms) + cc.apply_two_body_operator(wf,two_body_terms)
-
-    basis_hwf = hwf.get_basis()
-    diffbasis = list(set(basis_hwf) - set(wf.get_basis()))
-
     c_PT2 = np.zeros(len(diffbasis))
 
     for i,d in enumerate(diffbasis):

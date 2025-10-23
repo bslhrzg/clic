@@ -33,14 +33,11 @@ from .clic_clib import (
     build_hamiltonian_openmp,
 )
 
-# 3. Import your Python helper functions from the tools submodule.
 
 # 4. Expose the most important Python functions to the top level.
 from .hamiltonians import (
     get_impurity_integrals,
     create_hubbard_V,
-    get_one_body_terms,
-    get_two_body_terms
 )
 
 from .basis_1p import (
@@ -50,6 +47,8 @@ from .basis_1p import (
     basis_change_h0_U
 )
 
+from .basis_transforms import *
+
 from .basis_Np import (
     get_fci_basis,
     partition_by_Sz,
@@ -57,8 +56,12 @@ from .basis_Np import (
     get_starting_basis
 )
 
-from .ops import one_rdm, get_ham
-
+from .ops import (
+    one_rdm, 
+    get_ham,
+    get_one_body_terms,
+    get_two_body_terms
+)
 from .gfs import(
     wf_to_vec,
     expand_basis_by_H,
@@ -67,4 +70,4 @@ from .gfs import(
 
 from .mf import mfscf
 
-from .sci import selective_ci, cipsi_one_iter
+from .sci import selective_ci, hamiltonian_generator,   cipsi_one_iter

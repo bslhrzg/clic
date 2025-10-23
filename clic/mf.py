@@ -1,3 +1,4 @@
+# mf.py
 import numpy as np
 
 def mfscf(h0_0, U_0, Ne, maxiter=100):

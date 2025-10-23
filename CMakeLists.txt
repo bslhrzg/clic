@@ -26,11 +26,11 @@ endif()
 
 # Sources - CORRECTED PATHS
 set(CORE_SOURCES
-  clic/cpp_src/ci_core.cpp
-  clic/cpp_src/slater_condon.cpp
-  clic/cpp_src/hamiltonian.cpp
-  clic/cpp_src/ed_tools.cpp
-  clic/cpp_src/bindings.cpp
+  cpp_src/ci_core.cpp
+  cpp_src/slater_condon.cpp
+  cpp_src/hamiltonian.cpp
+  cpp_src/ed_tools.cpp
+  cpp_src/bindings.cpp
 )
 
 # Extension module - No change to the name here.

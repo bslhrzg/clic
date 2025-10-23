@@ -1,0 +1,15 @@
+model_name = "AIM-32-site"
+source_type = "parametric"
+
+[parameters]
+type = "anderson_impurity_model"
+M_spatial = 32
+Nelec = 32
+interaction_u = 2.0
+mu = "u/2"
+
+[parameters.bath]
+nb = 31
+min_e = -0.2
+max_e = 0.2
+hybridization_V = 0.1

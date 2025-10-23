@@ -1,4 +1,4 @@
-
+# hamiltonians.py
 import numpy as np 
 from . import clic_clib as cc
 import scipy.sparse
@@ -83,26 +83,4 @@ def get_hubbard_dimer_ed_ref(t, U, M):
 
 
 # ---
-
-def get_one_body_terms(h1, M, thr=1e-14):
-    """Get a list of non zeros (above thr) one body operators"""
-    terms = []
-    for i in range(2*M):
-        for j in range(2*M):
-            if abs(h1[i, j]) > thr:
-                si = cc.Spin.Alpha if i < M else cc.Spin.Beta
-                sj = cc.Spin.Alpha if j < M else cc.Spin.Beta
-                oi, oj = (i % M), (j % M)
-                terms.append((oi, oj, si, sj, complex(h1[i, j])))
-    return terms
-
-def get_two_body_terms(U, M, thr=1e-14):
-    """Get a list of non zeros (above thr) two body operators"""
-    terms = []
-    for i,j,k,l in np.argwhere(np.abs(U) > thr):
-        spins = [cc.Spin.Alpha if idx < M else cc.Spin.Beta for idx in [i,j,k,l]]
-        orbs  = [idx % M for idx in [i,j,k,l]]
-        terms.append((orbs[0],orbs[1],orbs[2],orbs[3],
-                      spins[0],spins[1],spins[2],spins[3], complex(0.5*U[i,j,k,l])))
-    return terms
 

@@ -1,0 +1,16 @@
+model_file = "config/model.toml"
+
+[solver]
+basis_prep_method = "dbl_chain" # 'none', 'rhf', etc.
+
+[solver.ci_method]
+type = "sci"
+generator = "hamiltonian_generator"
+selector = "cipsi"
+max_iter = 10
+conv_tol = 1.0e-6
+prune_thr = 1.0e-6
+Nmul = 1.0
+
+[output]
+ground_state_file = "gs_result.npz"
