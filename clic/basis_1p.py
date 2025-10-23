@@ -30,7 +30,6 @@ def transform_integrals_interleaved_to_alphafirst(h0_int, U_int, M):
     U_af = np.ascontiguousarray(U_af, dtype=np.complex128)
     return h0_af, U_af
 
-
 def double_h(h_core, M):
     """Converts spatial one-electron integrals to spin-orbital form (AlphaFirst)."""
     K = 2 * M
@@ -91,6 +90,3 @@ def basis_change_h0_U(A, B, C):
     Unew = np.einsum('ai,bj,abgd,gk,dl->ijkl', C.conj(), C.conj(), B, C, C, optimize=True)
     
     return Anew, Unew
-
-
-

@@ -2,7 +2,7 @@
 from . import clic_clib as cc
 from itertools import combinations
 import numpy as np
-from . import basis_Np, hamiltonians,ops
+from . import basis_Np,hamiltonians,ops,results
 from scipy.sparse.linalg import eigsh 
 
 def selective_ci(
@@ -10,6 +10,7 @@ def selective_ci(
     M, Nelec,
     generator,
     selector,
+    num_roots=1,
     one_bh=None,
     two_bh=None,
     max_iter=5,
@@ -35,6 +36,8 @@ def selective_ci(
         Expansion proposal function. Must have signature:
             generator(wf, ewf, one_body_terms, two_body_terms, K, h0, U, thr=...)
         and return an *iterable of SlaterDeterminant* to add.
+    num_roots : int 
+        Number of eigenvectors computed and return at the FINAL iteration
     one_bh : list
         one body non zero terms of the hamiltonians, computed if not given 
     two_bh : list
@@ -74,6 +77,7 @@ def selective_ci(
 
     # Initial basis 
     basis0 = basis_Np.get_starting_basis(np.real(h0), Nelec)  # returns list of SlaterDeterminant
+
     # Initial Hamiltonian and ground state
     H = ops.get_ham(basis0, h0, U)
     # For small bases, a dense eig can be faster / safer; otherwise eigsh.
@@ -102,7 +106,6 @@ def selective_ci(
 
         gen_basis,hwf = generator(psi0,one_bh,two_bh,thr=prune_thr,return_hwf=True)
         selected_basis = selector(hwf,e0,gen_basis,2*M,h0,U)
-
 
         # If Nmul = 1.0, at each iteration we double the basis size 
         if Nmul != None : 
@@ -147,13 +150,39 @@ def selective_ci(
                 print(f"[conv] reached |dE| < {conv_tol}")
             break
 
-    return {
-        "energy": energies[-1],
-        "wavefunction": psi0,
-        "basis": basis0,
-        "energies": energies,
-        "sizes": sizes,
-    }
+    evals, evecs = eigsh(H, k=num_roots, which='SA')
+    psis = [cc.Wavefunction(M, basis0, evecs[:, i]) for i in range(num_roots)]
+
+    sci_res = results.NelecLowEnergySubspace(M=M,Nelec=Nelec,
+        energies=evals,
+        wavefunctions=psis,
+        basis=basis0,
+        transformation_matrix=None
+    )
+
+    return sci_res
+
+
+def do_fci(h0,U,M,Nelec,num_roots=1,Sz=0,verbose=True):
+
+    basis = basis_Np.get_fci_basis(M, Nelec)
+    #inds, blocks = partition_by_Sz(basis)    # lists of indices + Sz values
+    basis, idxs0 = basis_Np.subbasis_by_Sz(basis, Sz)  # S_z = 0 sector
+    print(f"fci basis size = {len(basis)}")
+
+    H_sparse = ops.get_ham(basis,h0,U,method="openmp")
+    eigvals, eigvecs = eigsh(H_sparse, k=num_roots, which='SA')
+    if verbose:
+        print(f"Ground State Energy: {eigvals[0]:.6f}")
+    psis = [cc.Wavefunction(M, basis, eigvecs[:,i]) for i in range(num_roots)]
+
+    fci_res = results.NelecLowEnergySubspace(M=M,Nelec=Nelec,
+        energies=eigvals,
+        wavefunctions=psis,
+        basis=basis,
+        transformation_matrix=None
+    )
+    return fci_res
 
 
 # -----------

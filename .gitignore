@@ -8,6 +8,8 @@ dist/
 *.pyd
 *.whl
 
+howto.md
+
 # Virtual environment
 venv/
 

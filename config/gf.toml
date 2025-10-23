@@ -1,0 +1,32 @@
+# ---------------------------------------------------
+# Input for Green's Function Calculator
+# ---------------------------------------------------
+
+# 1. Path to the pre-computed ground state .npz file
+ground_state_file = "gs_result.npz"
+
+# 2. Green's Function Parameters
+[green_function]
+# Frequency mesh: [omega_min, omega_max, number_of_points]
+omega_mesh = [-6.0, 6.0, 1001]
+# Broadening parameter
+eta = 0.1
+# Indices for the G(w) block. 'impurity' is a special keyword.
+# Can also be a list like [0, 1, 32, 33] for a 32-site model
+block_indices = "impurity"
+
+# 3. Lanczos / Basis Parameters
+[lanczos]
+# Number of Lanczos iterations
+L = 150
+# Number of H applications to expand the determinant basis
+NappH = 1
+# Coefficient threshold for including determinants from seed wavefunctions
+coeff_thresh = 1.0e-7
+
+# 4. Output Configuration
+[output]
+# Filename for the computed Green's function data (numpy array)
+gf_data_file = "gf_data.npz"
+# Filename for the spectral function plot. If empty, no plot is saved.
+plot_file = "spectral_function.png"

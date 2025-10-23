@@ -3,45 +3,72 @@
 API Reference
 =============
 
-This page provides the auto-generated documentation for the CLIC package.
+This page provides the auto-generated documentation for the CLIC package,
+organized from high-level APIs to low-level modules.
 
-Top-Level API (`clic`)
-----------------------
-The main ``clic`` package exposes the most important C++ classes and high-level
-solver functions for convenience.
+High-Level Solver API (`clic.api`)
+------------------------------------
+These are the main user-facing classes for running calculations.
 
-.. automodule:: clic
-   :members: Wavefunction, SlaterDeterminant, Spin, SpinOrbitalOrder, get_impurity_integrals, green_function_block_lanczos_fixed_basis
+.. automodule:: clic.api
+   :members: Model, GroundStateSolver, GreenFunctionCalculator
+   :undoc-members:
+   :show-inheritance:
+
+Results Data Structure (`clic.results`)
+-----------------------------------------
+This class is used to store and manage the results of a calculation.
+
+.. automodule:: clic.results
+   :members: NelecLowEnergySubspace
+   :undoc-members:
+   :show-inheritance:
+
+Configuration Models (`clic.config_models`)
+-------------------------------------------
+These Pydantic models define the structure of the ``.toml`` configuration files.
+
+.. automodule:: clic.config_models
+   :members: ModelConfig, SolverConfig, GfConfig, CiMethodConfig, AimParameters, FileDataSource
+   :undoc-members:
+   :show-inheritance:
+
+Low-Level Modules
+-----------------
+
+These modules contain the core implementation details. They are useful for
+advanced users or developers who wish to extend CLIC's functionality.
+
+**CI Solvers (`clic.sci`)**
+
+.. automodule:: clic.sci
+   :members: selective_ci, do_fci
    :undoc-members:
 
-Hamiltonians (`clic.hamiltonians`)
-----------------------------
-Functions for building Hamiltonian integrals.
+**Green's Function (`clic.gfs`)**
+
+.. automodule:: clic.gfs
+   :members: green_function_block_lanczos_fixed_basis
+   :undoc-members:
+
+**Hamiltonians (`clic.hamiltonians`)**
 
 .. automodule:: clic.hamiltonians
    :members:
    :undoc-members:
 
-One-Body Basis (`clic.basis_1p`)
---------------------------------
-Functions for manipulating the one-particle basis 
+**Basis Manipulation (`clic.basis_1p`, `clic.basis_Np`)**
 
 .. automodule:: clic.basis_1p
    :members:
    :undoc-members:
 
-Many-Body Basis (`clic.basis_Np`)
----------------------------------
-Functions for generating and working with determinant bases.
-
 .. automodule:: clic.basis_Np
    :members:
    :undoc-members:
 
-Green's Function Solvers (`clic.gfs`)
--------------------------------------
-Functions implementing the Lanczos algorithm.
+**C++ Backend (`clic.clic_clib`)**
 
-.. automodule:: clic.gfs
-   :members:
+.. automodule:: clic.clic_clib
+   :members: Wavefunction, SlaterDeterminant
    :undoc-members:

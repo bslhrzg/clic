@@ -33,14 +33,11 @@ from .clic_clib import (
     build_hamiltonian_openmp,
 )
 
-# 3. Import your Python helper functions from the tools submodule.
 
 # 4. Expose the most important Python functions to the top level.
 from .hamiltonians import (
     get_impurity_integrals,
     create_hubbard_V,
-    get_one_body_terms,
-    get_two_body_terms
 )
 
 from .basis_1p import (
@@ -50,6 +47,8 @@ from .basis_1p import (
     basis_change_h0_U
 )
 
+from .basis_transforms import *
+
 from .basis_Np import (
     get_fci_basis,
     partition_by_Sz,
@@ -57,8 +56,12 @@ from .basis_Np import (
     get_starting_basis
 )
 
-from .ops import one_rdm, get_ham
-
+from .ops import (
+    one_rdm, 
+    get_ham,
+    get_one_body_terms,
+    get_two_body_terms
+)
 from .gfs import(
     wf_to_vec,
     expand_basis_by_H,
@@ -67,7 +70,267 @@ from .gfs import(
 
 from .mf import mfscf
 
-from .sci import selective_ci, hamiltonian_generator,cipsi_one_iter# basis_1p.py
+from .sci import selective_ci, hamiltonian_generator,   cipsi_one_iter# clic/api.py
+import numpy as np
+from . import clic_clib as cc # Import for Wavefunction, SlaterDeterminant
+from . import hamiltonians, basis_1p, ops, sci, mf, basis_transforms, gfs, plotting
+from .config_models import SolverParameters, GfConfig # Use Pydantic for validated settings
+
+
+class Model:
+    """Represents the physical system via its Hamiltonian integrals."""
+    def __init__(self, h0: np.ndarray, U: np.ndarray, M_spatial: int, Nelec: int):
+        self.h0 = np.ascontiguousarray(h0, dtype=np.complex128)
+        self.U = np.ascontiguousarray(U, dtype=np.complex128)
+        self.M = M_spatial
+        self.Nelec = Nelec
+        # We can add u, mu etc. if basis_transforms needs them
+        self.u = U[0, M_spatial, 0, M_spatial].real if U.ndim == 4 and U.shape[0] > M_spatial else 0.0
+
+class GroundStateSolver:
+    """The main API endpoint for running a ground state calculation."""
+    def __init__(self, model: Model, settings: dict | SolverParameters):
+        self.model = model
+        # If raw dict is passed, validate it with our Pydantic model
+        if isinstance(settings, dict):
+            self.settings = SolverParameters(**settings)
+        else:
+            self.settings = settings
+        
+        self.result = {}
+
+    def solve(self) -> dict:
+        """Runs the full workflow and returns a dictionary of results."""
+        self._prepare_basis()
+        
+        ci_settings = self.settings.ci_method
+        if ci_settings.type == "sci":
+            print("Starting Selective CI calculation...")
+            self.result = sci.selective_ci(
+                h0=self.model.h0, U=self.model.U, M=self.model.M, Nelec=self.model.Nelec,
+                generator=sci.hamiltonian_generator, selector=sci.cipsi_one_iter,
+                max_iter=ci_settings.max_iter, conv_tol=ci_settings.conv_tol,
+                prune_thr=ci_settings.prune_thr, Nmul=ci_settings.Nmul, verbose=True
+            )
+        elif ci_settings.type == "fci":
+            raise NotImplementedError("FCI solver not implemented in API yet.")
+        
+        print(f"\nGround state solution found. Final Energy = {self.result['energy']:.12f}")
+        return self.result
+
+    def _prepare_basis(self):
+        method = self.settings.basis_prep_method
+        print(f"Preparing one-particle basis using method: '{method}'")
+        if method == "none":
+            return
+
+        elif method == "dbl_chain":
+            h0_spin = np.real(self.model.h0[:self.model.M, :self.model.M])
+            Nelec_half = self.model.Nelec // 2
+            
+            final_params = basis_transforms.perform_natural_orbital_transform(h0_spin, self.model.u, Nelec_half)
+            h_final_matrix = basis_transforms.construct_final_hamiltonian_matrix(final_params, self.model.M)
+            h_final_matrix[0, 0] = -self.model.u / 2
+            
+            h0_new = basis_1p.double_h(h_final_matrix, self.model.M)
+            self.model.h0 = h0_new # Update model's h0 in place
+        
+        else:
+            raise NotImplementedError(f"Basis prep method '{method}' not implemented.")
+
+    def get_one_rdm(self) -> np.ndarray:
+        """Computes and returns the one-particle reduced density matrix."""
+        if "wavefunction" not in self.result:
+            raise RuntimeError("Solver has not been run yet. Call solve() first.")
+        return ops.one_rdm(self.result["wavefunction"], self.model.M)
+    
+    # In the GroundStateSolver class, inside save_result method
+
+    def save_result(self, filename: str):
+        """Saves the essential results to a compressed numpy file."""
+        if "wavefunction" not in self.result:
+            raise RuntimeError("Solver has not been run yet. Call solve() before saving.")
+        
+        print(f"Saving ground state result to '{filename}'...")
+        
+        wavefunction = self.result["wavefunction"]
+        basis_from_result = self.result["basis"] # This is the list from selective_ci
+        
+        # --- NEW DEBUG CHECK ---
+        # Get the basis that the Wavefunction object is *actually* using internally.
+        # I'm assuming a method like .get_basis() or similar exists. If not, we'll need to add it.
+        # Let's assume your C++ Wavefunction class has a method `get_basis()` that returns a list of SlaterDeterminants.
+        basis_from_wf_object = wavefunction.get_basis()
+
+        if len(basis_from_result) != len(basis_from_wf_object):
+            print("!!! FATAL SAVE ERROR: Basis lists have different lengths!")
+        
+        # The crucial check: Are the lists identical IN ORDER?
+        if basis_from_result != basis_from_wf_object:
+            print("!!! FATAL SAVE ERROR: The basis list from the CI result and the basis")
+            print("!!! stored inside the Wavefunction object are NOT in the same order.")
+            print("!!! This will lead to incorrect wavefunction reconstruction.")
+            # For debugging, let's see the first few differing elements
+            for i in range(min(10, len(basis_from_result))):
+                if basis_from_result[i] != basis_from_wf_object[i]:
+                    print(f"  - Mismatch at index {i}:")
+                    print(f"    CI Result Basis Det: {basis_from_result[i]}")
+                    print(f"    Wavefunction Basis Det: {basis_from_wf_object[i]}")
+                    # You might need to add a __repr__ or __str__ to your C++ SlaterDeterminant for this to be readable
+            # We should probably stop here to avoid saving a corrupt file.
+            # raise RuntimeError("Basis mismatch during save operation.")
+        else:
+            print("SUCCESS: Basis order is consistent between CI result and Wavefunction object.")
+        # --- END DEBUG CHECK ---
+
+        # We should ALWAYS use the basis from the wavefunction object itself, as that is
+        # guaranteed to be aligned with its coefficients.
+        basis = basis_from_wf_object
+        
+        # Deconstruct the wavefunction and basis into NumPy-friendly objects
+        basis_alpha_list = [det.alpha_occupied_indices() for det in basis]
+        basis_beta_list = [det.beta_occupied_indices() for det in basis]
+
+        np.savez_compressed(
+            filename,
+            # --- Metadata ---
+            M_spatial=self.model.M,
+            Nelec=self.model.Nelec,
+            energy=self.result["energy"],
+            
+            # --- Wavefunction Data ---
+            wf_coeffs=wavefunction.get_amplitudes(),
+            basis_alpha_list=np.array(basis_alpha_list, dtype=object),
+            basis_beta_list=np.array(basis_beta_list, dtype=object),
+            
+            # --- Final Hamiltonian (in the correct basis) ---
+            final_h0=self.model.h0,
+            final_U=self.model.U
+        )
+        print("Save complete.")    
+    
+    def save_result_(self, filename: str):
+        """Saves the essential results to a compressed numpy file."""
+        if "wavefunction" not in self.result:
+            raise RuntimeError("Solver has not been run yet. Call solve() before saving.")
+        
+        print(f"Saving ground state result to '{filename}'...")
+        
+        # Deconstruct the wavefunction and basis into NumPy-friendly objects
+        wavefunction = self.result["wavefunction"]
+        basis = self.result["basis"]
+        
+        basis_alpha_list = [det.alpha_occupied_indices() for det in basis]
+        basis_beta_list = [det.beta_occupied_indices() for det in basis]
+        
+        np.savez_compressed(
+            filename,
+            # --- Metadata ---
+            M_spatial=self.model.M,
+            Nelec=self.model.Nelec,
+            energy=self.result["energy"],
+            
+            # --- Wavefunction Data ---
+            wf_coeffs=wavefunction.get_amplitudes(),
+            basis_alpha_list=np.array(basis_alpha_list, dtype=object),
+            basis_beta_list=np.array(basis_beta_list, dtype=object),
+            
+            # --- Final Hamiltonian (in the correct basis) ---
+            final_h0=self.model.h0,
+            final_U=self.model.U
+        )
+        print("Save complete.")
+
+# ----------------------------------------------------------------------------------
+
+
+class GreenFunctionCalculator:
+    """The main API endpoint for calculating Green's functions."""
+    def __init__(self, settings: dict | GfConfig):
+        # Validate settings if a raw dict is passed
+        if isinstance(settings, dict):
+            self.settings = GfConfig(**settings)
+        else:
+            self.settings = settings
+        
+        # Attributes to be loaded from the ground state file
+        self.M = None
+        self.psi0_wf = None
+        self.e0 = None
+        self.h0 = None
+        self.U = None
+
+    def load_ground_state(self):
+        """Loads data from the ground state .npz file."""
+        filepath = self.settings.ground_state_file
+        print(f"Loading ground state from '{filepath}'...")
+        try:
+            data = np.load(filepath, allow_pickle=True)
+            self.M = int(data['M_spatial'])
+            self.e0 = float(data['energy'])
+            self.h0 = data['final_h0']
+            self.U = data['final_U']
+            
+            # Reconstruct the wavefunction
+            coeffs = data['wf_coeffs']
+            alpha_list = data['basis_alpha_list']
+            beta_list = data['basis_beta_list']
+            basis = [cc.SlaterDeterminant(self.M, a, b) for a, b in zip(alpha_list, beta_list)]
+            self.psi0_wf = cc.Wavefunction(self.M, basis, coeffs)
+            print("Ground state loaded successfully.")
+
+        except FileNotFoundError:
+            raise RuntimeError(f"Ground state file not found at: {filepath}")
+        except KeyError as e:
+            raise RuntimeError(f"Missing key {e} in ground state file. The file may be invalid or incomplete.")
+
+    def run(self) -> tuple[np.ndarray, np.ndarray]:
+        """Runs the Green's function calculation and returns the results."""
+        self.load_ground_state()
+
+        p_gf = self.settings.green_function
+        p_lanczos = self.settings.lanczos
+        
+        ws = np.linspace(p_gf.omega_mesh[0], p_gf.omega_mesh[1], int(p_gf.omega_mesh[2]))
+        
+        if p_gf.block_indices == "impurity":
+            impurity_indices = [0, self.M]
+        else:
+            impurity_indices = p_gf.block_indices
+
+        # Get the one- and two-body terms from the loaded Hamiltonian
+        one_bh = ops.get_one_body_terms(self.h0, self.M)
+        two_bh = ops.get_two_body_terms(self.U, self.M)
+
+        print("\nStarting Green's function calculation...")
+        G_block, meta = gfs.green_function_block_lanczos_fixed_basis(
+            M=self.M, psi0_wf=self.psi0_wf, e0=self.e0, ws=ws, eta=p_gf.eta,
+            impurity_indices=impurity_indices, NappH=p_lanczos.NappH,
+            h0_clean=self.h0, U_clean=self.U,
+            one_body_terms=one_bh, two_body_terms=two_bh,
+            coeff_thresh=p_lanczos.coeff_thresh, L=p_lanczos.L
+        )
+        print("Calculation finished. Details:", meta)
+
+        # Compute spectral function A(w) = -1/pi * Im[G(w)]
+        A_w = -(1 / np.pi) * np.imag(G_block)
+        
+        # Save and plot if requested
+        if self.settings.output.gf_data_file:
+            np.savez_compressed(
+                self.settings.output.gf_data_file,
+                G_w=G_block, A_w=A_w, omega=ws
+            )
+            print(f"GF data saved to '{self.settings.output.gf_data_file}'")
+
+        if self.settings.output.plot_file:
+            plotting.plot_spectral_function(
+                ws, A_w, impurity_indices,
+                "Impurity Spectral Function",
+                self.settings.output.plot_file
+            )
+        
+        return ws, G_block, A_w# basis_1p.py
 import numpy as np
 from . import clic_clib as cc
 
@@ -162,51 +425,8 @@ def basis_change_h0_U(A, B, C):
     return Anew, Unew
 
 
-def get_one_body_terms(h0, M, thr=1e-12):
-    """
-    The non-zeros (above threshold) elements of the one-body hamiltonian
-    Args:
-        h0 (np.ndarray): the one-body hamiltonian, A 2D array (matrix).
-        M: the number of spatial orbitals.
-        thr: optional, a threshold value for the returned elements
 
-    Returns:
-        list: A list containing the non zeros elements and the corresponding orbitals
-    """
-    terms = []
-    for i in range(2*M):
-        for j in range(2*M):
-            if abs(h0[i, j]) > thr:
-                spin_i = cc.Spin.Alpha if i < M else cc.Spin.Beta
-                spin_j = cc.Spin.Alpha if j < M else cc.Spin.Beta
-                orb_i = i if i < M else i - M
-                orb_j = j if j < M else j - M
-                terms.append((orb_i, orb_j, spin_i, spin_j, complex(h0[i, j])))
-    return terms
 
-def get_two_body_terms(U, M, thr=1e-12):
-    """
-    The non-zeros (above threshold) elements of the two-body hamiltonian
-    Args:
-        U (np.ndarray): the two-body hamiltonian, A 4D array (tensor).
-        M: the number of spatial orbitals.
-        thr: optional, a threshold value for the returned elements
-
-    Returns:
-        list: A list containing the non zeros elements and the corresponding orbitals
-    """
-    terms = []
-    for i in range(2*M):
-        for j in range(2*M):
-            for k in range(2*M):
-                for l in range(2*M):
-                    if abs(U[i, j, k, l]) > thr:
-                        spins = [cc.Spin.Alpha if idx < M else cc.Spin.Beta for idx in [i, j, k, l]]
-                        orbs = [idx if idx < M else idx - M for idx in [i, j, k, l]]
-                        terms.append((orbs[0], orbs[1], orbs[2], orbs[3],
-                                      spins[0], spins[1], spins[2], spins[3],
-                                      complex(U[i, j, k, l])))
-    return terms
 # basis_Np.py
 from . import clic_clib as cc
 from itertools import combinations
@@ -406,7 +626,235 @@ def expand_basis(current_basis,one_body_terms,two_body_terms):
 
 
 
-# gfs.py
+import numpy as np
+from scipy.linalg import eigh, block_diag
+
+
+def lanczos_tridiagonalization(H, v0):
+    """
+    Performs the Lanczos algorithm to tridiagonalize a Hermitian matrix H.
+    """
+    N = H.shape[0]
+    if N == 0:
+        return np.array([[]]), np.array([[]])
+        
+    Q = np.zeros((N, N), dtype=float)
+    v = v0 / np.linalg.norm(v0)
+    Q[:, 0] = v
+
+    alphas = []
+    betas = []
+
+    for j in range(N):
+        w = H @ v
+        alpha = np.dot(v.conj(), w)
+        alphas.append(alpha)
+
+        if j < N - 1:
+            w = w - alpha * v
+            if j > 0:
+                w = w - betas[-1] * Q[:, j-1]
+            
+            beta = np.linalg.norm(w)
+            
+            if beta < 1e-12: # Space is exhausted
+                N = j + 1 # Truncate the dimension
+                break
+            
+            betas.append(beta)
+            v = w / beta
+            if j + 1 < Q.shape[1]:
+                Q[:, j + 1] = v
+    
+    T = np.diag(alphas) + np.diag(betas, k=1) + np.diag(betas, k=-1)
+    return T[:N, :N], Q[:, :N]
+
+def perform_natural_orbital_transform(h_spin, u, Nelec):
+    """
+    Performs the 5-step Natural Orbital transformation on a single-particle Hamiltonian.
+    """
+    M = h_spin.shape[0]
+    final_params = {}
+
+    # (i) Mean-Field
+    h_mf = h_spin.copy()
+    h_mf[0, 0] += u * 0.5 # <n_down> = 0.5
+    e_mf, C_mf = eigh(h_mf)
+    rho_mf = C_mf[:, :Nelec] @ C_mf[:, :Nelec].T
+
+    # (ii) Diagonalize Bath Density Matrix
+    rho_bath = rho_mf[1:, 1:]
+    n_no, W = eigh(rho_bath)
+    
+    occupations_dist_from_integer = np.minimum(n_no, 1 - n_no)
+    b_idx = np.argmax(occupations_dist_from_integer)
+    final_params['b_occupation'] = n_no[b_idx]
+    
+    filled_indices = [i for i, n in enumerate(n_no) if i != b_idx and n > 0.5]
+    empty_indices = [i for i, n in enumerate(n_no) if i != b_idx and n <= 0.5]
+
+    ordered_indices = [b_idx] + filled_indices + empty_indices
+    W_ordered = W[:, ordered_indices]
+    U1 = block_diag(1, W_ordered)
+    h_no_basis = U1.T @ h_mf @ U1
+
+    # (iii) Bonding/Anti-bonding
+    rho_no_basis = U1.T @ rho_mf @ U1
+    rho_ib = rho_no_basis[:2, :2]
+    n_ab, U_bond = eigh(rho_ib)
+    final_params['ab_occupations'] = n_ab
+
+    U2 = np.identity(M)
+    U2[:2, :2] = U_bond
+    h_decoupled = U2.T @ h_no_basis @ U2
+
+    # (iv) Lanczos
+    h_conduction_indices = [0] + list(range(2 + len(filled_indices), M))
+    h_conduction = h_decoupled[np.ix_(h_conduction_indices, h_conduction_indices)]
+    v0_c = np.zeros(h_conduction.shape[0]); v0_c[0] = 1.0
+    T_c, _ = lanczos_tridiagonalization(h_conduction, v0_c)
+
+    h_valence_indices = [1] + list(range(2, 2 + len(filled_indices)))
+    h_valence = h_decoupled[np.ix_(h_valence_indices, h_valence_indices)]
+    v0_v = np.zeros(h_valence.shape[0]); v0_v[0] = 1.0
+    T_v, _ = lanczos_tridiagonalization(h_valence, v0_v)
+
+    # (v) Recover final parameters
+    E_A = T_c[0, 0] if T_c.shape[0] > 0 else 0.0
+    E_B = T_v[0, 0] if T_v.shape[0] > 0 else 0.0
+    h_ib_final = U_bond @ np.diag([E_A, E_B]) @ U_bond.T
+    
+    final_params['e_i'] = h_ib_final[0, 0]
+    final_params['e_b'] = h_ib_final[1, 1]
+    final_params['t_ib'] = h_ib_final[0, 1]
+
+    V_A_to_chain = T_c[0, 1] if T_c.shape[0] > 1 else 0.0
+    V_B_to_chain = T_v[0, 1] if T_v.shape[0] > 1 else 0.0
+
+    final_params['V_i_c'] = V_A_to_chain * U_bond[0, 0]
+    final_params['V_b_c'] = V_A_to_chain * U_bond[1, 0]
+    final_params['V_i_v'] = V_B_to_chain * U_bond[0, 1]
+    final_params['V_b_v'] = V_B_to_chain * U_bond[1, 1]
+
+    final_params['conduction_e'] = np.diag(T_c)[1:]
+    final_params['conduction_t'] = np.diag(T_c, k=1)[1:]
+    final_params['valence_e'] = np.diag(T_v)[1:]
+    final_params['valence_t'] = np.diag(T_v, k=1)[1:]
+
+    return final_params
+
+def construct_final_hamiltonian_matrix(params, M):
+    """
+    Constructs the final M x M Hamiltonian matrix from the parameter dictionary.
+    The basis order is [i, b, c1, c2, ..., v1, v2, ...].
+    """
+    H_final = np.zeros((M, M))
+    
+    # i, b block
+    H_final[0, 0] = params['e_i']
+    H_final[1, 1] = params['e_b']
+    H_final[0, 1] = H_final[1, 0] = params['t_ib']
+
+    len_c_chain = len(params['conduction_e'])
+    len_v_chain = len(params['valence_e'])
+
+    # -- Conduction Chain --
+    if len_c_chain > 0:
+        c_start_idx = 2
+        c_indices = np.arange(c_start_idx, c_start_idx + len_c_chain)
+        # Couplings to chain
+        H_final[0, c_start_idx] = H_final[c_start_idx, 0] = params['V_i_c']
+        H_final[1, c_start_idx] = H_final[c_start_idx, 1] = params['V_b_c']
+        # On-site energies
+        # **CORRECTED LINE**: Use direct assignment, not fill_diagonal on a 1D view
+        H_final[c_indices, c_indices] = params['conduction_e']
+        # Hoppings
+        if len_c_chain > 1:
+            # **CORRECTED LINE**
+            H_final[c_indices[:-1], c_indices[1:]] = params['conduction_t']
+            H_final[c_indices[1:], c_indices[:-1]] = params['conduction_t']
+            
+    # -- Valence Chain --
+    if len_v_chain > 0:
+        v_start_idx = 2 + len_c_chain
+        v_indices = np.arange(v_start_idx, v_start_idx + len_v_chain)
+        # Couplings to chain
+        H_final[0, v_start_idx] = H_final[v_start_idx, 0] = params['V_i_v']
+        H_final[1, v_start_idx] = H_final[v_start_idx, 1] = params['V_b_v']
+        # On-site energies
+        # **CORRECTED LINE**
+        H_final[v_indices, v_indices] = params['valence_e']
+        # Hoppings
+        if len_v_chain > 1:
+            # **CORRECTED LINE**
+            H_final[v_indices[:-1], v_indices[1:]] = params['valence_t']
+            H_final[v_indices[1:], v_indices[:-1]] = params['valence_t']
+            
+    return H_final
+from pydantic import BaseModel, Field
+from typing import Literal, Union, List
+
+class BathConfig(BaseModel):
+    nb: int = Field(..., gt=0)
+    min_e: float
+    max_e: float
+    hybridization_V: float
+
+class ModelParameters(BaseModel):
+    type: Literal["anderson_impurity_model"]
+    M_spatial: int = Field(..., gt=0)
+    Nelec: int = Field(..., ge=0)
+    interaction_u: float
+    mu: Union[float, Literal["u/2"]]
+    bath: BathConfig
+
+class ModelConfig(BaseModel):
+    model_name: str
+    source_type: Literal["parametric"]
+    parameters: ModelParameters
+
+class CiMethodConfig(BaseModel):
+    type: Literal["sci", "fci"]
+    generator: Literal["hamiltonian_generator"]
+    selector: Literal["cipsi"]
+    max_iter: int = Field(..., gt=0)
+    conv_tol: float = Field(..., gt=0)
+    prune_thr: float = Field(..., ge=0)
+    Nmul: Union[float, None] = None
+
+class SolverParameters(BaseModel):
+    basis_prep_method: Literal["none", "rhf", "rhf_no", "dbl_chain"]
+    ci_method: CiMethodConfig
+
+class OutputConfig(BaseModel):
+    ground_state_file: str
+
+class SolverConfig(BaseModel):
+    model_file: str
+    solver: SolverParameters
+    output: OutputConfig
+
+# --- Green's Function Configuration ---
+
+class GreenFunctionParameters(BaseModel):
+    omega_mesh: List[Union[int, float]]
+    eta: float = Field(..., gt=0)
+    block_indices: Union[Literal["impurity"], List[int]]
+
+class LanczosParameters(BaseModel):
+    L: int = Field(..., gt=0)
+    NappH: int = Field(..., ge=0)
+    coeff_thresh: float = Field(..., ge=0)
+
+class GfOutputConfig(BaseModel):
+    gf_data_file: str
+    plot_file: str | None = None
+
+class GfConfig(BaseModel):
+    ground_state_file: str
+    green_function: GreenFunctionParameters
+    lanczos: LanczosParameters
+    output: GfOutputConfig# gfs.py
 import numpy as np
 from . import clic_clib as cc
 import scipy.sparse as sp
@@ -878,28 +1326,6 @@ def get_hubbard_dimer_ed_ref(t, U, M):
 
 # ---
 
-def get_one_body_terms(h1, M, thr=1e-14):
-    """Get a list of non zeros (above thr) one body operators"""
-    terms = []
-    for i in range(2*M):
-        for j in range(2*M):
-            if abs(h1[i, j]) > thr:
-                si = cc.Spin.Alpha if i < M else cc.Spin.Beta
-                sj = cc.Spin.Alpha if j < M else cc.Spin.Beta
-                oi, oj = (i % M), (j % M)
-                terms.append((oi, oj, si, sj, complex(h1[i, j])))
-    return terms
-
-def get_two_body_terms(U, M, thr=1e-14):
-    """Get a list of non zeros (above thr) two body operators"""
-    terms = []
-    for i,j,k,l in np.argwhere(np.abs(U) > thr):
-        spins = [cc.Spin.Alpha if idx < M else cc.Spin.Beta for idx in [i,j,k,l]]
-        orbs  = [idx % M for idx in [i,j,k,l]]
-        terms.append((orbs[0],orbs[1],orbs[2],orbs[3],
-                      spins[0],spins[1],spins[2],spins[3], complex(0.5*U[i,j,k,l])))
-    return terms
-
 # mf.py
 import numpy as np
 
@@ -1125,6 +1551,7 @@ import numpy as np
 
 def one_rdm(wf,M):
     """ 
+    TO DO : currently too expensive. Should check first if occ
     Compute the one-body reduced density matrix given a wavefunction
     Args:
         wf : a wavefunction object
@@ -1167,7 +1594,78 @@ def get_ham(basis,h0,U,method="openmp"):
     else : 
         print("method not implemented yet")
         assert 1==2
-    return H # sci.py
+    return H 
+
+
+def get_one_body_terms(h0, M, thr=1e-12):
+    """
+    The non-zeros (above threshold) elements of the one-body hamiltonian
+    Args:
+        h0 (np.ndarray): the one-body hamiltonian, A 2D array (matrix).
+        M: the number of spatial orbitals.
+        thr: optional, a threshold value for the returned elements
+
+    Returns:
+        list: A list containing the non zeros elements and the corresponding orbitals
+    """
+    terms = []
+    for i in range(2*M):
+        for j in range(2*M):
+            if abs(h0[i, j]) > thr:
+                spin_i = cc.Spin.Alpha if i < M else cc.Spin.Beta
+                spin_j = cc.Spin.Alpha if j < M else cc.Spin.Beta
+                orb_i = i if i < M else i - M
+                orb_j = j if j < M else j - M
+                terms.append((orb_i, orb_j, spin_i, spin_j, complex(h0[i, j])))
+    return terms
+
+def get_two_body_terms(U, M, thr=1e-12):
+    """
+    The non-zeros (above threshold) elements of the two-body hamiltonian
+    Args:
+        U (np.ndarray): the two-body hamiltonian, A 4D array (tensor).
+        M: the number of spatial orbitals.
+        thr: optional, a threshold value for the returned elements
+
+    Returns:
+        list: A list containing the non zeros elements and the corresponding orbitals
+    """
+    terms = []
+    for i in range(2*M):
+        for j in range(2*M):
+            for k in range(2*M):
+                for l in range(2*M):
+                    if abs(U[i, j, k, l]) > thr:
+                        spins = [cc.Spin.Alpha if idx < M else cc.Spin.Beta for idx in [i, j, k, l]]
+                        orbs = [idx if idx < M else idx - M for idx in [i, j, k, l]]
+                        terms.append((orbs[0], orbs[1], orbs[2], orbs[3],
+                                      spins[0], spins[1], spins[2], spins[3],
+                                      complex(U[i, j, k, l])))
+    return termsimport numpy as np
+import matplotlib.pyplot as plt
+
+def plot_spectral_function(ws, A_w, impurity_indices, title, filename=None):
+    """
+    Plots the impurity spectral function A(w) and saves it to a file.
+    """
+    print(f"impurity_indices = {impurity_indices}")
+    dos = np.sum(A_w[:, impurity_indices, impurity_indices], axis=1).real
+    
+    plt.figure(figsize=(8, 5))
+    plt.plot(ws, dos, label="Total Impurity DOS")
+    plt.title(title)
+    plt.xlabel("Frequency (ω)")
+    plt.ylabel("A(ω) (arb. units)")
+    plt.grid(True)
+    plt.legend()
+    
+    if filename:
+        plt.savefig(filename, dpi=300)
+        print(f"Plot saved to '{filename}'")
+    else:
+        plt.show()
+
+    plt.close()# sci.py
 from . import clic_clib as cc
 from itertools import combinations
 import numpy as np
@@ -1237,9 +1735,9 @@ def selective_ci(
     if generator == hamiltonian_generator:
         # Precompute operator terms once
         if one_bh == None:
-            one_bh = hamiltonians.get_one_body_terms(h0, M)
+            one_bh = ops.get_one_body_terms(h0, M)
         if two_bh == None:
-            two_bh = hamiltonians.get_two_body_terms(U, M)
+            two_bh = ops.get_two_body_terms(U, M)
 
     # Initial basis 
     basis0 = basis_Np.get_starting_basis(np.real(h0), Nelec)  # returns list of SlaterDeterminant
