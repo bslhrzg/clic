@@ -1,7 +1,7 @@
 
 # basis_Np.py
 from . import clic_clib as cc
-from itertools import combinations
+from itertools import combinations, product
 import numpy as np
 from . import mf 
 
@@ -180,8 +180,94 @@ def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
                 occ_b2 = sorted(list(Pset) + [s])
                 dets.append(cc.SlaterDeterminant(M, occ_a2, occ_b2))
 
+
     return sorted(dets)
 
+def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst", tol=1e-12):
+    """
+    Generates starting determinants with a fixed number of electrons on the impurity.
+    Returns a list of actual SlaterDeterminant objects.
+    """
+    K = h0.shape[0]
+    M = K // 2
+    
+    imp_indices = sorted(list(set(imp_indices)))
+    M_imp = len(imp_indices)
+    
+    all_spatial_indices = np.arange(M)
+    bath_indices = np.setdiff1d(all_spatial_indices, imp_indices).tolist()
+    M_bath = len(bath_indices)
+
+    print(f"Partitioning system: {M_imp} impurity orbitals, {M_bath} bath orbitals.")
+
+    imp_spin_indices = imp_indices + [i + M for i in imp_indices]
+    bath_spin_indices = bath_indices + [i + M for i in bath_indices]
+
+    h0_imp = h0[np.ix_(imp_spin_indices, imp_spin_indices)]
+    h0_bath = h0[np.ix_(bath_spin_indices, bath_spin_indices)]
+
+    Nelec_bath = Nelec - Nelec_imp
+    if Nelec_bath < 0:
+        raise ValueError(f"Nelec_imp ({Nelec_imp}) cannot be greater than Nelec ({Nelec}).")
+
+    print(f"Generating basis for {Nelec_imp} electrons on impurity and {Nelec_bath} on bath.")
+
+    imp_dets_local = get_starting_basis(h0_imp, Nelec_imp, order=order, tol=tol)
+    bath_dets_local = get_starting_basis(h0_bath, Nelec_bath, order=order, tol=tol)
+    
+    if not imp_dets_local or not bath_dets_local:
+        print("Warning: One subspace yielded zero determinants. Returning empty list.")
+        return []
+
+    print(f"Found {len(imp_dets_local)} impurity configurations and {len(bath_dets_local)} bath configurations.")
+    
+    final_dets = []
+    for imp_det, bath_det in product(imp_dets_local, bath_dets_local):
+        
+        # Use the accessor methods to get the local occupations
+        imp_alpha_local = imp_det.alpha_occupied_indices()
+        imp_beta_local = imp_det.beta_occupied_indices()
+        bath_alpha_local = bath_det.alpha_occupied_indices()
+        bath_beta_local = bath_det.beta_occupied_indices()
+
+        # Map local indices back to global spatial indices
+        global_alpha_imp = [imp_indices[i] for i in imp_alpha_local]
+        global_beta_imp = [imp_indices[i] for i in imp_beta_local]
+        global_alpha_bath = [bath_indices[i] for i in bath_alpha_local]
+        global_beta_bath = [bath_indices[i] for i in bath_beta_local]
+        
+        # Combine and sort for the final determinant
+        final_alpha = sorted(global_alpha_imp + global_alpha_bath)
+        final_beta = sorted(global_beta_imp + global_beta_bath)
+        
+        final_dets.append(cc.SlaterDeterminant(M, final_alpha, final_beta))
+
+    # Remove duplicates if any were generated (e.g., from odd electron cases)
+    # The hash and eq bindings make this possible.
+    unique_dets = sorted(list(set(final_dets)))
+    
+    print(f"Generated a total of {len(unique_dets)} unique starting determinants.")
+    return unique_dets
+
+def get_rhf_determinant(Nelec, M):
+    """
+    Returns the RHF/ROHF Slater determinant in a spin-blocked MO basis.
+    """
+    if Nelec % 2 == 0:
+    
+        n_occ = Nelec // 2
+        occ_hf = list(range(n_occ))
+
+        return [cc.SlaterDeterminant(M, occ_hf, occ_hf)]
+    else :
+        n_occ = Nelec // 2
+        occ_m = list(range(n_occ))
+        occ_p = list(range(n_occ+1))
+
+        b1 = cc.SlaterDeterminant(M, occ_m, occ_p)
+        b2 = cc.SlaterDeterminant(M, occ_p, occ_m)
+
+        return [b1,b2]
 
 
 def expand_basis(current_basis,one_body_terms,two_body_terms):

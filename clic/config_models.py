@@ -1,6 +1,7 @@
 # config_models.py
-from pydantic import BaseModel, Field
-from typing import Literal, Union, List
+from typing import Literal, Union, List, Optional 
+from pydantic import BaseModel, Field, root_validator, ConfigDict
+
 
 class BathConfig(BaseModel):
     nb: int = Field(..., gt=0)
@@ -9,40 +10,63 @@ class BathConfig(BaseModel):
     hybridization_V: float
 
 class AimParameters(BaseModel):
-    type: Literal["anderson_impurity_model"]
-    M_spatial: int = Field(..., gt=0)
-    Nelec: int = Field(..., ge=0)
+    type: Literal['anderson_impurity_model']
+    M_spatial: int
+    M_imp: int
+    Nelec_imp: int
+    Nelec: Optional[int] = None
     interaction_u: float
     mu: Union[float, Literal["u/2"]]
     bath: BathConfig
+
+    @root_validator(pre=False, skip_on_failure=True)
+    def check_sizes(cls, values):
+        m_imp, m_spatial = values.get('M_imp'), values.get('M_spatial')
+        if m_imp is not None and m_spatial is not None and m_imp > m_spatial:
+            raise ValueError("M_imp (impurity orbitals) cannot be larger than M_spatial (total orbitals).")
+        return values
 
 class FileDataSource(BaseModel):
     type: Literal["from_file"]
     filepath: str
     Nelec: int = Field(..., ge=0)
-    spin_structure: Literal["alpha_first", "interleaved"] = "alpha_first"
+    spin_structure: Literal["alpha_first", "interleaved"] = "interleaved"
+
+class FileImpurityModelParameters(BaseModel):
+    """Defines an impurity model where integrals are loaded from a file."""
+    type: Literal["impurity_from_file"]
+    filepath: str
+    M_imp: int                 # Number of impurity spatial orbitals
+    Nelec_imp: int             # Target number of electrons ON THE IMPURITY
+    Nelec: Optional[int] = None # Optional: TOTAL number of electrons
+    spin_structure: Literal["alpha_first", "interleaved"] = "interleaved"
 
 
 class ModelConfig(BaseModel):
     model_name: str
-    parameters: Union[AimParameters, FileDataSource] = Field(..., discriminator='type')
+    parameters: Union[
+        AimParameters, 
+        FileDataSource, 
+        FileImpurityModelParameters] = Field(..., discriminator='type')
 
 class CiMethodConfig(BaseModel):
-    type: Literal["sci", "fci"]
+    type: Literal["sci", "fci"] = "sci"
     generator: Literal["hamiltonian_generator"]
     selector: Literal["cipsi"]
     num_roots: int = Field(1, gt=0) 
-    max_iter: int = Field(..., gt=0)
-    conv_tol: float = Field(..., gt=0)
-    prune_thr: float = Field(..., ge=0)
+    max_iter: int = Field(2, gt=-1)
+    conv_tol: float = Field(1e-6, gt=0)
+    prune_thr: float = Field(1e-7, ge=0)
     Nmul: Union[float, None] = None
 
 class SolverParameters(BaseModel):
-    basis_prep_method: Literal["none", "rhf", "rhf_no", "dbl_chain"]
+    basis_prep_method: Literal["none", "rhf", "rhf_no", "bath_no","dbl_chain"]
     ci_method: CiMethodConfig
+    nelec_range: tuple[int, int] | None = None 
+    initial_temperature: float = 10.0 
 
 class OutputConfig(BaseModel):
-    ground_state_file: str
+    ground_state_file: str = "clic_solve_results.h5"
 
 class SolverConfig(BaseModel):
     model_file: str

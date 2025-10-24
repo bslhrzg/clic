@@ -2,32 +2,47 @@
 import numpy as np
 from . import clic_clib as cc
 
+import numpy as np
+
 def transform_integrals_interleaved_to_alphafirst(h0_int, U_int, M):
     """
-    Transforms integrals from spin-interleaved to AlphaFirst ordering.
+    Transforms integrals from spin-interleaved to AlphaFirst (spin-blocked) ordering
+
+    Args:
+        h0_int (np.ndarray): One-body integrals in interleaved basis.
+        U_int (np.ndarray): Two-body integrals in interleaved basis.
+        M (int): Number of spatial orbitals.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: h0_af, U_af in AlphaFirst basis.
     """
     K = 2 * M
+    
+    # Create the mapping from the new "AlphaFirst" index to the old "interleaved" index.
+    # This is the permutation vector.
+    # af_map[i_alphafirst] = i_interleaved
     af_map = np.zeros(K, dtype=int)
-    for i in range(M):
-        af_map[i] = 2 * i
-        af_map[i + M] = 2 * i + 1
+    
+    # First M indices in the new basis are the alpha spins.
+    # Their corresponding indices in the old basis are 0, 2, 4, ...
+    af_map[:M] = np.arange(0, K, 2)
+    
+    # Last M indices in the new basis are the beta spins.
+    # Their corresponding indices in the old basis are 1, 3, 5, ...
+    af_map[M:] = np.arange(1, K, 2)
 
-    h0_af = np.zeros_like(h0_int)
-    for p_af in range(K):
-        for q_af in range(K):
-            h0_af[p_af, q_af] = h0_int[af_map[p_af], af_map[q_af]]
-            
-    U_af = np.zeros_like(U_int)
-    for p_af in range(K):
-        for q_af in range(K):
-            for r_af in range(K):
-                for s_af in range(K):
-                    p_int, q_int = af_map[p_af], af_map[q_af]
-                    r_int, s_int = af_map[r_af], af_map[s_af]
-                    U_af[p_af, q_af, r_af, s_af] = U_int[p_int, q_int, r_int, s_int]
+    # Use np.ix_ to create indexers that permute the axes of the arrays.
+    # This is equivalent to the loops but is executed in highly optimized C/Fortran code.
+    # h0_af[i, j] = h0_int[af_map[i], af_map[j]]
+    h0_af = h0_int[np.ix_(af_map, af_map)]
+
+    # For the 4D tensor, we permute all four axes using the same map.
+    # U_af[i,j,k,l] = U_int[af_map[i], af_map[j], af_map[k], af_map[l]]
+    U_af = U_int[np.ix_(af_map, af_map, af_map, af_map)]
     
     h0_af = np.ascontiguousarray(h0_af, dtype=np.complex128)
     U_af = np.ascontiguousarray(U_af, dtype=np.complex128)
+    
     return h0_af, U_af
 
 def double_h(h_core, M):

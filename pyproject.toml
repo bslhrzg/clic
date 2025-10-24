@@ -29,6 +29,8 @@ classifiers = [
 [project.scripts]
 clic-run = "clic.scripts.cli:main"
 clic-gf = "clic.scripts.gf_cli:main" 
+clic-thermal-run = "clic.scripts.thermal_cli:main" 
+
 
 [tool.scikit-build]
 # This tells scikit-build where your CMakeLists.txt is relative to this file.

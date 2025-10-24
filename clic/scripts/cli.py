@@ -9,6 +9,8 @@ from pydantic import ValidationError
 from clic.config_models import ModelConfig, SolverConfig
 from clic.api import Model, GroundStateSolver
 from clic import hamiltonians # Need this for building integrals from file
+from clic.scripts.helpers import create_model_from_config 
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run a ground state calculation using CLIC.")
@@ -28,28 +30,7 @@ def main():
         sys.exit(1)
 
     # --- 2. Create the Model Object (from config) ---
-    p = model_config.parameters # p is now either an AimParameters or a FileDataSource object
-
-    if p.type == 'anderson_impurity_model':
-        # Logic for the parametric AIM
-        u = p.interaction_u
-        mu = u / 2.0 if p.mu == "u/2" else p.mu
-        e_bath = np.linspace(p.bath.min_e, p.bath.max_e, p.bath.nb)
-        V_bath = np.full(p.bath.nb, p.bath.hybridization_V)
-        h0, U = hamiltonians.get_impurity_integrals(p.M_spatial, u, e_bath, V_bath, mu)
-        model = Model(h0=h0, U=U, M_spatial=p.M_spatial, Nelec=p.Nelec)
-        
-    elif p.type == 'from_file':
-        # Logic for loading from file
-        print(f"Loading model integrals from file: {p.filepath}")
-        h0, U, M = hamiltonians.get_integrals_from_file(p.filepath, p.spin_structure)
-
-        model = Model(h0=h0, U=U, M_spatial=M, Nelec=p.Nelec)
-        
-    else:
-        # This case should be unreachable if Pydantic validation is working
-        print(f"ERROR: Unknown model parameter type '{p.type}'", file=sys.stderr)
-        sys.exit(1)
+    model = create_model_from_config(model_config)
     
     # --- 3. Run the Solver using the API ---
     solver = GroundStateSolver(model, solver_config.solver)

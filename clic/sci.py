@@ -4,10 +4,13 @@ from itertools import combinations
 import numpy as np
 from . import basis_Np,hamiltonians,ops,results
 from scipy.sparse.linalg import eigsh 
+from numpy.linalg import eigh
+
 
 def selective_ci(
     h0, U,
     M, Nelec,
+    seed,
     generator,
     selector,
     num_roots=1,
@@ -32,6 +35,8 @@ def selective_ci(
         Number of spatial orbitals.
     Nelec : int
         Total number of electrons.
+    seed : list
+        The inital basis
     generator : callable
         Expansion proposal function. Must have signature:
             generator(wf, ewf, one_body_terms, two_body_terms, K, h0, U, thr=...)
@@ -68,15 +73,9 @@ def selective_ci(
     Note: called with generator=cipsi_one_iter, max_iter=5, Nmul=None, this is CISD
     """
 
-    if generator == hamiltonian_generator:
-        # Precompute operator terms once
-        if one_bh == None:
-            one_bh = ops.get_one_body_terms(h0, M)
-        if two_bh == None:
-            two_bh = ops.get_two_body_terms(U, M)
 
-    # Initial basis 
-    basis0 = basis_Np.get_starting_basis(np.real(h0), Nelec)  # returns list of SlaterDeterminant
+
+    basis0=seed
 
     # Initial Hamiltonian and ground state
     H = ops.get_ham(basis0, h0, U)
@@ -97,6 +96,20 @@ def selective_ci(
 
     energies = [e0]
     sizes = [len(basis0)]
+
+    if generator == hamiltonian_generator:
+        # Precompute operator terms once
+        if one_bh == None:
+            one_bh = ops.get_one_body_terms(h0, M)
+        if two_bh == None:
+            two_bh = ops.get_two_body_terms(U, M)
+
+    def get_roots(H,nroots,dim):
+            if dim <= 64:
+                evals, evecs = eigh(H.toarray())
+            else:
+                evals, evecs = eigsh(H, k=nroots, which='SA')
+            return evals,evecs
 
     # Main selection loop
     for it in range(max_iter):
@@ -128,15 +141,13 @@ def selective_ci(
         H = ops.get_ham(basis0, h0, U)
         dim = H.shape[0]
 
-        if dim <= 64:
-            from numpy.linalg import eigh
-            evals, evecs = eigh(H.toarray())
-            e_new = float(evals[0])
-            psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
-        else:
-            evals, evecs = eigsh(H, k=1, which='SA')
-            e_new = float(evals[0])
-            psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
+        
+
+
+        
+        evals, evecs = get_roots(H, 1, dim)
+        e_new = float(evals[0])
+        psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
 
         dE = abs(e_new - energies[-1])
         energies.append(e_new)
@@ -150,7 +161,12 @@ def selective_ci(
                 print(f"[conv] reached |dE| < {conv_tol}")
             break
 
-    evals, evecs = eigsh(H, k=num_roots, which='SA')
+    
+    if num_roots > len(basis0):
+        print("num_roots > length(basis)")
+        num_roots = len(basis0)
+
+    evals, evecs = get_roots(H, num_roots, len(basis0))
     psis = [cc.Wavefunction(M, basis0, evecs[:, i]) for i in range(num_roots)]
 
     sci_res = results.NelecLowEnergySubspace(M=M,Nelec=Nelec,

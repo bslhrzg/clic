@@ -1,10 +1,12 @@
 # clic/api.py
 import numpy as np
-from . import clic_clib as cc # Import for Wavefunction, SlaterDeterminant
-from . import hamiltonians, basis_1p, basis_Np, ops, sci, mf, basis_transforms, gfs, plotting
+from . import bath_transform, clic_clib as cc # Import for Wavefunction, SlaterDeterminant
+from . import hamiltonians, basis_1p, basis_Np, ops, sci, mf, gfs, plotting
 from . import results
 from .config_models import SolverParameters, GfConfig # Use Pydantic for validated settings
-from scipy.linalg import eig
+from scipy.linalg import eig,block_diag
+import copy
+
 
 class Model:
     """Represents the physical system via its Hamiltonian integrals."""
@@ -15,6 +17,10 @@ class Model:
         self.Nelec = Nelec
         # We can add u, mu etc. if basis_transforms needs them
         self.u = U[0, M_spatial, 0, M_spatial].real if U.ndim == 4 and U.shape[0] > M_spatial else 0.0
+
+        self.is_impurity_model: bool = False
+        self.imp_indices: list[int] = []
+        self.Nelec_imp: int | None = None
 
 class GroundStateSolver:
     """The main API endpoint for running a ground state calculation."""
@@ -36,21 +42,50 @@ class GroundStateSolver:
             return
         
         elif method == 'rhf':
-            hmf, es, Vs, rho = mf.mfscf(h0,U_mat,self.model.M)
-            h0,U_mat = basis_1p.basis_change_h0_U(h0,U_mat,Vs)
-            self.transformation_matrix = Vs # <-- STORE THE TRANSFORM
+            hmf, es, Vs, rho = mf.mfscf(self.model.h0,self.model.U,self.model.Nelec)
+            h0,U_mat = basis_1p.basis_change_h0_U(self.model.h0,self.model.U,Vs)
+            self.model.h0 = h0
+            print(f"shape h0 = {np.shape(h0)}")
+            print("new diag h0 : ")
+            print(np.diag(h0))
+            self.model.U = U_mat
+            self.transformation_matrix = Vs
 
-        elif method == "dbl_chain":
-            # Need the transform matrix instead here
+        elif method in ["dbl_chain","bath_no"]:
+
+            # self.model.h0 is the full 2M x 2M matrix for both spins
+            # We operate on one spin sector (M x M)
             h0_spin = np.real(self.model.h0[:self.model.M, :self.model.M])
-            Nelec_half = self.model.Nelec // 2
-            
-            final_params = basis_transforms.perform_natural_orbital_transform(h0_spin, self.model.u, Nelec_half)
-            h_final_matrix = basis_transforms.construct_final_hamiltonian_matrix(final_params, self.model.M)
+            Nelec_half = self.model.Nelec // 2 
+
+            if method == "dbl_chain":
+                h_final_matrix, C_spin = bath_transform.get_double_chain_transform(
+                    h0_spin, self.model.u, Nelec_half
+                )
+            else :
+                h_final_matrix, C_spin = bath_transform.get_natural_orbital_transform(
+                    h0_spin, self.model.u, Nelec_half
+                )
+
+
             h_final_matrix[0, 0] = -self.model.u / 2
-            
+
+            #print("Final Hamiltonian in double-chain basis:")
+            #print(h_final_matrix)
+
+            #print("Is unitary ? :")
+            #print(np.linalg.norm(h_final_matrix - C_spin.T @ h0_spin @ C_spin))
+
+            # Construct the full 2M x 2M Hamiltonian for both spins
+            # This assumes basis_1p.double_h correctly creates the block diagonal matrix.
             h0_new = basis_1p.double_h(h_final_matrix, self.model.M)
-            self.model.h0 = h0_new # Update model's h0 in place
+            C = block_diag(C_spin, C_spin)
+
+            self.model.h0 = h0_new
+            self.transformation_matrix = C 
+
+
+
         
         else:
             raise NotImplementedError(f"Basis prep method '{method}' not implemented.")
@@ -65,11 +100,30 @@ class GroundStateSolver:
         
         if ci_settings.type == "sci":
             print("Starting Selective CI calculation...")
+
+            # Initial basis 
+            if self.settings.basis_prep_method == 'rhf' :
+                seed = basis_Np.get_rhf_determinant(self.model.Nelec, self.model.M)
+            else :
+                if self.model.is_impurity_model :
+                    seed =  basis_Np.get_imp_starting_basis(
+                        np.real(self.model.h0), self.model.Nelec, self.model.Nelec_imp, self.model.imp_indices)
+                else : 
+                    seed = basis_Np.get_starting_basis(np.real(self.model.h0), self.model.Nelec)  # returns list of SlaterDeterminant
+
             result_obj = sci.selective_ci(
-                h0=self.model.h0, U=self.model.U, M=self.model.M, Nelec=self.model.Nelec,
-                generator=sci.hamiltonian_generator, selector=sci.cipsi_one_iter,
-                max_iter=ci_settings.max_iter, conv_tol=ci_settings.conv_tol,
-                prune_thr=ci_settings.prune_thr, Nmul=ci_settings.Nmul, verbose=True
+                h0=self.model.h0, 
+                U=self.model.U,
+                M=self.model.M, 
+                Nelec=self.model.Nelec,
+                seed = seed,
+                generator=sci.hamiltonian_generator, 
+                selector=sci.cipsi_one_iter,
+                max_iter=ci_settings.max_iter, 
+                conv_tol=ci_settings.conv_tol,
+                prune_thr=ci_settings.prune_thr,
+                Nmul=ci_settings.Nmul, 
+                verbose=True
             )
         elif ci_settings.type == "fci":
             print("Careful, only Sz=0 sector computed in fci for now")
@@ -102,8 +156,70 @@ class GroundStateSolver:
         if not self.result:
             raise RuntimeError("Solver has not been run yet.")
         self.result.save(filename)
-# ----------------------------------------------------------------------------------
 
+
+
+class FockSpaceSolver:
+    """
+    API endpoint for finding the low-energy subspace across a range of particle
+    numbers (Nelec). It orchestrates multiple fixed-Nelec calculations and
+    combines them into a ThermalGroundState object for thermodynamic analysis.
+    """
+    def __init__(self, model: Model, settings: dict | SolverParameters, nelec_range: tuple[int, int]):
+        self.base_model = model
+        
+        if isinstance(settings, dict):
+            self.settings = SolverParameters(**settings)
+        else:
+            self.settings = settings
+            
+        self.nelec_range = range(nelec_range[0], nelec_range[1] + 1)
+        self.result: results.ThermalGroundState | None = None
+
+    def solve(self, initial_temperature: float = 300.0) -> results.ThermalGroundState:
+        """
+        Runs the full workflow for each Nelec in the specified range and
+        returns a combined ThermalGroundState result object.
+
+        Args:
+            initial_temperature (float): The initial temperature in Kelvin to
+                                         use for the resulting ThermalGroundState object.
+        """
+        all_results = {}
+        
+        print(f"\n--- Starting Fock Space Calculation for Nelec in {list(self.nelec_range)} ---")
+        
+        for nelec in self.nelec_range:
+            print(f"\n--- Solving for Nelec = {nelec} ---")
+            
+            # Use a deepcopy to ensure basis preparations or other mutations
+            # do not leak between calculations for different Nelec.
+            current_model = copy.deepcopy(self.base_model)
+            current_model.Nelec = nelec
+            
+            # Use the existing solver as the engine for this specific Nelec
+            solver = GroundStateSolver(current_model, self.settings)
+            
+            # Run the calculation and store the result
+            nelec_result = solver.solve()
+            all_results[nelec] = nelec_result
+        
+        # Instantiate the final results object with all the computed subspaces
+        self.result = results.ThermalGroundState(all_results, temperature=initial_temperature)
+        
+        # Report the absolute ground state found
+        gs_nelec, gs_energy, _ = self.result.find_absolute_ground_state()
+        print("\n--- Fock Space Calculation Finished ---")
+        print(f"Absolute ground state found at Nelec = {gs_nelec} with E = {gs_energy:.12f}")
+        
+        return self.result
+
+    def save_result(self, filename: str):
+        if not self.result:
+            raise RuntimeError("Solver has not been run yet.")
+        self.result.save(filename)
+
+# ----------------------------------------------------------------------------------
 
 class GreenFunctionCalculator:
     """The main API endpoint for calculating Green's functions."""

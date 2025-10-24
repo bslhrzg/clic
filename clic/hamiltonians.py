@@ -105,10 +105,28 @@ def get_integrals_from_file(filepath: str, spin_structure: str): # <-- Add new a
     and convert them to the required spin-orbital format (AlphaFirst).
     Handles both spatial and spin-orbital integral sources.
     """
-    # 1. Load the raw integrals from the HDF5 file
     with h5py.File(filepath, "r") as f:
-        h0_raw = f["h0"][:]
-        U_raw = f["U"][:]
+        # Accept either "h0" or "h02solve"
+        # --- DEBUGGING STEP: Print all available keys in the HDF5 file ---
+        print(f"--- Contents of HDF5 file: {filepath} ---")
+        available_keys = list(f.keys())
+        print("Available top-level datasets/groups:", available_keys)
+        print("---------------------------------------------")
+        # --------------------------------------------------------------------
+        if "h0" in f:
+            h0_raw = f["h0"][:]
+        elif "h02solve" in f:
+            h0_raw = f["h02solve"][:]
+        else:
+            raise KeyError("No 'h0' or 'h02solve' dataset found in HDF5 file.")
+
+        # Same for U, maybe allow "U" or "U2solve"
+        if "U" in f:
+            U_raw = f["U"][:]
+        elif "U2solve" in f:
+            U_raw = f["U2solve"][:]
+        else:
+            raise KeyError("No 'U' or 'U2solve' dataset found in HDF5 file.")
     
     M = h0_raw.shape[0] // 2 if spin_structure != "spatial" else h0_raw.shape[0]
     print(f"Loaded raw integrals from {filepath}: M_spatial = {M}, spin_structure = '{spin_structure}'")
@@ -135,3 +153,44 @@ def get_integrals_from_file(filepath: str, spin_structure: str): # <-- Add new a
     U = np.ascontiguousarray(U_spin_orbital, dtype=np.complex128)
     
     return h0, U, M
+
+def calculate_bath_filling(h0: np.ndarray, M_imp: int, zero_threshold: float = 1e-3) -> int:
+    """
+    Estimates the number of electrons in the non-interacting bath orbitals.
+
+    This function assumes a spin-orbital basis where the first 2*M_imp orbitals
+    belong to the impurity, and the rest belong to the bath. It counts bath
+    orbitals with single-particle energy below a threshold as fully occupied.
+
+    Args:
+        h0 (np.ndarray): The one-body Hamiltonian in the spin-orbital basis.
+        M_imp (int): The number of SPATIAL orbitals in the impurity.
+        zero_threshold (float): A small energy threshold around zero to handle
+                                orbitals exactly at the Fermi level.
+
+    Returns:
+        int: The estimated number of electrons in the bath.
+    """
+    num_spin_orbitals = h0.shape[0]
+    num_impurity_spin_orbitals = 2 * M_imp
+
+    if num_impurity_spin_orbitals >= num_spin_orbitals:
+        return 0 # No bath orbitals
+
+    bath_filling = 0.0
+    # The bath spin-orbitals start at this index
+    bath_start_index = num_impurity_spin_orbitals
+    
+    # Extract the diagonal energies of the bath orbitals
+    bath_energies = np.real(np.diag(h0)[bath_start_index:])
+    
+    for energy in bath_energies:
+        if energy < -zero_threshold:
+            bath_filling += 1.0 # Clearly occupied
+        elif abs(energy) < zero_threshold:
+            # At the Fermi level, often counted as half-filled,
+            # but rounding down is safer for integer electron counts.
+            # Your Julia code does this, so we replicate it.
+            bath_filling += 0.5
+    
+    return int(np.floor(bath_filling))

@@ -44,7 +44,7 @@ from .basis_1p import (
     basis_change_h0_U
 )
 
-from .basis_transforms import *
+from .bath_transform import *
 
 from .basis_Np import (
     get_fci_basis,
@@ -62,6 +62,6 @@ from .ops import (
 from .gfs import *
 
 from .mf import mfscf
-from .basis_transforms import *
+from .bath_transform import *
 
 from .sci import selective_ci, hamiltonian_generator,   cipsi_one_iter
