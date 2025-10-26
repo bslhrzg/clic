@@ -2,7 +2,7 @@
 
 import numpy as np
 from scipy.linalg import eigh, block_diag
-
+from . import symmetries, mf
 # --------------------------------------------------------------------------
 # Double chain for a single impurity
 # --------------------------------------------------------------------------
@@ -406,3 +406,124 @@ def get_natural_orbital_transform(h_spin, u, Nelec):
     return h_new_basis, C_no
 
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# Natural Orbitals for a multi-orbital case
+# --------------------------------------------------------------------------
+
+def get_multi_orbital_natural_orbital_transform(
+    h0: np.ndarray, 
+    U: np.ndarray, 
+    Nelec: int,
+    impurity_indices: list[int]
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Performs a symmetry-preserving natural orbital transformation for a
+    multi-orbital impurity problem.
+
+    The transformation finds the natural orbitals for the bath *within each
+    symmetry block* of the Hamiltonian, leaving the impurity orbitals untouched.
+    This is the multi-orbital generalization of `get_natural_orbital_transform`.
+
+    Args:
+        h0 (np.ndarray): Full one-particle Hamiltonian (2M x 2M, AlphaFirst).
+        U (np.ndarray): Full two-particle interaction tensor (2M x 2M x 2M x 2M).
+        Nelec (int): The total number of electrons in the system.
+        impurity_indices (list[int]): List of SPATIAL indices for all impurity
+                                      orbitals (e.g., [0, 1] for a 2-orbital impurity).
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]:
+            - h_final (np.ndarray): The final Hamiltonian in the natural orbital basis.
+            - C_total (np.ndarray): The total unitary transformation matrix (2M x 2M).
+    """
+    M = h0.shape[0] // 2
+    h0_spin = h0[:M, :M]
+    impurity_indices = sorted(list(set(impurity_indices)))
+    
+    print("--- Starting Symmetry-Aware Natural Orbital Transformation ---")
+    
+    # 1. Run SCF to get the converged density matrix
+    print("Step 1: Running mean-field SCF to get the density matrix...")
+    _, _, _, rho = mf.mfscf(h0, U, Nelec, maxiter=50)
+    rho_spin = rho[:M, :M] # Work with the spatial (spin-up) block
+    
+    # 2. Analyze the symmetry of the original h0
+    print("Step 2: Analyzing symmetries of the initial Hamiltonian...")
+    sym_dict = symmetries.analyze_symmetries(h0_spin)
+    blocks = sym_dict['blocks']
+    print(f"Found {len(blocks)} symmetry blocks.")
+
+    # 3. Build the transformation matrix C block-by-block
+    print("Step 3: Calculating natural orbitals for each symmetry block...")
+    C_spin = np.identity(M, dtype=h0.dtype)
+    
+    for i, block_indices in enumerate(blocks):
+        # Partition the orbitals within this block into impurity and bath
+        imp_in_block = [idx for idx in block_indices if idx in impurity_indices]
+        bath_in_block = [idx for idx in block_indices if idx not in impurity_indices]
+        
+        print(f"  - Processing Block {i} (size {len(block_indices)}): "
+              f"{len(imp_in_block)} impurity, {len(bath_in_block)} bath orbitals.")
+
+        if not bath_in_block:
+            # If no bath orbitals in this block, no transformation is needed.
+            continue
+            
+        # Extract the bath-bath submatrix of the density matrix for this block
+        rho_bath_block = rho_spin[np.ix_(bath_in_block, bath_in_block)]
+        
+        # Diagonalize it to get the eigenvectors 'W', which define the new bath basis
+        _, W_block = eigh(rho_bath_block)
+        
+        # Place the transformation 'W_block' into the correct slice of C_spin.
+        # This transforms the bath orbitals of this block, leaving others untouched.
+        C_spin[np.ix_(bath_in_block, bath_in_block)] = W_block
+        
+    # 4. Assemble the full 2M x 2M transformation matrix and apply it
+    print("Step 4: Assembling final transformation matrix and transforming h0...")
+    C_total = block_diag(C_spin, C_spin)
+    h_final = C_total.conj().T @ h0 @ C_total
+    
+    print("--- Transformation complete. ---")
+    
+    return h_final, C_total
+    """
+    Worker function: performs MF-SCF and then diagonalizes the bath density matrix.
+    """
+    N_block = h0_block.shape[0]
+
+    # If no bath orbitals in this block, no transformation is needed.
+    if len(imp_indices_local) == N_block:
+        return h0_block, np.identity(N_block)
+
+    # --- Step i: Mean-Field SCF on the block ---
+    # Create a temporary spin-doubled system for the mfscf function
+    h0_doubled = block_diag(h0_block, h0_block)
+    U_doubled = np.zeros((2*N_block, 2*N_block, 2*N_block, 2*N_block), dtype=U_block.dtype)
+    U_doubled[np.ix_(*[np.arange(N_block)]*4)] = U_block
+    U_doubled[np.ix_(*[np.arange(N_block, 2*N_block)]*4)] = U_block
+
+    # Run SCF to get the mean-field hamiltonian and density matrix for the UP-spin block
+    _, _, _, rho_full = mfscf(h0_doubled, U_doubled, 2 * Ne_block, maxiter=50)
+    rho_up = rho_full[:N_block, :N_block]
+    
+    # --- Step ii: Natural Orbitals for the Bath ---
+    bath_indices_local = [i for i in range(N_block) if i not in imp_indices_local]
+    
+    # Extract the bath-bath submatrix of the density matrix
+    rho_bath = rho_up[np.ix_(bath_indices_local, bath_indices_local)]
+    
+    # Diagonalize it to get the eigenvectors 'W', which define the new bath basis
+    _, W = eigh(rho_bath)
+    
+    # The transformation C_block leaves the impurity orbitals (in their local indices)
+    # alone and transforms only the bath orbitals.
+    C_block = np.identity(N_block, dtype=h0_block.dtype)
+    C_block[np.ix_(bath_indices_local, bath_indices_local)] = W
+    
+    # The final Hamiltonian for this block is the original h0_block transformed
+    # into this new Natural Orbital basis.
+    h_final_block = C_block.conj().T @ h0_block @ C_block
+    
+    return h_final_block, C_block

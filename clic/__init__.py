@@ -64,4 +64,6 @@ from .gfs import *
 from .mf import mfscf
 from .bath_transform import *
 
-from .sci import selective_ci, hamiltonian_generator,   cipsi_one_iter
+from .sci import selective_ci, hamiltonian_generator, cipsi_one_iter
+
+from .symmetries import *

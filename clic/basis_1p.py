@@ -1,8 +1,8 @@
 # basis_1p.py
 import numpy as np
 from . import clic_clib as cc
-
-import numpy as np
+from . import ops
+from scipy.linalg import eig
 
 def transform_integrals_interleaved_to_alphafirst(h0_int, U_int, M):
     """
@@ -105,3 +105,10 @@ def basis_change_h0_U(A, B, C):
     Unew = np.einsum('ai,bj,abgd,gk,dl->ijkl', C.conj(), C.conj(), B, C, C, optimize=True)
     
     return Anew, Unew
+
+
+def get_natural_orbitals(wf,M,block):
+    """Compute the natural orbitals for a given block"""
+    gamma = ops.one_rdm(wf,M,block=block)
+    eno,nos = eig(gamma)
+    return nos

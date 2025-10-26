@@ -1,7 +1,8 @@
 # mf.py
 import numpy as np
+from . import symmetries
 
-def mfscf(h0_0, U_0, Ne, maxiter=100):
+def mfscf_(h0_0, U_0, Ne, maxiter=100):
     """
     Mean-field self-consistent field (MF-SCF) loop with simple linear mixing,
     in a basis where spins are BLOCKED (↑ then ↓):
@@ -36,6 +37,7 @@ def mfscf(h0_0, U_0, Ne, maxiter=100):
     NF = h0_0.shape[0]
     M = NF // 2
 
+
     # Spin-up block (top-left M×M)
     h0_up = h0_0[:M, :M]
 
@@ -55,6 +57,7 @@ def mfscf(h0_0, U_0, Ne, maxiter=100):
     print(f"mixing parameter: α = {alpha}")
 
     hmf = None
+    Vmf = None
     E0 = 1_000.0
     threshold = 1e-6
 
@@ -95,6 +98,7 @@ def mfscf(h0_0, U_0, Ne, maxiter=100):
 
     if it == maxiter:
         print(f"NOT CONVERGED IN {maxiter} ITERATIONS")
+
 
     #print(f"HF energies : {es}")
     print(f"tr rho = {np.trace(rho)}")
@@ -157,57 +161,8 @@ def double_es_Vs_blocked(es_up, Vs_up):
     Vs_[M:, M:] = Vs_up          # spin-down block columns
     return es_, Vs_
 
-def get_mean_field_(U, rho, use_einsum=True, nz=None):
-    """
-    V_{ik} = sum_{j,l} rho_{jl} * ( U_{i j k l} - U_{i j l k} )
-    EC     = -1/2 * Tr( rho V )
-
-    Args:
-        U  : (NF,NF,NF,NF) ndarray
-        rho: (NF,NF) ndarray
-        use_einsum : bool
-            If True, build V with a fully vectorized contraction via np.einsum.
-        nz : optional list of (i,j,k,l) tuples (fallback loop if provided and use_einsum=False)
-
-    Returns:
-        V  : (NF,NF) complex ndarray
-        EC : float
-    """
-    NF = U.shape[0]
-
-    if use_einsum:
-        # A_{ik} = Σ_{j,l} U_{i j k l} rho_{j l}
-        # B_{ik} = Σ_{j,l} U_{i j l k} rho_{j l}
-        A = np.einsum('ijkl,jl->ik', U, rho, optimize=True)
-        B = np.einsum('ijlk,jl->ik', U, rho, optimize=True)
-        V = A - B
-    else:
-        # Fallback: Python loop (kept for completeness)
-        if nz is None:
-            nz = [tuple(idx) for idx in np.argwhere(U != 0)]
-        V = np.zeros((NF, NF), dtype=np.complex128)
-        for (i, j, k, l) in nz:
-            V[i, k] += rho[j, l] * (U[i, j, k, l] - U[i, j, l, k])
-
-    EC = -0.5 * np.trace(rho @ V)
-    return V, float(np.real(EC))
 
 def get_mean_field(U, rho, use_einsum=True, nz=None):
-    # Standard physicist's notation V_{ik} = Σ_{jl} (U_{ijlk} - U_{iljk}) ρ_{lj}
-    # Let's write it with rho_{jl}
-    # V_{ik} = Σ_{jl} U_{ilkj} ρ_{lj} - Σ_{jl} U_{ijlk} ρ_{lj}
-    # V_{ik} = Σ_{jl} U_{ikjl} ρ_{lj} - Σ_{jl} U_{ijlk} ρ_{jl} # Renaming dummy indices l->k, k->j, j->l
-    
-    # Original Python code:
-    # A = np.einsum('ijkl,jl->ik', U, rho) 
-    # B = np.einsum('ijlk,jl->ik', U, rho)
-    # V = A - B
-
-    # Let's try the other common convention.
-    # U[i,k,j,l] corresponds to c_i^+ c_j^+ c_l c_k
-    # V_ik = Sum_jl <ik|v|jl> rho_lj - <il|v|jk> rho_lj
-    # V_ik = Sum_jl U_ikjl rho_lj - U_iljk rho_lj
-    # NOTE: rho is symmetric, so rho_lj = rho_jl
     
     # Coulomb term with U_ikjl
     J = np.einsum('ijkl,jl->ik', U, rho, optimize=True)
@@ -251,3 +206,150 @@ def _bisection(f, a, b, tol=1e-12, maxiter=200):
         else:
             a, fa = m, fm
     return 0.5 * (a + b)
+
+
+# -------------------------------------------------
+
+def _reorder_to_spin_blocks(es_sorted, Vs_sorted, M):
+    """
+    Reorders globally sorted eigenvalues and eigenvectors back into a
+    spin-blocked (AlphaFirst) convention. This is necessary when degenerate
+    eigenvalues (like in RHF) cause sorting to interleave spin channels.
+
+    Args:
+        es_sorted (np.ndarray): Globally sorted eigenvalues.
+        Vs_sorted (np.ndarray): Corresponding eigenvectors (columns).
+        M (int): Number of spatial orbitals (size of one spin block).
+
+    Returns:
+        es_reordered (np.ndarray): Eigenvalues in [alpha..., beta...] order.
+        Vs_reordered (np.ndarray): Eigenvectors in the same spin-blocked order.
+    """
+    NF = 2 * M
+    alpha_vectors = []
+    beta_vectors = []
+    alpha_energies = []
+    beta_energies = []
+
+    # Classify each MO as alpha or beta
+    for i in range(NF):
+        vec = Vs_sorted[:, i]
+        # An MO is alpha if its weight is predominantly in the first M components
+        is_alpha = np.sum(np.abs(vec[:M])**2) > 0.5
+        if is_alpha:
+            alpha_vectors.append(vec)
+            alpha_energies.append(es_sorted[i])
+        else:
+            beta_vectors.append(vec)
+            beta_energies.append(es_sorted[i])
+            
+    # Reassemble into the desired block structure
+    es_reordered = np.array(alpha_energies + beta_energies)
+    Vs_reordered = np.zeros_like(Vs_sorted)
+    
+    if alpha_vectors:
+        Vs_reordered[:, :M] = np.column_stack(alpha_vectors)
+    if beta_vectors:
+        Vs_reordered[:, M:] = np.column_stack(beta_vectors)
+        
+    return es_reordered, Vs_reordered
+
+def _solve_h_symmetric(h0: np.ndarray):
+    """
+    (This function is correct as it was, the problem is handled after its use)
+    Diagonalizes a hermitian matrix by exploiting its block-diagonal symmetry.
+    Returns globally sorted eigenvalues and eigenvectors.
+    """
+    sym_dict = symmetries.analyze_symmetries(h0)
+    blocks = sym_dict['blocks']
+    identical_groups = sym_dict['identical_groups']
+
+    unique_Vs_blocks, unique_es_blocks = {}, {}
+    for group in identical_groups:
+        leader_idx = group[0]
+        leader_block_indices = blocks[leader_idx]
+        h_block = h0[np.ix_(leader_block_indices, leader_block_indices)]
+        es_block, Vs_block = np.linalg.eigh(h_block)
+        unique_es_blocks[leader_idx] = es_block
+        unique_Vs_blocks[leader_idx] = Vs_block
+        
+    Vs = symmetries.assemble_symmetric_hamiltonian(sym_dict, unique_matrices=unique_Vs_blocks)
+
+    all_es = []
+    for i in range(len(blocks)):
+        found_leader = -1
+        for group in identical_groups:
+            if i in group:
+                found_leader = group[0]
+                break
+        all_es.extend(unique_es_blocks[found_leader])
+    all_es = np.array(all_es)
+
+    sort_indices = np.argsort(np.real(all_es))
+    es_sorted = all_es[sort_indices]
+    Vs_sorted = Vs[:, sort_indices]
+    
+    return np.real(es_sorted), Vs_sorted, sym_dict
+
+
+def mfscf(h0_0, U_0, Ne, maxiter=100, alpha=0.2, threshold=1e-8):
+    """
+    Symmetry-aware mean-field self-consistent field (MF-SCF) loop.
+    This version now returns eigenvectors and eigenvalues in a spin-blocked
+    (AlphaFirst) convention, even when degeneracies are present.
+    """
+    NF = h0_0.shape[0]
+    M = NF // 2
+
+    print("--- Initializing SCF from h0 ---")
+    es, Vs, sym_dict = _solve_h_symmetric(h0_0)
+    print(f"Symmetry analysis found {len(sym_dict['blocks'])} blocks.")
+    print(f"Found {len(sym_dict['identical_groups'])} unique groups of blocks.")
+    
+    rho = get_rho(es, Vs, Ne)
+    # The rest of the initial prints...
+    print(f"iter 0, Tr(rho*h0) = {np.real(np.trace(rho @ h0_0)):.8f}")
+    print(f"Ne = {Ne}, initial tr(rho) = {np.trace(rho):.8f}")
+    print(f"mixing parameter: α = {alpha}")
+
+    hmf, E0_total = None, 1_000.0
+    
+    nz_count = int(np.count_nonzero(U_0))
+    print(f"\nNumber of non-zero U elements: {nz_count}")
+    print(f"{'Iter':>4s} {'E_total':>15s} {'E_corr':>15s} {'ΔE_total':>15s}")
+    
+    it = 0
+    for it in range(1, maxiter + 1):
+        Vmf, ec = get_mean_field(U_0, rho)
+        hmf = h0_0 + Vmf
+        es, Vs, _ = _solve_h_symmetric(hmf) # es and Vs are globally sorted here
+
+        E_total = 0.5 * np.real(np.trace(rho @ (h0_0+hmf)))
+        DE = abs(E_total - E0_total)
+        
+        if it % 10 == 0 or it == 1:
+            print(f"{it:4d} {E_total:15.8f} {np.real(ec):15.8f} {DE:15.4e}")
+
+        if DE < threshold:
+            print(f"\nConverged in {it} iterations.")
+            break
+        
+        E0_total = E_total
+
+        rho_new = get_rho(es, Vs, Ne)
+        rho = alpha * rho_new + (1.0 - alpha) * rho
+
+    if it == maxiter:
+        print(f"\nNOT CONVERGED IN {maxiter} ITERATIONS")
+
+    print(f"\nFinal tr(rho) = {np.trace(rho):.8f}")
+    
+    # --- FINAL FIX-UP STEP ---
+    # Reorder the final results to conform to the spin-blocked convention
+    print("Reordering final eigenvectors to spin-blocked convention...")
+    es_final, Vs_final = _reorder_to_spin_blocks(es, Vs, M)
+    
+    # Return the reordered, user-friendly results
+    return hmf, es_final, Vs_final, rho
+
+

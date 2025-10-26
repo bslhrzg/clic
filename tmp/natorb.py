@@ -298,7 +298,7 @@ np.set_printoptions(precision=4, suppress=True)
 
 
 # 1. System Parameters
-nb = 7
+nb = 3
 M = 1 + nb
 u = 4.0
 mu = u / 2
@@ -363,13 +363,21 @@ print("HF geometry")
 print('-'*42)
 
 
+
 hmf, es, Vs, rho = mfscf(h0,U_mat,M)
+print("Vs^+ * Vs = ")
+print(Vs.T.conj() @ Vs)
 h0hf,Uhf = basis_change_h0_U(h0,U_mat,Vs)
+
+
+
 H_sparse = get_ham(basis, h0hf, Uhf)
 eigvals, eigvecs = eigsh(H_sparse, k=1, which='SA')
 e0 = eigvals[0]
 print(f"Impurity Model Ground State Energy: {e0:.6f}")
 psi0hf = eigvecs[:, 0]
+
+assert 1 == 0
 
 print("h0hf(diag) = ")
 print(np.diag(h0hf))

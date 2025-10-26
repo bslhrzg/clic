@@ -2,22 +2,27 @@
 from . import clic_clib as cc
 import numpy as np
 
-def one_rdm(wf,M):
+def one_rdm(wf,M,block=None):
     """ 
     TO DO : currently too expensive. Should check first if occ
     Compute the one-body reduced density matrix given a wavefunction
     Args:
         wf : a wavefunction object
         M  : number of spatial orbitals 
+        block: if not None, return the rdm only for the block indexes
     Returns:
         np.ndarray: the 1-rdm
     """
 
-    K = 2*M
+    if block == None : 
+        K = 2*M
+        block = list(range(K))
+    else : 
+        K = len(block)
 
     rdm = np.zeros((K, K), dtype=np.complex128)
-    for i in range(K):
-        for j in range(K):
+    for i in block:
+        for j in block:
             # Create the operator term c†_i c_j
             spin_i = cc.Spin.Alpha if i < M else cc.Spin.Beta
             spin_j = cc.Spin.Alpha if j < M else cc.Spin.Beta

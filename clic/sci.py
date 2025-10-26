@@ -2,13 +2,13 @@
 from . import clic_clib as cc
 from itertools import combinations
 import numpy as np
-from . import basis_Np,hamiltonians,ops,results
+from . import basis_Np,hamiltonians,ops,results,basis_1p
 from scipy.sparse.linalg import eigsh 
-from numpy.linalg import eigh
+from numpy.linalg import eigh,eig
 
 
 def selective_ci(
-    h0, U,
+    h0, U, C,
     M, Nelec,
     seed,
     generator,
@@ -20,6 +20,8 @@ def selective_ci(
     conv_tol=1e-6,
     prune_thr=1e-7,
     Nmul = None,
+    min_size=64,
+    max_size=5e4,
     verbose=True,
 ):
     """
@@ -31,6 +33,8 @@ def selective_ci(
         One-particle Hamiltonian (spin-orbital or spatial; your helpers decide).
     U  : (K,K,K,K) array_like
         Two-particle Hamiltonian (spin-orbital convention matching `get_*_terms`).
+    C : (K,K) array_like 
+        Transformation matrix (we want to keep track of it)
     M  : int
         Number of spatial orbitals.
     Nelec : int
@@ -56,6 +60,8 @@ def selective_ci(
     Nmul : float 
         If positive, the size of the retained elements in generated basis is Nmul * len(current basis)
         If None, we keep the full generated basis.
+    min_size : Int -> to do  
+    max_size : Int -> to do 
     verbose : bool
         Print iteration logs.
 
@@ -111,23 +117,51 @@ def selective_ci(
                 evals, evecs = eigsh(H, k=nroots, which='SA')
             return evals,evecs
 
+
+
+
     # Main selection loop
     for it in range(max_iter):
         # Propose new determinants using the provided generator
 
-        lenb = len(basis0)
+        current_size = len(basis0)
 
         gen_basis,hwf = generator(psi0,one_bh,two_bh,thr=prune_thr,return_hwf=True)
         selected_basis = selector(hwf,e0,gen_basis,2*M,h0,U)
 
         # If Nmul = 1.0, at each iteration we double the basis size 
-        if Nmul != None : 
-            nkeep = Nmul * lenb 
-            nkeep = int(min(nkeep, len(selected_basis)))
-            selected_basis = selected_basis[:nkeep]
+        #if Nmul != None : 
+        #    nkeep = Nmul * lenb 
+        #    nkeep = int(min(nkeep, len(selected_basis)))
+        #    selected_basis = selected_basis[:nkeep]
+        # --- Determine how many new determinants to keep based on size constraints ---
+        num_candidates = len(selected_basis)
 
+        # 1. Calculate target number of new states from Nmul
+        if Nmul is not None:
+            n_add_nmul = int(Nmul * current_size)
+        else:
+            # If Nmul is None, we are unconstrained by it, so consider all candidates
+            n_add_nmul = num_candidates
+
+        # 2. Calculate number of new states needed to reach min_size
+        n_add_min = max(0, min_size - current_size)
+        # 3. Take the maximum of the two suggestions
+        n_to_add = max(n_add_nmul, n_add_min)
+
+        # 4. Cap by the number of available candidates
+        n_to_add = min(n_to_add, num_candidates)
+        
+        # 5. Cap to not exceed max_size
+        n_to_add = min(n_to_add, max_size - current_size)
+
+        n_to_add = int(max(0, n_to_add)) # Ensure it's not negative
+
+        # Truncate the selected basis to the final number of states to add
+        final_selected = selected_basis[:n_to_add]
         # Merge and sort the basis
-        new_basis = set(basis0) | set(selected_basis)
+        new_basis = set(basis0) | set(final_selected)
+
         if len(new_basis) == len(basis0):
             if verbose:
                 print(f"[iter {it}] no new determinants proposed; stopping.")
@@ -140,10 +174,6 @@ def selective_ci(
         # Rebuild H and solve ground state
         H = ops.get_ham(basis0, h0, U)
         dim = H.shape[0]
-
-        
-
-
         
         evals, evecs = get_roots(H, 1, dim)
         e_new = float(evals[0])
@@ -161,6 +191,8 @@ def selective_ci(
                 print(f"[conv] reached |dE| < {conv_tol}")
             break
 
+
+
     
     if num_roots > len(basis0):
         print("num_roots > length(basis)")
@@ -173,7 +205,7 @@ def selective_ci(
         energies=evals,
         wavefunctions=psis,
         basis=basis0,
-        transformation_matrix=None
+        transformation_matrix=C
     )
 
     return sci_res
