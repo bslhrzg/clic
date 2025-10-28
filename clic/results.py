@@ -1,7 +1,13 @@
-# results.py
+# clic/results.py
 import numpy as np
 import h5py
 from . import clic_clib as cc # for Wavefunction type hint
+
+# Use TYPE_CHECKING block to import for type hints only, preventing circular imports
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .api import Model
+
 
 class NelecLowEnergySubspace:
     """
@@ -42,10 +48,6 @@ class NelecLowEnergySubspace:
         Args:
             target: A filename (str) or an h5py.Group object.
         """
-        if not self.basis:
-            print("Warning: Cannot save result with an empty basis.")
-            return
-
         def _save_to_group(group: h5py.Group):
             # Flatten basis occupation lists for robust HDF5 saving
             alpha_indices_flat = []
@@ -162,29 +164,30 @@ class ThermalGroundState:
     """
     def __init__(self,
                  results_by_nelec: dict[int, 'NelecLowEnergySubspace'],
-                 temperature: float = 5.0): # Default temperature in Kelvin
+                 base_model: 'Model',
+                 temperature: float = 5.0):
         
         if not isinstance(results_by_nelec, dict):
             raise TypeError("`results_by_nelec` must be a dictionary.")
 
+        # --- Store base model information ---
+        self.base_h0 = base_model.h0
+        self.base_U = base_model.U
+        self.M = base_model.M
+        self.is_impurity_model = base_model.is_impurity_model
+        self.imp_indices = base_model.imp_indices
+        
         self.results_by_nelec = results_by_nelec
         self._temperature = temperature
         
-        # --- Internal flattened representation for easy access ---
-        # List of tuples: (energy, nelec, wavefunction)
         self._all_states: list[tuple[float, int, cc.Wavefunction]] = []
         for nelec, result in self.results_by_nelec.items():
             for i, energy in enumerate(result.energies):
                 self._all_states.append((energy, nelec, result.wavefunctions[i]))
 
-        # Sort all states by their energy for stability and easy GS access
         self._all_states.sort(key=lambda s: s[0])
-
-        # These will be calculated and cached based on temperature
         self.boltzmann_weights: np.ndarray | None = None
         self.partition_function: float | None = None
-        
-        # Initial calculation of thermal properties
         self._recalculate_thermal_properties()
 
     @property
@@ -211,7 +214,8 @@ class ThermalGroundState:
             return
 
         # Assumes energies are in eV. Change k_B constant if units differ.
-        beta = 1.0 / (K_B_IN_EV_PER_K * self._temperature)
+        #beta = 1.0 / (K_B_IN_EV_PER_K * self._temperature)
+        beta = 1.0 / (k_B_IN_RY_PER_K * self._temperature)
         
         energies = np.array([s[0] for s in self._all_states])
         
@@ -228,32 +232,76 @@ class ThermalGroundState:
     def prune(self, threshold: float = 1e-8):
         """
         Removes states whose Boltzmann weight is below a given threshold.
-        This is useful for reducing the memory footprint by discarding
-        thermally inaccessible states.
-        
-        Args:
-            threshold: The minimum Boltzmann weight for a state to be kept.
+        This method completely rebuilds the internal state of the object,
+        purging all information related to the pruned states.
         """
         if self.boltzmann_weights is None:
             self._recalculate_thermal_properties()
 
-        if not self._all_states:
+        initial_count = len(self._all_states)
+        if initial_count == 0:
             print("No states to prune.")
             return
 
-        initial_count = len(self._all_states)
-        # Find indices of states to keep based on the current weights
+        # 1. Identify which states to keep
         indices_to_keep = np.where(self.boltzmann_weights >= threshold)[0]
         
         if len(indices_to_keep) == initial_count:
             print(f"No states pruned with threshold {threshold:.1e}.")
             return
 
-        # Rebuild the list of states with only the ones we keep
+        # 2. Keep only the surviving states in the flattened list
         self._all_states = [self._all_states[i] for i in indices_to_keep]
         
-        # After pruning, the weights and partition function must be recalculated
-        # with the new, smaller set of states.
+        # --- 3. CRUCIAL STEP: Rebuild the results_by_nelec dictionary from scratch ---
+        new_results_by_nelec = {}
+        
+        # Group surviving states by their Nelec
+        grouped_states = {}
+        for energy, nelec, wf in self._all_states:
+            if nelec not in grouped_states:
+                grouped_states[nelec] = []
+            grouped_states[nelec].append({"energy": energy, "wavefunction": wf})
+
+        # For each group, create a new, minimal NelecLowEnergySubspace object
+        for nelec, states_info in grouped_states.items():
+            states_info.sort(key=lambda x: x["energy"])
+            surviving_wfs = [s["wavefunction"] for s in states_info]
+            surviving_energies = [s["energy"] for s in states_info]
+            
+            # Create a minimal basis just for the surviving wavefunctions in this sector
+            new_basis_set = set()
+            for wf in surviving_wfs:
+                new_basis_set.update(wf.data().keys())
+            pruned_basis = sorted(list(new_basis_set))
+            
+            # Re-express the wavefunctions in this new minimal basis
+            new_wavefunctions = []
+            det_to_idx = {det: i for i, det in enumerate(pruned_basis)}
+            original_M = self.results_by_nelec[nelec].M
+            for wf in surviving_wfs:
+                new_coeffs = np.zeros(len(pruned_basis), dtype=np.complex128)
+                for det, coeff in wf.data().items():
+                    new_coeffs[det_to_idx[det]] = coeff
+                new_wavefunctions.append(cc.Wavefunction(original_M, pruned_basis, new_coeffs))
+            
+            # Get other metadata from the original object (this is the only time we need it)
+            original_transform = self.results_by_nelec[nelec].transformation_matrix
+
+            # Create the new, clean result object for this Nelec sector
+            new_results_by_nelec[nelec] = NelecLowEnergySubspace(
+                M=original_M,
+                Nelec=nelec,
+                energies=np.array(surviving_energies),
+                wavefunctions=new_wavefunctions,
+                basis=pruned_basis,
+                transformation_matrix=original_transform
+            )
+
+        # 4. Replace the old, complete dictionary with the new, pruned one
+        self.results_by_nelec = new_results_by_nelec
+        
+        # 5. Finally, recalculate the Boltzmann weights for the pruned set
         self._recalculate_thermal_properties()
         final_count = len(self._all_states)
         print(f"Pruned {initial_count - final_count} states. {final_count} states remaining.")
@@ -273,18 +321,26 @@ class ThermalGroundState:
         return gs_nelec, gs_energy, gs_wf
 
     def save(self, filename: str):
-        """Saves all contained results and the temperature into a single HDF5 file."""
+        """Saves all contained results and model info into a single HDF5 file."""
         print(f"Saving thermal state data to '{filename}'...")
         with h5py.File(filename, 'w') as f:
             f.attrs["file_type"] = "ThermalGroundState"
             f.attrs["temperature"] = self.temperature
             
-            # The saved results_by_nelec might not reflect a pruned state.
-            # We save the original, complete dictionary for data integrity.
+            # --- Save the base model context ---
+            f.attrs["M"] = self.M
+            f.attrs["is_impurity_model"] = self.is_impurity_model
+            if self.is_impurity_model:
+                f.attrs["imp_indices"] = self.imp_indices
+            f.create_dataset("base_h0", data=self.base_h0)
+            f.create_dataset("base_U", data=self.base_U)
+
             for nelec, result in self.results_by_nelec.items():
                 nelec_group = f.create_group(f"nelec_{nelec}")
+                print(f"Saving Nelec={nelec} subspace to HDF5 group '{nelec_group.name}'...")
                 result.save(nelec_group)
         print("Save complete.")
+
 
     @classmethod
     def load(cls, filename: str):
@@ -296,12 +352,28 @@ class ThermalGroundState:
                  print(f"Warning: File '{filename}' may not be a valid ThermalGroundState file.")
             
             temp = f.attrs.get("temperature", 300.0)
+            
+            # Import Model locally to avoid circular dependency at module level
+            from .api import Model
+
+            # --- Load the base model context ---
+            M = int(f.attrs["M"])
+            is_imp = bool(f.attrs["is_impurity_model"])
+            imp_indices = list(f.attrs.get("imp_indices", []))
+            base_h0 = f["base_h0"][:]
+            base_U = f["base_U"][:]
+            
+            # Reconstruct the model object. Nelec is just a placeholder here.
+            loaded_model = Model(h0=base_h0, U=base_U, M_spatial=M, Nelec=-1)
+            loaded_model.is_impurity_model = is_imp
+            loaded_model.imp_indices = imp_indices
 
             for key in f.keys():
                 if key.startswith("nelec_"):
                     nelec = int(key.split("_")[1])
                     nelec_group = f[key]
+                    print(f"Loading Nelec={nelec} subspace from HDF5 group '{nelec_group.name}'...")
                     results[nelec] = NelecLowEnergySubspace.load(nelec_group)
         
         print("Load complete.")
-        return cls(results, temperature=temp)
+        return cls(results, base_model=loaded_model, temperature=temp)

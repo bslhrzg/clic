@@ -4,15 +4,23 @@ from . import bath_transform, clic_clib as cc # Import for Wavefunction, SlaterD
 from . import hamiltonians, basis_1p, basis_Np, ops, sci, mf, gfs, plotting
 from . import results
 from .config_models import SolverParameters, GfConfig # Use Pydantic for validated settings
+from typing import Literal, Union, List, Optional 
+
 from scipy.linalg import eigh,block_diag
 import copy
-from . import symmetries 
+from . import symmetries, io_utils
 from tqdm import tqdm    # For the progress bar
+import h5py 
 
 class Model:
     """Represents the physical system via its Hamiltonian integrals."""
     def __init__(self, h0: np.ndarray, U: np.ndarray, M_spatial: int, Nelec: int):
         self.h0 = np.ascontiguousarray(h0, dtype=np.complex128)
+
+        print("diag h0 = ")
+        for i in range(np.shape(h0)[0]):
+            print(f"{i} : {np.real(h0[i,i]):.3e}")
+
         self.U = np.ascontiguousarray(U, dtype=np.complex128)
         self.M = M_spatial
         self.Nelec = Nelec
@@ -33,7 +41,8 @@ class GroundStateSolver:
         else:
             self.settings = settings
         
-        self.result: results.NelecLowEnergySubspace | None = None # Type hint for the result
+
+        self.result: results.ThermalGroundState | None = None 
         self.transformation_matrix = None # Store the transform here
 
     def _prepare_basis(self):
@@ -69,20 +78,11 @@ class GroundStateSolver:
 
 
                 h_final_matrix[0, 0] = -self.model.u / 2
-
-                #print("Final Hamiltonian in double-chain basis:")
-                #print(h_final_matrix)
-
-                #print("Is unitary ? :")
-                #print(np.linalg.norm(h_final_matrix - C_spin.T @ h0_spin @ C_spin))
-
-                # Construct the full 2M x 2M Hamiltonian for both spins
-                # This assumes basis_1p.double_h correctly creates the block diagonal matrix.
-                h0_new = basis_1p.double_h(h_final_matrix, self.model.M)
+              
                 C = block_diag(C_spin, C_spin)
-
-                self.model.h0 = h0_new
+                self.model.h0 = C.conj().T @ self.model.h0 @ C
                 self.transformation_matrix = C 
+               
 
             # --- MULTI-ORBITAL IMPURITY CASE ---
             else: 
@@ -128,8 +128,8 @@ class GroundStateSolver:
         """A helper to run the SCI calculation with a given starting seed."""
         ci_settings = self.settings.ci_method
         max_iter = max_iter_override if max_iter_override is not None else ci_settings.max_iter
-        
-        print(f"Running SCI with max_iter={max_iter} and seed size {len(seed)}...")
+        num_roots = 1 if max_iter_override is not None else ci_settings.num_roots
+        print(f"Running SCI with max_iter={max_iter}, num_roots={num_roots} and seed size {len(seed)}...")
         
         result_obj = sci.selective_ci(
             h0=self.model.h0, 
@@ -140,6 +140,7 @@ class GroundStateSolver:
             seed=seed,  # Use the provided seed
             generator=sci.hamiltonian_generator, 
             selector=sci.cipsi_one_iter,
+            num_roots=num_roots,
             max_iter=max_iter, 
             conv_tol=ci_settings.conv_tol,
             prune_thr=ci_settings.prune_thr,
@@ -148,8 +149,32 @@ class GroundStateSolver:
         )
         return result_obj
 
-    def solve(self) -> results.NelecLowEnergySubspace:
+    def solve(self) -> results.ThermalGroundState:
         """Runs the full workflow, including the optional NO step."""
+
+        # Create a deep copy of the original model BEFORE any transformations are applied
+        original_model = copy.deepcopy(self.model)
+
+        # Edge case, Nelec = 0 
+        if self.model.Nelec == 0 :
+            vacuum_det = cc.SlaterDeterminant(self.model.M, [], [])
+            psis = [cc.Wavefunction(self.model.M, [vacuum_det], [0+0j])]
+            self.result = results.NelecLowEnergySubspace(M=self.model.M,Nelec=0,
+                energies=[0],
+                wavefunctions=psis,
+                basis=[vacuum_det],
+                transformation_matrix=None
+            )
+            # Even for this simple case, we create the full ThermalGroundState object
+            thermal_result = results.ThermalGroundState(
+                results_by_nelec={0: self.result},
+                base_model=original_model,
+                temperature=self.settings.initial_temperature
+            )
+            self.result = thermal_result
+            return self.result
+
+
         self._prepare_basis()
 
         ci_settings = self.settings.ci_method
@@ -157,7 +182,7 @@ class GroundStateSolver:
             # FCI logic doesn't use NOs, handle it separately and early.
             print("Running FCI calculation...")
             result_obj = sci.do_fci(
-                h0=self.model.h0, U=self.model.U, M=self.model.M, Nelec=self.model.Nelec, Sz=0, verbose=True)
+                h0=self.model.h0, U=self.model.U, M=self.model.M, Nelec=self.model.Nelec, num_roots=ci_settings.num_roots,Sz=0, verbose=True)
 
         elif ci_settings.type == "sci":
             # --- Determine the initial seed for the first (or only) SCI run ---
@@ -208,32 +233,32 @@ class GroundStateSolver:
                 # 6. Run the final SCI 
                 result_obj = self._run_sci(seed=final_seed)
 
-                #print("Calculating 1-RDM from approximate wavefunction...")
-                #psi_approx = result_obj.ground_state_wavefunction
-                #rdm1_spatial = self.get_one_rdm(wavefunction=psi_approx, spatial=True)
-                #print("rdm1 = ")
-                #print(rdm1_spatial)
-
-                #print("diag el")
-                #print(np.diag(rdm1_spatial))
-              
-
             else: # --- Standard SCI Workflow (use_no == 'none') ---
                 result_obj = self._run_sci(seed=initial_seed)
 
         # Finalize and store results
         result_obj.transformation_matrix = self.transformation_matrix
-        self.result = result_obj
         
-        print(f"\nCalculation finished. Ground state energy = {self.result.ground_state_energy:.12f}")
+        print(f"\nCalculation finished. Ground state energy = {result_obj.ground_state_energy:.12f}")
+
+        # Instantiate the final results object with the computed subspace and original model
+        final_thermal_state = results.ThermalGroundState(
+            results_by_nelec={result_obj.Nelec: result_obj},
+            base_model=original_model, # Pass the whole original model
+            temperature=self.settings.initial_temperature
+        )
+
+        self.result = final_thermal_state
         return self.result
+
 
     def get_one_rdm(self, wavefunction: cc.Wavefunction | None = None, spatial: bool = False) -> np.ndarray:
         """Computes the 1-RDM. Can compute for a provided wavefunction."""
         if wavefunction is None:
             if not self.result:
                 raise RuntimeError("Solver has not been run and no wavefunction was provided.")
-            wavefunction = self.result.ground_state_wavefunction
+            # We need the ground state wavefunction from the correct Nelec sector
+            _, _, wavefunction = self.result.find_absolute_ground_state()
 
         rdm = ops.one_rdm(wavefunction, self.model.M)
         
@@ -241,22 +266,36 @@ class GroundStateSolver:
             return rdm[:self.model.M, :self.model.M]
         return rdm
     
+    def compute_stats(self, wavefunction: cc.Wavefunction):
+        if self.model.is_impurity_model:
+            imp_indices_spinfull = self.model.imp_indices + [iimp + self.model.M for iimp in self.model.imp_indices]
+            gamma = ops.one_rdm(wavefunction,self.model.M,block=imp_indices_spinfull)
+            occs = np.diag(gamma)
+            print("* Occupations -------------")
+            print(f"total: {np.sum(np.real(occs)):.3e}")
+            for (i,iimp) in enumerate(imp_indices_spinfull):
+                print(f"{i:>6} : {np.real(occs[i]):.3e}")
+        else:
+            gamma = ops.one_rdm(wavefunction,self.model.M)
+            occs = np.diag(gamma)
+            print(f"Total occupation: {np.sum(occs)}")
+            for i in range(len(occs)):
+                print(f"occ[{i}] = {np.real(occs[i]):.3e}")
 
 
     def save_result(self, filename: str):
+        """Saves the ThermalGroundState result to a single HDF5 file."""
         if not self.result:
             raise RuntimeError("Solver has not been run yet.")
         self.result.save(filename)
-
-
-
+        
 class FockSpaceSolver:
     """
     API endpoint for finding the low-energy subspace across a range of particle
     numbers (Nelec). It orchestrates multiple fixed-Nelec calculations and
     combines them into a ThermalGroundState object for thermodynamic analysis.
     """
-    def __init__(self, model: Model, settings: dict | SolverParameters, nelec_range: tuple[int, int]):
+    def __init__(self, model: Model, settings: dict | SolverParameters, nelec_range: Union[tuple[int, int], Literal["auto"]]):
         self.base_model = model
         
         if isinstance(settings, dict):
@@ -264,39 +303,137 @@ class FockSpaceSolver:
         else:
             self.settings = settings
             
-        self.nelec_range = range(nelec_range[0], nelec_range[1] + 1)
+        self.nelec_setting = nelec_range
         self.result: results.ThermalGroundState | None = None
+
+    def _solve_single_nelec(self, nelec: int, cache: dict) -> results.ThermalGroundState:
+        """
+        Helper to run a calculation for a single Nelec, using a cache.
+        Returns a ThermalGroundState object, which contains the NelecLowEnergySubspace.
+        """
+        if nelec in cache:
+            return cache[nelec]
+
+        print(f"\n--- Solving for Nelec = {nelec} ---")
+        current_model = copy.deepcopy(self.base_model)
+        current_model.Nelec = nelec
+        
+        solver = GroundStateSolver(current_model, self.settings)
+        # solver.solve() returns a ThermalGroundState object
+        nelec_result_thermal = solver.solve() 
+        
+        cache[nelec] = nelec_result_thermal
+        return nelec_result_thermal
+
+    def _find_optimal_nelec(self) -> dict[int, results.NelecLowEnergySubspace]:
+        """
+        Iteratively searches for the Nelec that minimizes the ground state energy.
+        Returns a dictionary of NelecLowEnergySubspace results centered around the minimum.
+        """
+        if not self.base_model.is_impurity_model:
+            raise ValueError("Automatic Nelec search is only supported for impurity models.")
+
+        nelec_start = self.base_model.Nelec
+        print(f"\n--- Starting Automatic Search for Optimal Nelec (start = {nelec_start}) ---")
+
+        energies = {}
+        results_cache = {} # Caches ThermalGroundState objects
+        subspace_cache = {} # Caches NelecLowEnergySubspace objects
+
+        # --- Initial Point ---
+        print(f"Calculating for starting Nelec = {nelec_start}...")
+        result_thermal = self._solve_single_nelec(nelec_start, results_cache)
+        _, e0, _ = result_thermal.find_absolute_ground_state()
+        energies[nelec_start] = e0
+        subspace_cache[nelec_start] = result_thermal.results_by_nelec[nelec_start]
+        
+        # --- Search Upwards ---
+        print("\n--- Searching for minimum in increasing Nelec direction ---")
+        nelec_curr = nelec_start
+        while True:
+            nelec_next = nelec_curr + 1
+            if nelec_next > 2 * self.base_model.M:
+                print("Reached maximum possible electrons. Stopping upward search.")
+                break
+
+            e_curr = energies[nelec_curr]
+            result_thermal_next = self._solve_single_nelec(nelec_next, results_cache)
+            _, e_next, _ = result_thermal_next.find_absolute_ground_state()
+            energies[nelec_next] = e_next
+            subspace_cache[nelec_next] = result_thermal_next.results_by_nelec[nelec_next]
+            
+            print(f"E({nelec_curr}) = {e_curr:.6f}, E({nelec_next}) = {e_next:.6f}")
+            if e_next >= e_curr:
+                print("Energy is no longer decreasing. Stopping upward search.")
+                break
+            nelec_curr = nelec_next
+
+        # --- Search Downwards ---
+        print("\n--- Searching for minimum in decreasing Nelec direction ---")
+        nelec_curr = nelec_start
+        while True:
+            nelec_next = nelec_curr - 1
+            if nelec_next < 0:
+                print("Reached zero electrons. Stopping downward search.")
+                break
+
+            e_curr = energies[nelec_curr]
+            result_thermal_next = self._solve_single_nelec(nelec_next, results_cache)
+            _, e_next, _ = result_thermal_next.find_absolute_ground_state()
+            energies[nelec_next] = e_next
+            subspace_cache[nelec_next] = result_thermal_next.results_by_nelec[nelec_next]
+            
+            print(f"E({nelec_curr}) = {e_curr:.6f}, E({nelec_next}) = {e_next:.6f}")
+            if e_next >= e_curr:
+                print("Energy is no longer decreasing. Stopping downward search.")
+                break
+            nelec_curr = nelec_next
+            
+        # --- Find minimum and collect results ---
+        nelec_min = min(energies, key=energies.get)
+        
+        print(f"\n--- Minimum energy found at Nelec = {nelec_min} (E = {energies[nelec_min]:.8f}) ---")
+        print("Collecting results for thermal state around the minimum.")
+
+        final_subspaces = {}
+        for nelec_final in [nelec_min - 1, nelec_min, nelec_min + 1]:
+            if 0 <= nelec_final <= 2 * self.base_model.M:
+                if nelec_final in subspace_cache:
+                    final_subspaces[nelec_final] = subspace_cache[nelec_final]
+                else:
+                    # This case should be rare but is included for robustness
+                    result_thermal = self._solve_single_nelec(nelec_final, results_cache)
+                    final_subspaces[nelec_final] = result_thermal.results_by_nelec[nelec_final]
+        
+        return final_subspaces
+
 
     def solve(self, initial_temperature: float = 300.0) -> results.ThermalGroundState:
         """
-        Runs the full workflow for each Nelec in the specified range and
-        returns a combined ThermalGroundState result object.
-
-        Args:
-            initial_temperature (float): The initial temperature in Kelvin to
-                                         use for the resulting ThermalGroundState object.
+        Runs the full workflow for each Nelec and returns a combined result.
+        If nelec_setting is 'auto', it finds the optimal Nelec first.
         """
-        all_results = {}
+        all_subspaces = {}
+
+        if self.nelec_setting == "auto":
+            all_subspaces = self._find_optimal_nelec()
+        else:
+            # Original behavior for a fixed range
+            nelec_range = range(self.nelec_setting[0], self.nelec_setting[1] + 1)
+            print(f"\n--- Starting Fock Space Calculation for Nelec in {list(nelec_range)} ---")
+            results_cache = {} # Caches ThermalGroundState objects
+            for nelec in nelec_range:
+                # _solve_single_nelec returns a full ThermalGroundState object
+                result_thermal = self._solve_single_nelec(nelec, results_cache)
+                # We only need the NelecLowEnergySubspace from it
+                all_subspaces[nelec] = result_thermal.results_by_nelec[nelec]
         
-        print(f"\n--- Starting Fock Space Calculation for Nelec in {list(self.nelec_range)} ---")
-        
-        for nelec in self.nelec_range:
-            print(f"\n--- Solving for Nelec = {nelec} ---")
-            
-            # Use a deepcopy to ensure basis preparations or other mutations
-            # do not leak between calculations for different Nelec.
-            current_model = copy.deepcopy(self.base_model)
-            current_model.Nelec = nelec
-            
-            # Use the existing solver as the engine for this specific Nelec
-            solver = GroundStateSolver(current_model, self.settings)
-            
-            # Run the calculation and store the result
-            nelec_result = solver.solve()
-            all_results[nelec] = nelec_result
-        
-        # Instantiate the final results object with all the computed subspaces
-        self.result = results.ThermalGroundState(all_results, temperature=initial_temperature)
+        # Instantiate the final results object with all computed subspaces and the base model
+        self.result = results.ThermalGroundState(
+            results_by_nelec=all_subspaces,
+            base_model=self.base_model, # Pass the entire base model
+            temperature=initial_temperature
+        )
         
         # Report the absolute ground state found
         gs_nelec, gs_energy, _ = self.result.find_absolute_ground_state()
@@ -305,108 +442,18 @@ class FockSpaceSolver:
         
         return self.result
 
+
     def save_result(self, filename: str):
         if not self.result:
             raise RuntimeError("Solver has not been run yet.")
         self.result.save(filename)
 
+
 # ----------------------------------------------------------------------------------
-
-class GreenFunctionCalculator_:
-    """The main API endpoint for calculating Green's functions."""
-    def __init__(self, settings: dict | GfConfig):
-        # Validate settings if a raw dict is passed
-        if isinstance(settings, dict):
-            self.settings = GfConfig(**settings)
-        else:
-            self.settings = settings
-        
-        # Attributes to be loaded from the ground state file
-        self.M = None
-        self.psi0_wf = None
-        self.e0 = None
-        self.h0 = None
-        self.U = None
-
-    def load_ground_state(self):
-        """Loads data from the ground state .npz file."""
-        filepath = self.settings.ground_state_file
-        print(f"Loading ground state from '{filepath}'...")
-        try:
-            data = np.load(filepath, allow_pickle=True)
-            self.M = int(data['M_spatial'])
-            self.e0 = float(data['energy'])
-            self.h0 = data['final_h0']
-            self.U = data['final_U']
-            
-            # Reconstruct the wavefunction
-            coeffs = data['wf_coeffs']
-            alpha_list = data['basis_alpha_list']
-            beta_list = data['basis_beta_list']
-            basis = [cc.SlaterDeterminant(self.M, a, b) for a, b in zip(alpha_list, beta_list)]
-            self.psi0_wf = cc.Wavefunction(self.M, basis, coeffs)
-            print("Ground state loaded successfully.")
-
-
-        except FileNotFoundError:
-            raise RuntimeError(f"Ground state file not found at: {filepath}")
-        except KeyError as e:
-            raise RuntimeError(f"Missing key {e} in ground state file. The file may be invalid or incomplete.")
-
-    def run(self) -> tuple[np.ndarray, np.ndarray]:
-        """Runs the Green's function calculation and returns the results."""
-        self.load_ground_state()
-
-        p_gf = self.settings.green_function
-        p_lanczos = self.settings.lanczos
-        
-        ws = np.linspace(p_gf.omega_mesh[0], p_gf.omega_mesh[1], int(p_gf.omega_mesh[2]))
-        
-        if p_gf.block_indices == "impurity":
-            impurity_indices = [0, self.M]
-        else:
-            impurity_indices = p_gf.block_indices
-
-        # Get the one- and two-body terms from the loaded Hamiltonian
-        one_bh = ops.get_one_body_terms(self.h0, self.M)
-        two_bh = ops.get_two_body_terms(self.U, self.M)
-
-        print("\nStarting Green's function calculation...")
-        G_block, meta = gfs.green_function_block_lanczos_fixed_basis(
-            M=self.M, psi0_wf=self.psi0_wf, e0=self.e0, ws=ws, eta=p_gf.eta,
-            impurity_indices=impurity_indices, NappH=p_lanczos.NappH,
-            h0_clean=self.h0, U_clean=self.U,
-            one_body_terms=one_bh, two_body_terms=two_bh,
-            coeff_thresh=p_lanczos.coeff_thresh, L=p_lanczos.L
-        )
-        print("Calculation finished. Details:", meta)
-
-        # Compute spectral function A(w) = -1/pi * Im[G(w)]
-        A_w = -(1 / np.pi) * np.imag(G_block)
-        
-        # Save and plot if requested
-        if self.settings.output.gf_data_file:
-            np.savez_compressed(
-                self.settings.output.gf_data_file,
-                G_w=G_block, A_w=A_w, omega=ws
-            )
-            print(f"GF data saved to '{self.settings.output.gf_data_file}'")
-
-        if self.settings.output.plot_file:
-            plotting.plot_spectral_function(
-                ws, A_w, impurity_indices,
-                "Impurity Spectral Function",
-                self.settings.output.plot_file
-            )
-        
-        return ws, G_block, A_w
-    
-
 
 class GreenFunctionCalculator:
     """
-    The main API endpoint for calculating Green's functions using a symmetry-aware,
-    time-propagation-based Lanczos method.
+    Calculates the thermally-averaged Green's function from a saved ThermalGroundState.
     """
     def __init__(self, settings: dict | GfConfig):
         if isinstance(settings, dict):
@@ -414,154 +461,100 @@ class GreenFunctionCalculator:
         else:
             self.settings = settings
         
-        # Attributes to be loaded from the ground state file
-        self.M: int | None = None
-        self.psi0_wf: cc.Wavefunction | None = None
-        self.e0: float | None = None
-        self.h0: np.ndarray | None = None
-        self.U: np.ndarray | None = None
-        self.imp_indices: list[int] | None = None
+        self.thermal_state: results.ThermalGroundState | None = None
 
-    def load_ground_state(self):
-        """Loads data from the ground state .npz file."""
+    def load_thermal_state(self):
+        """Loads the ThermalGroundState from HDF5 and prepares it for calculation."""
         filepath = self.settings.ground_state_file
-        print(f"Loading ground state from '{filepath}'...")
+        print(f"Loading thermal state from HDF5 file '{filepath}'...")
         try:
-            data = np.load(filepath, allow_pickle=True)
-            # Use .item() to extract scalar values safely
-            self.M = int(data['M_spatial'].item())
-            self.e0 = float(data['energy'].item())
-            self.h0 = data['final_h0']
-            self.U = data['final_U']
-            
-            # Check for impurity indices, default to empty list if not found
-            self.imp_indices = list(data.get('imp_indices', []))
-
-            # Reconstruct the wavefunction
-            coeffs = data['wf_coeffs']
-            basis = [cc.SlaterDeterminant(self.M, a, b) for a, b in zip(data['basis_alpha_list'], data['basis_beta_list'])]
-            self.psi0_wf = cc.Wavefunction(self.M, basis, coeffs)
-            print("Ground state loaded successfully.")
-        except FileNotFoundError:
-            raise RuntimeError(f"Ground state file not found at: {filepath}")
-        except KeyError as e:
-            raise RuntimeError(f"Missing key {e} in ground state file. Ensure it was saved correctly.")
-
-    def _determine_work_list(self, target_indices: list[int], sym_dict: dict) -> list[tuple[int, int]]:
-        """Determines the minimal set of (i, j) pairs to compute based on symmetry."""
+            self.thermal_state = results.ThermalGroundState.load(filepath)
+        except (FileNotFoundError, KeyError) as e:
+            raise RuntimeError(f"Failed to load ground state file: {e}")
         
-        # 1. Create a map from any orbital to its unique representative
-        orbital_to_rep = {}
-        processed_blocks = set()
-        for group in sym_dict['identical_groups']:
-            leader_block_idx = group[0]
-            leader_block_indices = sym_dict['blocks'][leader_block_idx]
-            
-            for member_block_idx in group:
-                member_block_indices = sym_dict['blocks'][member_block_idx]
-                for i in range(len(leader_block_indices)):
-                    # Map orbital in member block to corresponding orbital in leader block
-                    orbital_to_rep[member_block_indices[i]] = leader_block_indices[i]
-                processed_blocks.add(member_block_idx)
-        
-        # 2. Build the set of unique representative pairs needed
-        work_set = set()
-        for i in target_indices:
-            for j in target_indices:
-                rep_i = orbital_to_rep[i]
-                rep_j = orbital_to_rep[j]
-                # Store in a canonical order to handle G_ij = G_ji
-                work_set.add(tuple(sorted((rep_i, rep_j))))
-
-        print(f"Symmetry analysis complete. Need to compute {len(work_set)} unique G_ij elements.")
-        return sorted(list(work_set))
+        print(f"Thermal state loaded. Initial temperature: {self.thermal_state.temperature:.1f} K.")
+        print(f"Prepared thermal state with {len(self.thermal_state._all_states)} states for GF calculation.")
 
     def run(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Runs the Green's function calculation and returns the results."""
-        self.load_ground_state()
+        """
+        Runs the thermally-averaged Green's function calculation.
+        """
+        self.load_thermal_state()
 
         p_gf = self.settings.green_function
         p_lanczos = self.settings.lanczos
-        
         ws = np.linspace(p_gf.omega_mesh[0], p_gf.omega_mesh[1], int(p_gf.omega_mesh[2]))
-        
-        # 1. Determine the target indices for the GF block
+
         if p_gf.block_indices == "impurity":
-            if not self.imp_indices:
-                raise ValueError("GF block set to 'impurity' but no impurity indices found in ground state file.")
-            # Full spin-orbital impurity indices
-            target_indices = sorted(self.imp_indices + [i + self.M for i in self.imp_indices])
-        elif p_gf.block_indices == "full":
-            target_indices = list(range(2 * self.M))
+            if not self.thermal_state.is_impurity_model:
+                raise ValueError("GF block set to 'impurity' but loaded state is not an impurity model.")
+            target_indices = sorted(self.thermal_state.imp_indices + [i + self.thermal_state.M for i in self.thermal_state.imp_indices])
         else:
             target_indices = sorted(list(set(p_gf.block_indices)))
 
         print(f"\nTargeting Green's function block for indices: {target_indices}")
         
-        # 2. Analyze symmetries and find the minimal work list
-        sym_dict = symmetries.analyze_symmetries(self.h0)
-        work_list = self._determine_work_list(target_indices, sym_dict)
-        
-        # Precompute Hamiltonian terms
-        one_bh = ops.get_one_body_terms(self.h0, self.M)
-        two_bh = ops.get_two_body_terms(self.U, self.M)
-
-        # 3. Compute the unique G_ij elements with a progress bar
-        computed_gfs = {}
-        for i, j in tqdm(work_list, desc="Calculating G_ij(ω)"):
-            g_ij = gfs.green_function_from_time_propagation(
-                i, j, self.M, self.psi0_wf, self.e0, ws, p_gf.eta,
-                target_indices, p_lanczos.NappH, self.h0, self.U,
-                one_bh, two_bh, p_lanczos.coeff_thresh, p_lanczos.L
-            )
-            computed_gfs[(i, j)] = g_ij
-            
-        # 4. Reconstruct the full target block using symmetry
-        print("\nReconstructing full GF block from unique elements...")
         num_target = len(target_indices)
-        idx_map = {orb_idx: k for k, orb_idx in enumerate(target_indices)}
-        G_block = np.zeros((len(ws), num_target, num_target), dtype=np.complex128)
+        # We will calculate the diagonal elements for now, as in your previous code.
+        # This can be extended to the full block later if needed.
+        G_total_diag = np.zeros((len(ws), num_target), dtype=np.complex128)
         
-        # Build the same orbital-to-representative map as before
-        orbital_to_rep = {i: i for i in range(2 * self.M)}
-        for group in sym_dict['identical_groups']:
-            leader_block_indices = sym_dict['blocks'][group[0]]
-            for member_block_idx in group[1:]:
-                member_block_indices = sym_dict['blocks'][member_block_idx]
-                for i in range(len(leader_block_indices)):
-                    orbital_to_rep[member_block_indices[i]] = leader_block_indices[i]
+        # Cache for transformed Hamiltonians to avoid redundant calculations
+        hamiltonian_cache = {}
+        base_h0 = self.thermal_state.base_h0
+        base_U = self.thermal_state.base_U
+        M = self.thermal_state.M
 
-        for k in range(num_target):
-            for l in range(k, num_target):
-                i, j = target_indices[k], target_indices[l]
-                rep_i, rep_j = orbital_to_rep[i], orbital_to_rep[j]
+        # Main loop over all states in the thermal ensemble
+        iterator = zip(self.thermal_state._all_states, self.thermal_state.boltzmann_weights)
+        for (state_info, weight) in tqdm(iterator, total=len(self.thermal_state._all_states), desc="Processing thermal states"):
+            e_n, nelec_n, psi_n = state_info
+
+            # Get the correct transformed Hamiltonian for this state's Nelec sector
+            if nelec_n not in hamiltonian_cache:
+                subspace = self.thermal_state.results_by_nelec[nelec_n]
+                C = subspace.transformation_matrix
+                if C is None:
+                    h0_n, U_n = base_h0, base_U
+                else:
+                    h0_n, U_n = basis_1p.basis_change_h0_U(base_h0, base_U, C)
                 
-                # Look up the computed value using the canonical key
-                key = tuple(sorted((rep_i, rep_j)))
-                G_block[:, k, l] = computed_gfs[key]
-                
-                # Enforce Hermiticity
-                if k != l:
-                    G_block[:, l, k] = np.conj(G_block[:, k, l])
+                one_bh_n = ops.get_one_body_terms(h0_n, M)
+                two_bh_n = ops.get_two_body_terms(U_n, M)
+                hamiltonian_cache[nelec_n] = (h0_n, U_n, one_bh_n, two_bh_n)
+            
+            h0_n, U_n, one_bh_n, two_bh_n = hamiltonian_cache[nelec_n]
+            
+            # Calculate the GF contribution from this single state
+            for i, orb_idx in enumerate(target_indices):
+                g_ii_n = gfs.green_function_from_time_propagation(
+                    orb_idx, orb_idx, M, psi_n, e_n, ws, p_gf.eta,
+                    target_indices, p_lanczos.NappH, h0_n, U_n,
+                    one_bh_n, two_bh_n, p_lanczos.coeff_thresh, p_lanczos.L
+                )
+                G_total_diag[:, i] += weight * g_ii_n
 
-        print("Calculation finished.")
-
-        # 5. Compute spectral function, save, and plot
-        A_w = -(1 / np.pi) * np.imag(G_block)
+        print("\nThermally-averaged calculation finished.")
+        A_w_total = -(1 / np.pi) * np.imag(G_total_diag)
         
-        if self.settings.output.gf_data_file:
-            np.savez_compressed(
-                self.settings.output.gf_data_file,
-                G_w=G_block, A_w=A_w, omega=ws, indices=np.array(target_indices)
+        # Save and plot the final, thermally-averaged results
+        #if self.settings.output.gf_diag_txt_file:
+        dodump=True 
+        if dodump:
+            io_utils.dump(
+                A_w_total,
+                ws,
+                'A_w_thermal',
             )
-            print(f"GF data saved to '{self.settings.output.gf_data_file}'")
 
-        if self.settings.output.plot_file:
-            # The indices for plotting are now just range(num_target) as we are plotting the sub-block
+        doplot=True
+        #if self.settings.output.plot_file:
+        if doplot:
             plotting.plot_spectral_function(
-                ws, A_w, list(range(num_target)),
-                "Spectral Function",
+                ws, A_w_total, list(range(num_target)),
+                f"Thermally-Averaged Spectral Function (T={self.thermal_state.temperature}K)",
                 self.settings.output.plot_file
             )
         
-        return ws, G_block, A_w
+        return ws, G_total_diag, A_w_total
+    

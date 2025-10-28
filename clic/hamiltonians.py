@@ -154,13 +154,13 @@ def get_integrals_from_file(filepath: str, spin_structure: str): # <-- Add new a
     
     return h0, U, M
 
-def calculate_bath_filling(h0: np.ndarray, M_imp: int, zero_threshold: float = 1e-3) -> int:
+def calculate_bath_filling(h0: np.ndarray, M_imp: int, zero_threshold: float = 1e-2) -> int:
     """
     Estimates the number of electrons in the non-interacting bath orbitals.
 
-    This function assumes a spin-orbital basis where the first 2*M_imp orbitals
-    belong to the impurity, and the rest belong to the bath. It counts bath
-    orbitals with single-particle energy below a threshold as fully occupied.
+    This function assumes a spin-orbital basis where the first M_imp 
+    and the M -> M+M_imp orbitals belong to the impurity, and the rest belong to the bath. 
+    It counts bath orbitals with single-particle energy below a threshold as fully occupied.
 
     Args:
         h0 (np.ndarray): The one-body Hamiltonian in the spin-orbital basis.
@@ -171,18 +171,24 @@ def calculate_bath_filling(h0: np.ndarray, M_imp: int, zero_threshold: float = 1
     Returns:
         int: The estimated number of electrons in the bath.
     """
-    num_spin_orbitals = h0.shape[0]
-    num_impurity_spin_orbitals = 2 * M_imp
+    K = h0.shape[0]
+    M = K // 2
 
-    if num_impurity_spin_orbitals >= num_spin_orbitals:
+
+    num_impurity_spin_orbitals = 2 * M_imp
+    num_bath_spatial_orbitals = M - M_imp
+
+    if num_impurity_spin_orbitals >= K:
+        print("no bath orbitals found")
         return 0 # No bath orbitals
 
     bath_filling = 0.0
-    # The bath spin-orbitals start at this index
-    bath_start_index = num_impurity_spin_orbitals
+
+    bath_indexes_a = [M_imp + i for i in range(num_bath_spatial_orbitals)]
+    bath_indexes = bath_indexes_a + [i+M for i in bath_indexes_a]
     
     # Extract the diagonal energies of the bath orbitals
-    bath_energies = np.real(np.diag(h0)[bath_start_index:])
+    bath_energies = np.real(np.diag(h0)[bath_indexes])
     
     for energy in bath_energies:
         if energy < -zero_threshold:

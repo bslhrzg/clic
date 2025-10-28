@@ -482,16 +482,27 @@ void Wavefunction::add_term(const SlaterDeterminant& det, Coeff c, double tol) {
     if (std::abs(v) < tol) data_.erase(det);
 }
 
-Wavefunction::Wavefunction(std::size_t n_spatial, const std::vector<SlaterDeterminant>& basis, const std::vector<Coeff>& coeffs)
+Wavefunction::Wavefunction(std::size_t n_spatial, 
+    const std::vector<SlaterDeterminant>& basis, 
+    const std::vector<Coeff>& coeffs,
+    bool keep_zeros) // New parameter
     : n_spatial_(n_spatial)
 {
     if (basis.size() != coeffs.size()) {
         throw std::invalid_argument("Basis and coefficients vectors must have the same size.");
     }
     data_.reserve(basis.size());
-    for (size_t i = 0; i < basis.size(); ++i) {
-        // Use add_term to handle potential pruning of zero coefficients
-        add_term(basis[i], coeffs[i]);
+
+    if (keep_zeros) {
+        // Direct insertion: Keep all terms, including zeros.
+        for (size_t i = 0; i < basis.size(); ++i) {
+            data_[basis[i]] = coeffs[i];
+        }
+    } else {
+        // Default behavior: Prune zero-coefficient terms on creation.
+        for (size_t i = 0; i < basis.size(); ++i) {
+            add_term(basis[i], coeffs[i], 0);
+        }
     }
 }
 
@@ -915,20 +926,30 @@ inline std::size_t hash_mix_u64(std::size_t seed, ci::u64 v) noexcept {
 }
 }
 
+std::size_t std::hash<ci::BitsetVec>::operator()(const ci::BitsetVec& b) const noexcept {
+    // Start with a hash of the size, then mix in the words.
+    std::size_t seed = std::hash<std::size_t>{}(b.size());
+    for (auto w : b.words()) {
+        seed = hash_mix_u64(seed, w);
+    }
+    return seed;
+}
+
 std::size_t std::hash<ci::Determinant>::operator()(const ci::Determinant& d) const noexcept {
     std::size_t seed = d.num_orbitals();
     for (auto w : d.bits().words()) seed = hash_mix_u64(seed, w);
     return seed;
 }
 
+
 std::size_t std::hash<ci::SpinDeterminant>::operator()(const ci::SpinDeterminant& sd) const noexcept {
-    std::size_t seed = sd.num_orbitals();
-    for (auto w : sd.raw().words()) seed = hash_mix_u64(seed, w);
-    return seed;
+    // This now correctly depends on ALL data within the bitset.
+    return std::hash<ci::BitsetVec>{}(sd.raw());
 }
 
 std::size_t std::hash<ci::SlaterDeterminant>::operator()(const ci::SlaterDeterminant& s) const noexcept {
-    std::size_t h  = std::hash<ci::SpinDeterminant>{}(s.alpha());
-    std::size_t hb = std::hash<ci::SpinDeterminant>{}(s.beta());
-    return h ^ (hb + 0x9e3779b97f4a7c15ULL + (h<<6) + (h>>2));
+    std::size_t h_alpha = std::hash<ci::SpinDeterminant>{}(s.alpha());
+    std::size_t h_beta  = std::hash<ci::SpinDeterminant>{}(s.beta());
+    // Combine them. The way you do it is a standard technique.
+    return h_alpha ^ (h_beta + 0x9e3779b97f4a7c15ULL + (h_alpha << 6) + (h_alpha >> 2));
 }

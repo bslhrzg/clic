@@ -10,6 +10,7 @@ from clic.config_models import ModelConfig, SolverConfig
 from clic.api import Model, GroundStateSolver
 from clic import hamiltonians # Need this for building integrals from file
 from clic.scripts.helpers import create_model_from_config 
+from clic.postprocessing import StateAnalyzer 
 
 
 def main():
@@ -35,6 +36,10 @@ def main():
     # --- 3. Run the Solver using the API ---
     solver = GroundStateSolver(model, solver_config.solver)
     result = solver.solve()
+
+
+    analyzer = StateAnalyzer(result, model)
+    analyzer.print_analysis()
 
     # --- 4. Save the Output ---
     solver.save_result(solver_config.output.ground_state_file)

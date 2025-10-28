@@ -380,7 +380,7 @@ def _transform_one_block(h0_block, U_block, Ne_block, imp_indices_local):
 
 def get_natural_orbital_transform(h_spin, u, Nelec):
     """
-    Performs a simple Natural Orbital transformation, equivalent to the Julia code.
+    Performs a simple Natural Orbital transformation
     This corresponds to steps (i) and (ii) of the more complex procedure.
     """
     M = h_spin.shape[0]
@@ -488,42 +488,3 @@ def get_multi_orbital_natural_orbital_transform(
     print("--- Transformation complete. ---")
     
     return h_final, C_total
-    """
-    Worker function: performs MF-SCF and then diagonalizes the bath density matrix.
-    """
-    N_block = h0_block.shape[0]
-
-    # If no bath orbitals in this block, no transformation is needed.
-    if len(imp_indices_local) == N_block:
-        return h0_block, np.identity(N_block)
-
-    # --- Step i: Mean-Field SCF on the block ---
-    # Create a temporary spin-doubled system for the mfscf function
-    h0_doubled = block_diag(h0_block, h0_block)
-    U_doubled = np.zeros((2*N_block, 2*N_block, 2*N_block, 2*N_block), dtype=U_block.dtype)
-    U_doubled[np.ix_(*[np.arange(N_block)]*4)] = U_block
-    U_doubled[np.ix_(*[np.arange(N_block, 2*N_block)]*4)] = U_block
-
-    # Run SCF to get the mean-field hamiltonian and density matrix for the UP-spin block
-    _, _, _, rho_full = mfscf(h0_doubled, U_doubled, 2 * Ne_block, maxiter=50)
-    rho_up = rho_full[:N_block, :N_block]
-    
-    # --- Step ii: Natural Orbitals for the Bath ---
-    bath_indices_local = [i for i in range(N_block) if i not in imp_indices_local]
-    
-    # Extract the bath-bath submatrix of the density matrix
-    rho_bath = rho_up[np.ix_(bath_indices_local, bath_indices_local)]
-    
-    # Diagonalize it to get the eigenvectors 'W', which define the new bath basis
-    _, W = eigh(rho_bath)
-    
-    # The transformation C_block leaves the impurity orbitals (in their local indices)
-    # alone and transforms only the bath orbitals.
-    C_block = np.identity(N_block, dtype=h0_block.dtype)
-    C_block[np.ix_(bath_indices_local, bath_indices_local)] = W
-    
-    # The final Hamiltonian for this block is the original h0_block transformed
-    # into this new Natural Orbital basis.
-    h_final_block = C_block.conj().T @ h0_block @ C_block
-    
-    return h_final_block, C_block

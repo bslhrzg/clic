@@ -1,0 +1,215 @@
+# clic/scripts/cli.py
+import sys
+import tomli
+import argparse
+import numpy as np
+from pydantic import ValidationError
+
+# Import API and Pydantic models using absolute package paths
+from clic.config_models import ModelConfig, SolverConfig
+from clic.api import Model, GroundStateSolver
+from clic import hamiltonians # Need this for building integrals from file
+from clic.scripts.helpers import create_model_from_config 
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Run a ground state calculation using CLIC.")
+    parser.add_argument("solver_config_file", type=str, help="Path to the solver TOML config.")
+    args = parser.parse_args()
+
+    try:
+        # --- 1. Load and Validate Config Files ---
+        with open(args.solver_config_file, "rb") as f:
+            solver_config = SolverConfig(**tomli.load(f))
+        
+        with open(solver_config.model_file, "rb") as f:
+            model_config = ModelConfig(**tomli.load(f))
+
+    except (FileNotFoundError, ValidationError) as e:
+        print(f"ERROR: Failed to load or validate configuration.\n{e}", file=sys.stderr)
+        sys.exit(1)
+
+    # --- 2. Create the Model Object (from config) ---
+    model = create_model_from_config(model_config)
+    
+    # --- 3. Run the Solver using the API ---
+    solver = GroundStateSolver(model, solver_config.solver)
+    result = solver.solve()
+
+    # --- 4. Save the Output ---
+    solver.save_result(solver_config.output.ground_state_file)
+    print(f"Output saved to '{solver_config.output.ground_state_file}'")
+
+if __name__ == "__main__":
+    main()import sys
+import tomli
+import argparse
+from pydantic import ValidationError
+
+# Import API and Pydantic models
+from clic.config_models import GfConfig
+from clic.api import GreenFunctionCalculator
+
+def main():
+    parser = argparse.ArgumentParser(description="Run a Green's function calculation using CLIC.")
+    parser.add_argument("gf_config_file", type=str, help="Path to the Green's function TOML config.")
+    args = parser.parse_args()
+
+    try:
+        # Load and validate the configuration file
+        with open(args.gf_config_file, "rb") as f:
+            gf_config = GfConfig(**tomli.load(f))
+
+    except (FileNotFoundError, ValidationError) as e:
+        print(f"ERROR: Failed to load or validate configuration.\n{e}", file=sys.stderr)
+        sys.exit(1)
+    
+    # Run the calculator using the API
+    try:
+        calculator = GreenFunctionCalculator(gf_config)
+        calculator.run()
+    except Exception as e:
+        print(f"An error occurred during the Green's function calculation: {e}", file=sys.stderr)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()# clic/scripts/helpers.py
+import sys
+import numpy as np
+from clic.config_models import ModelConfig
+from clic.api import Model
+from clic import hamiltonians
+
+def create_model_from_config(model_config: ModelConfig) -> Model:
+    """
+    Builds the API Model object from a validated configuration, handling
+    automatic Nelec calculation for impurity models.
+    """
+    p = model_config.parameters
+    h0, U = None, None
+    M = 0
+
+    if p.type in ['anderson_impurity_model', 'impurity_from_file']:
+        if p.type == 'anderson_impurity_model':
+            # First, build the integrals so we have h0
+            u = p.interaction_u
+            mu = u / 2.0 if p.mu == "u/2" else p.mu
+            e_bath = np.linspace(p.bath.min_e, p.bath.max_e, p.bath.nb)
+            V_bath = np.full(p.bath.nb, p.bath.hybridization_V)
+            
+            M = p.M_spatial
+            h0, U = hamiltonians.get_impurity_integrals(M, u, e_bath, V_bath, mu)
+
+            # Now, determine the total number of electrons
+            if p.Nelec is None:
+                # Automatic calculation is needed
+                nelec_bath = hamiltonians.calculate_bath_filling(h0, p.M_imp)
+                nelec_total = p.Nelec_imp + nelec_bath
+                print(f"INFO: 'Nelec' not specified. Automatically determined bath filling: {nelec_bath}.")
+                print(f"      Total Nelec set to {p.Nelec_imp} (imp) + {nelec_bath} (bath) = {nelec_total}.")
+            else:
+                # User provided a value, so we use it
+                nelec_total = p.Nelec
+                print(f"INFO: Using user-provided total Nelec = {nelec_total}.")
+
+        
+        elif p.type == 'impurity_from_file':
+            print(f"Loading impurity model integrals from file: {p.filepath}")
+            # First, load the integrals so we have h0 and M
+            h0, U, M = hamiltonians.get_integrals_from_file(p.filepath, p.spin_structure)
+            print(f"M = {M}")
+            #print("diag h0 = ")
+            #print(np.diag(h0))
+
+            # Now, use the same logic as the AIM to determine total Nelec
+            if p.Nelec is None:
+                # Automatic calculation is needed
+                nelec_bath = hamiltonians.calculate_bath_filling(h0, p.M_imp)
+                nelec_total = p.Nelec_imp + nelec_bath
+                print(f"INFO: 'Nelec' not specified. Automatically determined bath filling: {nelec_bath}.")
+                print(f"      Total Nelec set to {p.Nelec_imp} (imp) + {nelec_bath} (bath) = {nelec_total}.")
+            else:
+                # User provided a value, so we use it
+                nelec_total = p.Nelec
+                print(f"INFO: Using user-provided total Nelec = {nelec_total}.")
+            
+        model = Model(h0=h0, U=U, M_spatial=M, Nelec=nelec_total)
+        model.is_impurity_model = True
+        model.imp_indices = list(range(p.M_imp)) 
+        model.Nelec_imp = p.Nelec_imp
+        return model
+
+    elif p.type == 'from_file':
+        print(f"Loading model integrals from file: {p.filepath}")
+        h0, U, M = hamiltonians.get_integrals_from_file(p.filepath, p.spin_structure)
+        # For this type, Nelec is required by Pydantic, so no calculation needed
+        return Model(h0=h0, U=U, M_spatial=M, Nelec=p.Nelec)
+    
+
+
+    else:
+        # This case should be unreachable if Pydantic validation is working
+        print(f"ERROR: Unknown model parameter type '{p.type}'", file=sys.stderr)
+        sys.exit(1)# clic/scripts/thermal_cli.py
+import sys
+import tomli
+import argparse
+import numpy as np
+from pydantic import ValidationError
+
+# Import API and Pydantic models
+from clic.config_models import ModelConfig, SolverConfig
+from clic.api import Model, FockSpaceSolver # <-- Use FockSpaceSolver
+from clic import hamiltonians
+from clic.scripts.helpers import create_model_from_config 
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Run a Fock space calculation to find the thermal ground state using CLIC."
+    )
+    parser.add_argument("solver_config_file", type=str, help="Path to the solver TOML config.")
+    args = parser.parse_args()
+
+    try:
+        # --- 1. Load and Validate Config Files (same as before) ---
+        with open(args.solver_config_file, "rb") as f:
+            solver_config = SolverConfig(**tomli.load(f))
+        
+        with open(solver_config.model_file, "rb") as f:
+            model_config = ModelConfig(**tomli.load(f))
+
+    except (FileNotFoundError, ValidationError) as e:
+        print(f"ERROR: Failed to load or validate configuration.\n{e}", file=sys.stderr)
+        sys.exit(1)
+
+    # --- VALIDATE that the required config is present for this solver ---
+    if solver_config.solver.nelec_range is None:
+        print("ERROR: The 'nelec_range' parameter must be specified in the [solver] "
+              "section of the solver config for a thermal calculation.", file=sys.stderr)
+        sys.exit(1)
+
+    # --- 2. Create the Model Object (using the helper) ---
+    model = create_model_from_config(model_config)
+    
+    # --- 3. Run the FockSpaceSolver using the API ---
+    print("\nInstantiating FockSpaceSolver...")
+    solver = FockSpaceSolver(
+        model=model,
+        settings=solver_config.solver,
+        nelec_range=solver_config.solver.nelec_range
+    )
+    
+    # Run the solve method, passing the initial temperature from the config
+    thermal_result = solver.solve(
+        initial_temperature=solver_config.solver.initial_temperature
+    )
+
+    # --- 4. Save the Output ---
+    # The output filename is still controlled by the same config field
+    output_file = solver_config.output.ground_state_file
+    solver.save_result(output_file)
+    print(f"\nThermal ground state result saved to '{output_file}'")
+
+if __name__ == "__main__":
+    main()

@@ -185,9 +185,12 @@ m.doc() = R"doc(
         .def(py::init<std::size_t, const Wavefunction::Data&>(),
          py::arg("n_spatial"), py::arg("data"))
          
-        .def(py::init<std::size_t, const std::vector<SlaterDeterminant>&, const std::vector<Wavefunction::Coeff>&>(),
-             py::arg("n_spatial"), py::arg("basis"), py::arg("amplitudes"))
-        .def("add_term", &Wavefunction::add_term, py::arg("det"), py::arg("coeff"), py::arg("tol") = 1e-15)
+        // Constructor from basis and amplitudes
+        .def(py::init<std::size_t, const std::vector<SlaterDeterminant>&, const std::vector<Wavefunction::Coeff>&, bool>(),
+         py::arg("n_spatial"), py::arg("basis"), py::arg("amplitudes"), py::arg("keep_zeros") = true)
+
+
+        .def("add_term", &Wavefunction::add_term, py::arg("det"), py::arg("coeff"), py::arg("tol") = 0)
 
         .def("add_wavefunction", &Wavefunction::add_wavefunction, 
          py::arg("other"), py::arg("scale") = cx{1.0, 0.0},

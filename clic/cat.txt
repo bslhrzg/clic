@@ -64,15 +64,19 @@ from .gfs import *
 from .mf import mfscf
 from .bath_transform import *
 
-from .sci import selective_ci, hamiltonian_generator,   cipsi_one_iter# clic/api.py
+from .sci import selective_ci, hamiltonian_generator, cipsi_one_iter
+
+from .symmetries import *# clic/api.py
 import numpy as np
 from . import bath_transform, clic_clib as cc # Import for Wavefunction, SlaterDeterminant
 from . import hamiltonians, basis_1p, basis_Np, ops, sci, mf, gfs, plotting
 from . import results
 from .config_models import SolverParameters, GfConfig # Use Pydantic for validated settings
-from scipy.linalg import eig,block_diag
+from scipy.linalg import eigh,block_diag
 import copy
-
+from . import symmetries, io_utils
+from tqdm import tqdm    # For the progress bar
+import h5py 
 
 class Model:
     """Represents the physical system via its Hamiltonian integrals."""
@@ -108,12 +112,9 @@ class GroundStateSolver:
             return
         
         elif method == 'rhf':
-            hmf, es, Vs, rho = mf.mfscf(self.model.h0,self.model.U,self.model.Nelec)
+            hmf, es, Vs, rho = mf.mfscf_(self.model.h0,self.model.U,self.model.Nelec)
             h0,U_mat = basis_1p.basis_change_h0_U(self.model.h0,self.model.U,Vs)
             self.model.h0 = h0
-            print(f"shape h0 = {np.shape(h0)}")
-            print("new diag h0 : ")
-            print(np.diag(h0))
             self.model.U = U_mat
             self.transformation_matrix = Vs
 
@@ -137,20 +138,11 @@ class GroundStateSolver:
 
 
                 h_final_matrix[0, 0] = -self.model.u / 2
-
-                #print("Final Hamiltonian in double-chain basis:")
-                #print(h_final_matrix)
-
-                #print("Is unitary ? :")
-                #print(np.linalg.norm(h_final_matrix - C_spin.T @ h0_spin @ C_spin))
-
-                # Construct the full 2M x 2M Hamiltonian for both spins
-                # This assumes basis_1p.double_h correctly creates the block diagonal matrix.
-                h0_new = basis_1p.double_h(h_final_matrix, self.model.M)
+              
                 C = block_diag(C_spin, C_spin)
-
-                self.model.h0 = h0_new
+                self.model.h0 = C.conj().T @ self.model.h0 @ C
                 self.transformation_matrix = C 
+               
 
             # --- MULTI-ORBITAL IMPURITY CASE ---
             else: 
@@ -176,9 +168,8 @@ class GroundStateSolver:
                     h_final, C_total = bath_transform.get_multi_orbital_natural_orbital_transform(
                         self.model.h0, 
                         self.model.U, 
-                        block_dict, 
+                        self.model.Nelec, 
                         imp_indices_spatial, # Pass the SPATIAL indices
-                        Ne_per_block
                     )
                 
                 # Transform the U tensor using the final transformation matrix
@@ -193,74 +184,175 @@ class GroundStateSolver:
             raise NotImplementedError(f"Basis prep method '{method}' not implemented.")
 
 
+    def _run_sci(self, seed: list[cc.SlaterDeterminant], max_iter_override: int | None = None) -> results.NelecLowEnergySubspace:
+        """A helper to run the SCI calculation with a given starting seed."""
+        ci_settings = self.settings.ci_method
+        max_iter = max_iter_override if max_iter_override is not None else ci_settings.max_iter
+        num_roots = 1 if max_iter_override is not None else ci_settings.num_roots
+        print(f"Running SCI with max_iter={max_iter}, num_roots={num_roots} and seed size {len(seed)}...")
+        
+        result_obj = sci.selective_ci(
+            h0=self.model.h0, 
+            U=self.model.U,
+            C=self.transformation_matrix,
+            M=self.model.M, 
+            Nelec=self.model.Nelec,
+            seed=seed,  # Use the provided seed
+            generator=sci.hamiltonian_generator, 
+            selector=sci.cipsi_one_iter,
+            num_roots=num_roots,
+            max_iter=max_iter, 
+            conv_tol=ci_settings.conv_tol,
+            prune_thr=ci_settings.prune_thr,
+            Nmul=ci_settings.Nmul, 
+            verbose=True
+        )
+        return result_obj
+
     def solve(self) -> results.NelecLowEnergySubspace:
-        """Runs the full workflow and returns a dictionary of results."""
+        """Runs the full workflow, including the optional NO step."""
+
+        print("diag h0:")
+        for i in range(np.shape(self.model.h0)[0]):
+            print(self.model.h0[i,i])
 
         self._prepare_basis()
-        
+
         ci_settings = self.settings.ci_method
-        
-        if ci_settings.type == "sci":
-            print("Starting Selective CI calculation...")
-
-            # Initial basis 
-            if self.settings.basis_prep_method == 'rhf' :
-                seed = basis_Np.get_rhf_determinant(self.model.Nelec, self.model.M)
-            else :
-                if self.model.is_impurity_model :
-                    seed =  basis_Np.get_imp_starting_basis(
-                        np.real(self.model.h0), self.model.Nelec, self.model.Nelec_imp, self.model.imp_indices)
-                else : 
-                    seed = basis_Np.get_starting_basis(np.real(self.model.h0), self.model.Nelec)  # returns list of SlaterDeterminant
-
-            result_obj = sci.selective_ci(
-                h0=self.model.h0, 
-                U=self.model.U,
-                M=self.model.M, 
-                Nelec=self.model.Nelec,
-                seed = seed,
-                generator=sci.hamiltonian_generator, 
-                selector=sci.cipsi_one_iter,
-                max_iter=ci_settings.max_iter, 
-                conv_tol=ci_settings.conv_tol,
-                prune_thr=ci_settings.prune_thr,
-                Nmul=ci_settings.Nmul, 
-                verbose=True
-            )
-        elif ci_settings.type == "fci":
-            print("Careful, only Sz=0 sector computed in fci for now")
+        if ci_settings.type == "fci":
+            # FCI logic doesn't use NOs, handle it separately and early.
+            print("Running FCI calculation...")
             result_obj = sci.do_fci(
-                h0=self.model.h0, U=self.model.U, M=self.model.M, Nelec=self.model.Nelec
-                ,Sz=0,verbose=True
-            )
+                h0=self.model.h0, U=self.model.U, M=self.model.M, Nelec=self.model.Nelec, num_roots=ci_settings.num_roots,Sz=0, verbose=True)
 
+        elif ci_settings.type == "sci":
+            # --- Determine the initial seed for the first (or only) SCI run ---
+            if self.settings.basis_prep_method == 'rhf':
+                initial_seed = basis_Np.get_rhf_determinant(self.model.Nelec, self.model.M)
+            else:
+                if self.model.is_impurity_model:
+                    initial_seed = basis_Np.get_imp_starting_basis(
+                        np.real(self.model.h0), self.model.Nelec, self.model.Nelec_imp, self.model.imp_indices)
+                else: 
+                    initial_seed = basis_Np.get_starting_basis(np.real(self.model.h0), self.model.Nelec)
+            
+            # --- "no0" Workflow ---
+            if self.settings.use_no == 'no0':
+                print("\n--- Starting 'no0' procedure: calculating Natural Orbitals ---")
+                
+                # 1. Run a preliminary SCI calculation
+                pre_sci_result = self._run_sci(seed=initial_seed, max_iter_override=1)
+                psi_approx = pre_sci_result.ground_state_wavefunction
+                
+                # 2. Compute 1-RDM and get correctly sorted NO transformation matrix
+                print("Calculating 1-RDM from approximate wavefunction...")
+                rdm1_spatial = self.get_one_rdm(wavefunction=psi_approx, spatial=True)
+                occ_numbers, C_no_spin_unsorted = eigh(rdm1_spatial)
+                sort_indices = np.argsort(occ_numbers)[::-1]
+                C_no_spin = C_no_spin_unsorted[:, sort_indices]
+                C_no = block_diag(C_no_spin, C_no_spin)
+                
+                # 3. Transform the Hamiltonian into the NO basis
+                print("Transforming Hamiltonian to Natural Orbital basis...")
+                h0_no, U_no = basis_1p.basis_change_h0_U(self.model.h0, self.model.U, C_no)
+                self.model.h0 = h0_no
+                self.model.U = U_no
+                
+                # 4. Compose the transformation matrices
+                if self.transformation_matrix is not None:
+                    self.transformation_matrix = self.transformation_matrix @ C_no
+                else:
+                    self.transformation_matrix = C_no
+                
+                print("--- 'no0' procedure finished. Starting final calculation. ---\n")
+                
+                # The seed for the final calculation is the basis from the pre-SCI run.
+                # The determinants themselves don't change, they are just labels. We are now simply
+                # re-interpreting them in the new NO basis where the Hamiltonian has changed.
+                final_seed = pre_sci_result.basis
+
+                # 6. Run the final SCI 
+                result_obj = self._run_sci(seed=final_seed)
+
+                #print("Calculating 1-RDM from approximate wavefunction...")
+                #psi_approx = result_obj.ground_state_wavefunction
+                #rdm1_spatial = self.get_one_rdm(wavefunction=psi_approx, spatial=True)
+                #print("rdm1 = ")
+                #print(rdm1_spatial)
+
+                #print("diag el")
+                #print(np.diag(rdm1_spatial))
+              
+
+            else: # --- Standard SCI Workflow (use_no == 'none') ---
+                result_obj = self._run_sci(seed=initial_seed)
+
+        # Finalize and store results
         result_obj.transformation_matrix = self.transformation_matrix
         self.result = result_obj
         
         print(f"\nCalculation finished. Ground state energy = {self.result.ground_state_energy:.12f}")
+
+        self.compute_stats(result_obj.ground_state_wavefunction)
+
         return self.result
 
+    def get_one_rdm(self, wavefunction: cc.Wavefunction | None = None, spatial: bool = False) -> np.ndarray:
+        """Computes the 1-RDM. Can compute for a provided wavefunction."""
+        if wavefunction is None:
+            if not self.result:
+                raise RuntimeError("Solver has not been run and no wavefunction was provided.")
+            wavefunction = self.result.ground_state_wavefunction
 
-    def get_one_rdm(self) -> np.ndarray:
-        """Computes and returns the one-particle reduced density matrix, 
-        for the ground state only
+        rdm = ops.one_rdm(wavefunction, self.model.M)
+        
+        if spatial:
+            return rdm[:self.model.M, :self.model.M]
+        return rdm
+    
+    def compute_stats(self, wavefunction: cc.Wavefunction):
+        if self.model.is_impurity_model:
+            imp_indices_spinfull = self.model.imp_indices + [iimp + self.model.M for iimp in self.model.imp_indices]
+            gamma = ops.one_rdm(wavefunction,self.model.M,block=imp_indices_spinfull)
+            occs = np.diag(gamma)
+            print("* Occupations -------------")
+            print(f"total: {np.sum(np.real(occs)):.3e}")
+            for (i,iimp) in enumerate(imp_indices_spinfull):
+                print(f"{i:>6} : {np.real(occs[i]):.3e}")
+        else:
+            gamma = ops.one_rdm(wavefunction,self.model.M)
+            occs = np.diag(gamma)
+            print(f"Total occupation: {np.sum(occs)}")
+            for i in range(len(occs)):
+                print(f"occ[{i}] = {np.real(occs[i]):.3e}")
+
+
+
+
+    def save_result(self, filename: str):
+        """
+        Saves the results to a comprehensive HDF5 file, including all data
+        needed for subsequent Green's function calculations.
         """
         if not self.result:
             raise RuntimeError("Solver has not been run yet.")
         
-        wavefunction = self.result.wavefunctions[0]
+        print(f"Saving comprehensive results to HDF5 file '{filename}'...")
+        with h5py.File(filename, 'w') as f:
+            # --- 1. Use the existing method to save wavefunction, basis, etc. ---
+            # This will create groups like 'metadata', 'basis', 'wavefunctions'.
+            self.result.save(f)
+            
+            # --- 2. Add extra top-level datasets needed by GreenFunctionCalculator ---
+            # Save the final Hamiltonian integrals used in the calculation.
+            f.create_dataset("final_h0", data=self.model.h0)
+            f.create_dataset("final_U", data=self.model.U)
 
-        return ops.one_rdm(wavefunction, self.model.M)
-    
-    # In the GroundStateSolver class, inside save_result method
-
-    def save_result(self, filename: str):
-        if not self.result:
-            raise RuntimeError("Solver has not been run yet.")
-        self.result.save(filename)
-
-
-
+            # Save impurity information as attributes for easy access.
+            f.attrs["is_impurity_model"] = self.model.is_impurity_model
+            if self.model.is_impurity_model:
+                f.attrs["imp_indices"] = self.model.imp_indices
+        
 class FockSpaceSolver:
     """
     API endpoint for finding the low-energy subspace across a range of particle
@@ -322,95 +414,218 @@ class FockSpaceSolver:
         self.result.save(filename)
 
 # ----------------------------------------------------------------------------------
-
 class GreenFunctionCalculator:
-    """The main API endpoint for calculating Green's functions."""
+    """
+    The main API endpoint for calculating Green's functions using a symmetry-aware,
+    time-propagation-based Lanczos method, loading data from HDF5.
+    """
     def __init__(self, settings: dict | GfConfig):
-        # Validate settings if a raw dict is passed
         if isinstance(settings, dict):
             self.settings = GfConfig(**settings)
         else:
             self.settings = settings
         
         # Attributes to be loaded from the ground state file
-        self.M = None
-        self.psi0_wf = None
-        self.e0 = None
-        self.h0 = None
-        self.U = None
+        self.M: int | None = None
+        self.psi0_wf: cc.Wavefunction | None = None
+        self.e0: float | None = None
+        self.h0: np.ndarray | None = None
+        self.U: np.ndarray | None = None
+        self.imp_indices: list[int] | None = None
 
     def load_ground_state(self):
-        """Loads data from the ground state .npz file."""
+        """Loads all necessary data from the comprehensive HDF5 ground state file."""
         filepath = self.settings.ground_state_file
-        print(f"Loading ground state from '{filepath}'...")
+        print(f"Loading ground state from HDF5 file '{filepath}'...")
         try:
-            data = np.load(filepath, allow_pickle=True)
-            self.M = int(data['M_spatial'])
-            self.e0 = float(data['energy'])
-            self.h0 = data['final_h0']
-            self.U = data['final_U']
-            
-            # Reconstruct the wavefunction
-            coeffs = data['wf_coeffs']
-            alpha_list = data['basis_alpha_list']
-            beta_list = data['basis_beta_list']
-            basis = [cc.SlaterDeterminant(self.M, a, b) for a, b in zip(alpha_list, beta_list)]
-            self.psi0_wf = cc.Wavefunction(self.M, basis, coeffs)
+            with h5py.File(filepath, 'r') as f:
+                # 1. Load the top-level datasets and attributes
+                self.h0 = f["final_h0"][:]
+                self.U = f["final_U"][:]
+                self.imp_indices = list(f.attrs.get("imp_indices", []))
+
+                # 2. Use the results classmethod to load the wavefunction and metadata
+                gs_result = results.NelecLowEnergySubspace.load(f)
+                
+                # 3. Populate the remaining attributes from the loaded object
+                self.psi0_wf = gs_result.ground_state_wavefunction
+                self.e0 = gs_result.ground_state_energy
+                self.M = gs_result.M
+                
             print("Ground state loaded successfully.")
-
-
         except FileNotFoundError:
             raise RuntimeError(f"Ground state file not found at: {filepath}")
         except KeyError as e:
-            raise RuntimeError(f"Missing key {e} in ground state file. The file may be invalid or incomplete.")
+            raise RuntimeError(f"Missing key {e} in HDF5 file. Ensure it was saved correctly.")
+    
+    def _determine_work_list(self, target_indices: list[int], sym_dict: dict) -> list[tuple[int, int]]:
+        """Determines the minimal set of (i, j) pairs to compute based on symmetry."""
+        orbital_to_rep = {}
+        for group in sym_dict['identical_groups']:
+            leader_block_indices = sym_dict['blocks'][group[0]]
+            for member_block_idx in group:
+                member_block_indices = sym_dict['blocks'][member_block_idx]
+                for i in range(len(leader_block_indices)):
+                    orbital_to_rep[member_block_indices[i]] = leader_block_indices[i]
+        
+        work_set = set()
+        for i in target_indices:
+            for j in target_indices:
+                rep_i = orbital_to_rep.get(i, i)
+                rep_j = orbital_to_rep.get(j, j)
+                work_set.add(tuple(sorted((rep_i, rep_j))))
 
-    def run(self) -> tuple[np.ndarray, np.ndarray]:
+        print(f"Symmetry analysis complete. Need to compute {len(work_set)} unique G_ij elements.")
+        return sorted(list(work_set))
+
+    def run_(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Runs the Green's function calculation and returns the results."""
         self.load_ground_state()
 
         p_gf = self.settings.green_function
         p_lanczos = self.settings.lanczos
-        
         ws = np.linspace(p_gf.omega_mesh[0], p_gf.omega_mesh[1], int(p_gf.omega_mesh[2]))
-        
+        print(ws[0],ws[-1])
         if p_gf.block_indices == "impurity":
-            impurity_indices = [0, self.M]
+            if not self.imp_indices:
+                raise ValueError("GF block set to 'impurity' but no impurity indices found.")
+            target_indices = sorted(self.imp_indices + [i + self.M for i in self.imp_indices])
         else:
-            impurity_indices = p_gf.block_indices
+            target_indices = sorted(list(set(p_gf.block_indices)))
 
-        # Get the one- and two-body terms from the loaded Hamiltonian
+        print(f"\nTargeting Green's function block for indices: {target_indices}")
+        
+        sym_dict = symmetries.analyze_symmetries(self.h0)
+        work_list = self._determine_work_list(target_indices, sym_dict)
+        
         one_bh = ops.get_one_body_terms(self.h0, self.M)
         two_bh = ops.get_two_body_terms(self.U, self.M)
 
-        print("\nStarting Green's function calculation...")
-        G_block, meta = gfs.green_function_block_lanczos_fixed_basis(
-            M=self.M, psi0_wf=self.psi0_wf, e0=self.e0, ws=ws, eta=p_gf.eta,
-            impurity_indices=impurity_indices, NappH=p_lanczos.NappH,
-            h0_clean=self.h0, U_clean=self.U,
-            one_body_terms=one_bh, two_body_terms=two_bh,
-            coeff_thresh=p_lanczos.coeff_thresh, L=p_lanczos.L
-        )
-        print("Calculation finished. Details:", meta)
+        computed_gfs = {}
+        for i, j in tqdm(work_list, desc="Calculating G_ij(ω)"):
+            g_ij = gfs.green_function_from_time_propagation(
+                i, j, self.M, self.psi0_wf, self.e0, ws, p_gf.eta,
+                target_indices, p_lanczos.NappH, self.h0, self.U,
+                one_bh, two_bh, p_lanczos.coeff_thresh, p_lanczos.L
+            )
+            computed_gfs[(i, j)] = g_ij
+            
+        print("\nReconstructing full GF block from unique elements...")
+        num_target = len(target_indices)
+        idx_map = {orb_idx: k for k, orb_idx in enumerate(target_indices)}
+        G_block = np.zeros((len(ws), num_target, num_target), dtype=np.complex128)
+        
+        orbital_to_rep = {i: i for i in range(2 * self.M)}
+        for group in sym_dict['identical_groups']:
+            leader_block_indices = sym_dict['blocks'][group[0]]
+            for member_block_idx in group[1:]:
+                member_block_indices = sym_dict['blocks'][member_block_idx]
+                for i in range(len(leader_block_indices)):
+                    orbital_to_rep[member_block_indices[i]] = leader_block_indices[i]
 
-        # Compute spectral function A(w) = -1/pi * Im[G(w)]
+        for k, i in enumerate(target_indices):
+            for l, j in enumerate(target_indices):
+                rep_i, rep_j = orbital_to_rep.get(i, i), orbital_to_rep.get(j, j)
+                key = tuple(sorted((rep_i, rep_j)))
+                
+                if (i, j) == (rep_i, rep_j): # This is the computed value
+                    G_block[:, k, l] = computed_gfs[key]
+                elif (j, i) == (rep_i, rep_j): # This is the conjugate
+                    G_block[:, k, l] = np.conj(computed_gfs[key])
+                else: # This is a symmetry-equivalent value
+                    G_block[:, k, l] = computed_gfs[key]
+        
+        print("Calculation finished.")
         A_w = -(1 / np.pi) * np.imag(G_block)
         
-        # Save and plot if requested
         if self.settings.output.gf_data_file:
+            # Saving to .npz is fine for the final data product
             np.savez_compressed(
                 self.settings.output.gf_data_file,
-                G_w=G_block, A_w=A_w, omega=ws
+                G_w=G_block, A_w=A_w, omega=ws, indices=np.array(target_indices)
             )
             print(f"GF data saved to '{self.settings.output.gf_data_file}'")
 
         if self.settings.output.plot_file:
             plotting.plot_spectral_function(
-                ws, A_w, impurity_indices,
-                "Impurity Spectral Function",
+                ws, A_w, list(range(num_target)),
+                "Spectral Function",
                 self.settings.output.plot_file
             )
         
-        return ws, G_block, A_w# basis_1p.py
+        return ws, G_block, A_w
+
+
+
+    def run(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Runs the Green's function calculation and returns the results."""
+        self.load_ground_state()
+
+        p_gf = self.settings.green_function
+        p_lanczos = self.settings.lanczos
+        ws = np.linspace(p_gf.omega_mesh[0], p_gf.omega_mesh[1], int(p_gf.omega_mesh[2]))
+
+        if p_gf.block_indices == "impurity":
+            if not self.imp_indices:
+                raise ValueError("GF block set to 'impurity' but no impurity indices found.")
+            target_indices = sorted(self.imp_indices + [i + self.M for i in self.imp_indices])
+        else:
+            target_indices = sorted(list(set(p_gf.block_indices)))
+
+        print(f"\nTargeting Green's function block for indices: {target_indices}")
+        
+        
+
+        one_bh = ops.get_one_body_terms(self.h0, self.M)
+        two_bh = ops.get_two_body_terms(self.U, self.M)
+
+        num_target = len(target_indices)
+        G_diag = np.zeros((len(ws), num_target), dtype=np.complex128)
+
+        for (i,ii) in enumerate(target_indices):
+            print(f"computing for i = {ii}")
+            g_ii = gfs.green_function_from_time_propagation(
+                ii, ii, self.M, self.psi0_wf, self.e0, ws, p_gf.eta,
+                target_indices, p_lanczos.NappH, self.h0, self.U,
+                one_bh, two_bh, p_lanczos.coeff_thresh, p_lanczos.L
+            )
+            #g_ii,_ = gfs.green_function_scalar_fixed_basis(
+            #    self.M, self.psi0_wf, self.e0, ws, p_gf.eta, i, p_lanczos.NappH,
+            #    self.h0, self.U, one_bh, two_bh,
+            #    coeff_thresh=1e-12, L=100, reorth=True)
+            #print(f"g_ii shape : {np.shape(g_ii)}")
+            G_diag[:, i] = g_ii
+                    
+        print("Calculation finished.")
+        A_w = -(1 / np.pi) * np.imag(G_diag)
+        
+
+        savetxt = True
+        #if hasattr(self.settings.output, 'gf_diag_txt_file') and self.settings.output.gf_diag_txt_file:
+        if savetxt:
+            # G_block shape is (n_omega, n_target, n_target)
+            # We want the diagonal elements for each omega point
+            # np.diagonal gives shape (n_target, n_omega), so we transpose it
+
+            # Now call the dump function
+            io_utils.dump(
+            A_w, # This is a 2D complex array, shape (n_omega, n_target)
+            ws,
+            'A_w',
+            # output_dir=self.settings.output.directory # Optional
+        )
+        # --- End Modification 3 ---
+
+        if self.settings.output.plot_file:
+            plotting.plot_spectral_function(
+                ws, A_w, list(range(num_target)),
+                "Spectral Function",
+                self.settings.output.plot_file
+            )
+        
+        return ws, G_diag, A_w   
+
+# basis_1p.py
 import numpy as np
 from . import clic_clib as cc
 from . import ops
@@ -706,7 +921,7 @@ def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
     return sorted(dets)
 
 
-def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst", tol=1e-12):
+def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst", tol=0.01):
     """
     Generates starting determinants with a fixed number of electrons on the impurity.
     It partitions the system, solves for ground states in each subspace, and then
@@ -774,6 +989,12 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
     # Remove duplicates if any were generated (e.g., from odd electron cases)
     # The hash and eq bindings on your C++ class make this possible.
     unique_dets = sorted(list(set(final_dets)))
+    target_Sz = 0 
+    print(f"Retaining only Sz={target_Sz} in starting basis")
+    unique_dets,_ = subbasis_by_Sz(unique_dets, target_Sz)
+
+    #for det in unique_dets:
+    #    print(f"det : {det}")
     
     print(f"Generated a total of {len(unique_dets)} unique starting determinants.")
     return unique_dets
@@ -817,7 +1038,7 @@ def expand_basis(current_basis,one_body_terms,two_body_terms):
 
 import numpy as np
 from scipy.linalg import eigh, block_diag
-
+from . import symmetries, mf
 # --------------------------------------------------------------------------
 # Double chain for a single impurity
 # --------------------------------------------------------------------------
@@ -1195,7 +1416,7 @@ def _transform_one_block(h0_block, U_block, Ne_block, imp_indices_local):
 
 def get_natural_orbital_transform(h_spin, u, Nelec):
     """
-    Performs a simple Natural Orbital transformation, equivalent to the Julia code.
+    Performs a simple Natural Orbital transformation
     This corresponds to steps (i) and (ii) of the more complex procedure.
     """
     M = h_spin.shape[0]
@@ -1226,103 +1447,83 @@ def get_natural_orbital_transform(h_spin, u, Nelec):
 # Natural Orbitals for a multi-orbital case
 # --------------------------------------------------------------------------
 
-def get_multi_orbital_natural_orbital_transform(h0, U, block_dict, impurity_indices, Ne_per_block):
+def get_multi_orbital_natural_orbital_transform(
+    h0: np.ndarray, 
+    U: np.ndarray, 
+    Nelec: int,
+    impurity_indices: list[int]
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Performs a natural orbital transformation for a multi-orbital problem that is
-    already block-diagonalized by symmetry.
+    Performs a symmetry-preserving natural orbital transformation for a
+    multi-orbital impurity problem.
 
+    The transformation finds the natural orbitals for the bath *within each
+    symmetry block* of the Hamiltonian, leaving the impurity orbitals untouched.
     This is the multi-orbital generalization of `get_natural_orbital_transform`.
-    It leaves impurity orbitals untouched and finds the natural orbitals for the bath
-    within each symmetry block.
 
     Args:
-        h0 (np.ndarray): Full one-particle Hamiltonian (e.g., 2M x 2M).
-        U (np.ndarray): Full two-particle interaction tensor.
-        block_dict (dict): Maps symmetry name to spatial indices for one spin channel.
-        impurity_indices (list): List of GLOBAL spatial indices for all impurity orbitals.
-        Ne_per_block (dict): Maps block name to number of electrons for that block.
+        h0 (np.ndarray): Full one-particle Hamiltonian (2M x 2M, AlphaFirst).
+        U (np.ndarray): Full two-particle interaction tensor (2M x 2M x 2M x 2M).
+        Nelec (int): The total number of electrons in the system.
+        impurity_indices (list[int]): List of SPATIAL indices for all impurity
+                                      orbitals (e.g., [0, 1] for a 2-orbital impurity).
 
     Returns:
         tuple[np.ndarray, np.ndarray]:
             - h_final (np.ndarray): The final Hamiltonian in the natural orbital basis.
-            - C_total (np.ndarray): The total unitary transformation matrix.
+            - C_total (np.ndarray): The total unitary transformation matrix (2M x 2M).
     """
     M = h0.shape[0] // 2
-    h_final = np.zeros_like(h0)
-    C_total = np.identity(h0.shape[0], dtype=np.complex128)
+    h0_spin = h0[:M, :M]
+    impurity_indices = sorted(list(set(impurity_indices)))
+    
+    print("--- Starting Symmetry-Aware Natural Orbital Transformation ---")
+    
+    # 1. Run SCF to get the converged density matrix
+    print("Step 1: Running mean-field SCF to get the density matrix...")
+    _, _, _, rho = mf.mfscf(h0, U, Nelec, maxiter=50)
+    rho_spin = rho[:M, :M] # Work with the spatial (spin-up) block
+    
+    # 2. Analyze the symmetry of the original h0
+    print("Step 2: Analyzing symmetries of the initial Hamiltonian...")
+    sym_dict = symmetries.analyze_symmetries(h0_spin)
+    blocks = sym_dict['blocks']
+    print(f"Found {len(blocks)} symmetry blocks.")
 
-    # Process spin-up and spin-down blocks separately but identically
-    for spin_offset in [0, M]:
+    # 3. Build the transformation matrix C block-by-block
+    print("Step 3: Calculating natural orbitals for each symmetry block...")
+    C_spin = np.identity(M, dtype=h0.dtype)
+    
+    for i, block_indices in enumerate(blocks):
+        # Partition the orbitals within this block into impurity and bath
+        imp_in_block = [idx for idx in block_indices if idx in impurity_indices]
+        bath_in_block = [idx for idx in block_indices if idx not in impurity_indices]
         
-        for block_name, global_indices in block_dict.items():
+        print(f"  - Processing Block {i} (size {len(block_indices)}): "
+              f"{len(imp_in_block)} impurity, {len(bath_in_block)} bath orbitals.")
+
+        if not bath_in_block:
+            # If no bath orbitals in this block, no transformation is needed.
+            continue
             
-            current_indices_full = [i + spin_offset for i in global_indices]
-            if not current_indices_full: continue
-
-            h0_block = h0[np.ix_(current_indices_full, current_indices_full)]
-            U_block = U[np.ix_(current_indices_full, current_indices_full, current_indices_full, current_indices_full)]
-            Ne_block = Ne_per_block[block_name]
-
-            # Find the local indices of impurity orbitals within this block's spin channel
-            block_imp_indices_global = [i for i in global_indices if (i + spin_offset) in impurity_indices]
-            imp_indices_local = [global_indices.index(i) for i in block_imp_indices_global]
-
-            print(f"\n--- Processing block '{block_name}' (Spin {'down' if spin_offset else 'up'}) for Natural Orbitals ---")
-            
-            h_final_b, C_b = _transform_one_block_simple_no(
-                h0_block, U_block, Ne_block, imp_indices_local
-            )
-
-            # Place the results back into the full matrices
-            h_final[np.ix_(current_indices_full, current_indices_full)] = h_final_b
-            
-            # The transformation matrix must be applied correctly
-            # This assumes C_total starts as identity.
-            C_total[np.ix_(current_indices_full, current_indices_full)] = C_b
-            
-    return h_final, C_total
-
-
-def _transform_one_block_simple_no(h0_block, U_block, Ne_block, imp_indices_local):
-    """
-    Worker function: performs MF-SCF and then diagonalizes the bath density matrix.
-    """
-    N_block = h0_block.shape[0]
-
-    # If no bath orbitals in this block, no transformation is needed.
-    if len(imp_indices_local) == N_block:
-        return h0_block, np.identity(N_block)
-
-    # --- Step i: Mean-Field SCF on the block ---
-    # Create a temporary spin-doubled system for the mfscf function
-    h0_doubled = block_diag(h0_block, h0_block)
-    U_doubled = np.zeros((2*N_block, 2*N_block, 2*N_block, 2*N_block), dtype=U_block.dtype)
-    U_doubled[np.ix_(*[np.arange(N_block)]*4)] = U_block
-    U_doubled[np.ix_(*[np.arange(N_block, 2*N_block)]*4)] = U_block
-
-    # Run SCF to get the mean-field hamiltonian and density matrix for the UP-spin block
-    _, _, _, rho_full = mfscf(h0_doubled, U_doubled, 2 * Ne_block, maxiter=50)
-    rho_up = rho_full[:N_block, :N_block]
+        # Extract the bath-bath submatrix of the density matrix for this block
+        rho_bath_block = rho_spin[np.ix_(bath_in_block, bath_in_block)]
+        
+        # Diagonalize it to get the eigenvectors 'W', which define the new bath basis
+        _, W_block = eigh(rho_bath_block)
+        
+        # Place the transformation 'W_block' into the correct slice of C_spin.
+        # This transforms the bath orbitals of this block, leaving others untouched.
+        C_spin[np.ix_(bath_in_block, bath_in_block)] = W_block
+        
+    # 4. Assemble the full 2M x 2M transformation matrix and apply it
+    print("Step 4: Assembling final transformation matrix and transforming h0...")
+    C_total = block_diag(C_spin, C_spin)
+    h_final = C_total.conj().T @ h0 @ C_total
     
-    # --- Step ii: Natural Orbitals for the Bath ---
-    bath_indices_local = [i for i in range(N_block) if i not in imp_indices_local]
+    print("--- Transformation complete. ---")
     
-    # Extract the bath-bath submatrix of the density matrix
-    rho_bath = rho_up[np.ix_(bath_indices_local, bath_indices_local)]
-    
-    # Diagonalize it to get the eigenvectors 'W', which define the new bath basis
-    _, W = eigh(rho_bath)
-    
-    # The transformation C_block leaves the impurity orbitals (in their local indices)
-    # alone and transforms only the bath orbitals.
-    C_block = np.identity(N_block, dtype=h0_block.dtype)
-    C_block[np.ix_(bath_indices_local, bath_indices_local)] = W
-    
-    # The final Hamiltonian for this block is the original h0_block transformed
-    # into this new Natural Orbital basis.
-    h_final_block = C_block.conj().T @ h0_block @ C_block
-    
-    return h_final_block, C_block# config_models.py
+    return h_final, C_total# config_models.py
 from typing import Literal, Union, List, Optional 
 from pydantic import BaseModel, Field, root_validator, ConfigDict
 
@@ -1385,6 +1586,7 @@ class CiMethodConfig(BaseModel):
 
 class SolverParameters(BaseModel):
     basis_prep_method: Literal["none", "rhf", "rhf_no", "bath_no","dbl_chain"]
+    use_no: Literal["none","no0","no"] = "none"
     ci_method: CiMethodConfig
     nelec_range: tuple[int, int] | None = None 
     initial_temperature: float = 10.0 
@@ -1422,7 +1624,7 @@ import numpy as np
 from . import clic_clib as cc
 import scipy.sparse as sp
 import numpy.linalg as npl
-
+from numpy.linalg import norm
 # -----------------------------
 # Helpers: wavefunction <-> basis
 # -----------------------------
@@ -1803,7 +2005,1102 @@ def green_function_scalar_fixed_basis(
     return Gii, dict(
         basis_add_size=len(basis_add), basis_rem_size=len(basis_rem),
         have_g=have_g, have_l=have_l, seed_nonzero=True
-    )# hamiltonians.py
+    )
+
+
+# ---------------------------------------------------------------------------
+# TIME PROPAGATION 
+# ---------------------------------------------------------------------------
+
+def _lanczos_tridiagonal(H, v0, L=200, reorth=False):
+    """
+    Perform Hermitian Lanczos iteration starting from vector v0.
+    Constructs an orthonormal Krylov basis Q and the tridiagonal matrix T.
+
+    Parameters
+    ----------
+    H : (N×N) linear operator (csr_matrix or LinearOperator)
+        Hermitian Hamiltonian, must support `@` for matrix-vector product.
+    v0 : ndarray (N,)
+        Initial vector to start the Krylov subspace.
+    L : int
+        Maximum number of Lanczos steps.
+    reorth : bool
+        If True, apply a (single-pass) reorthogonalization against all previous vectors
+        to improve numerical stability.
+
+    Returns
+    -------
+    Q : ndarray (N×m)
+        Orthonormal Lanczos basis vectors.
+    T : ndarray (m×m)
+        Tridiagonal Lanczos matrix.
+    v0_norm : float
+        Norm of the initial vector v0.
+    """
+
+    # Ensure v0 is a complex128 array
+    v0 = np.asarray(v0, dtype=np.complex128)
+    N = v0.size
+
+    # Normalize the initial vector
+    v0_norm = np.linalg.norm(v0)
+    if v0_norm == 0:
+        # If v0 is zero, return empty basis and matrix
+        return np.zeros((N,0), dtype=np.complex128), np.zeros((0,0), dtype=np.complex128), 0.0
+
+    # Initialize first basis vector q = v0 / ||v0||
+    q_prev = np.zeros_like(v0)   # "ghost" previous vector, initially zero
+    q = v0 / v0_norm
+    Qcols = [q.copy()]           # list to store basis vectors
+    alphas, betas = [], []       # diagonals and off-diagonals of T
+
+    beta = 0.0
+    for _ in range(L):
+        # Apply Hamiltonian
+        w = H @ q
+        # Rayleigh quotient α = <q|H|q>
+        alpha = np.vdot(q, w)
+        # Remove components along current and previous q (three-term recurrence)
+        w = w - alpha * q - beta * q_prev
+
+        # Optional reorthogonalization against all previous Q vectors
+        if reorth and Qcols:
+            Qmat = np.column_stack(Qcols)
+            w -= Qmat @ (Qmat.conj().T @ w)
+
+        # Next off-diagonal β = ||w||
+        beta = np.linalg.norm(w)
+        alphas.append(alpha)
+
+        # If β ≈ 0, Krylov subspace has closed (breakdown)
+        if beta < 1e-14:
+            break
+
+        # Store β and normalize new q
+        betas.append(beta)
+        q_prev, q = q, w / beta
+        Qcols.append(q.copy())
+
+    # Number of steps actually performed
+    m = len(alphas)
+    if m == 0:
+        # Should not normally happen, but guard against empty Krylov space
+        return np.zeros((N,0), dtype=np.complex128), np.zeros((0,0), dtype=np.complex128), v0_norm
+
+    # Construct Q matrix (columns are q0, q1, …, q_{m-1})
+    Q = np.column_stack(Qcols[:m])
+
+    # Construct tridiagonal T from α and β coefficients
+    T = np.zeros((m, m), dtype=np.complex128)
+    for k in range(m):
+        T[k, k] = alphas[k]      # diagonal entries
+        if k+1 < m:
+            T[k, k+1] = betas[k] # upper diagonal
+            T[k+1, k] = betas[k] # lower diagonal
+
+    return Q, T, v0_norm
+
+def lanczos_tridiagonal_stable(H, v0, L=200, reorth=True, symmetrize=False, scale=True,
+                               reorth_tol=1e-10, breakdown_tol=1e-14, powerit=20):
+    """
+    Hermitian Lanczos with optional symmetrization, spectral scaling, and two-pass MGS reorth.
+    Returns Q (N×m), T (m×m), ||v0||.
+    """
+
+
+
+    # optional symmetrization
+    if symmetrize:
+        if sp.issparse(H):
+            H = 0.5*(H + H.conj().T)
+            H.setdiag(H.diagonal().real)
+        else:
+            H = 0.5*(H + H.conj().T)
+            np.fill_diagonal(H, np.real(np.diag(H)))
+
+    # estimate spectral radius for scaling
+    rho = 1.0
+    if scale:
+        # power iteration on a random unit vector
+        rng = np.random.default_rng(12345)
+        x = rng.standard_normal(H.shape[0]) + 1j*rng.standard_normal(H.shape[0])
+        x /= norm(x)
+        for _ in range(powerit):
+            x = H @ x
+            n = norm(x)
+            if not np.isfinite(n) or n < 1e-300:
+                break
+            x /= n
+        rho = max(n, 1.0)
+    Hdot = (lambda x: (H @ x) / rho) if scale else (lambda x: H @ x)
+
+    v0 = np.asarray(v0, dtype=np.complex128)
+    N = v0.size
+    v0_norm = norm(v0)
+    if v0_norm == 0.0:
+        return np.zeros((N,0), np.complex128), np.zeros((0,0), np.complex128), 0.0
+
+    q_prev = np.zeros_like(v0)
+    q = v0 / v0_norm
+
+    # preallocate Q with an upper bound of L+1 columns
+    Q = np.empty((N, L+1), dtype=np.complex128)
+    Q[:, 0] = q
+    k = 0
+    alphas = np.empty(L, dtype=np.float64)
+    betas  = np.empty(L, dtype=np.float64)
+
+    beta = 0.0
+    while k < L:
+        w = Hdot(q)
+        alpha = np.vdot(q, w)
+        # Hermitian guard: take the real part
+        alpha = float(np.real(alpha))
+        # three term recurrence
+        w = w - alpha*q - beta*q_prev
+
+        # selective reorth trigger
+        if reorth:
+            # test loss of orthogonality: max|Q[:,:k+1]^H w|
+            hk = Q[:, :k+1].conj().T @ w
+            maxlost = np.max(np.abs(hk))
+            if maxlost > reorth_tol*norm(w):
+                # two-pass MGS
+                w -= Q[:, :k+1] @ hk
+                hk2 = Q[:, :k+1].conj().T @ w
+                w -= Q[:, :k+1] @ hk2
+
+        beta = norm(w)
+        alphas[k] = alpha
+
+        if not np.isfinite(beta) or beta < breakdown_tol:
+            # happy breakdown or numerical failure
+            break
+
+        q_prev, q = q, w / beta
+        k += 1
+        Q[:, k] = q
+        betas[k-1] = beta
+
+    m = max(1, k)  # at least one alpha
+    Q = Q[:, :m]
+    T = np.zeros((m, m), dtype=np.complex128)
+    for i in range(m):
+        # scale back the spectrum if we scaled H
+        T[i, i] = alphas[i]*rho
+        if i+1 < m:
+            T[i, i+1] = betas[i]*rho
+            T[i+1, i] = betas[i]*rho
+
+    return Q, T, v0_norm
+
+def green_function_from_time_propagation(
+    i, j,
+    M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
+    h0_clean, U_clean, one_body_terms, two_body_terms,
+    coeff_thresh=1e-12, L=100, reorth=True
+):
+    """
+    Compute the retarded Green's function G_ij(ω) using time propagation + Lanczos.
+
+    Strategy:
+      - Build N+1 and N-1 sector bases starting from |a_j> = c_j†|ψ0> and |r_j> = c_j|ψ0>.
+      - Restrict H to those bases and shift by E0 so ground state is stationary.
+      - Run Lanczos on each sector to get tridiagonal T matrices.
+      - Use T’s spectral decomposition to compute time overlaps S_add(t), S_rem(t).
+      - Fourier-integrate with damping exp(-ηt) to get G_ij(ω).
+
+    Parameters
+    ----------
+    i, j : int
+        Indices of the Green's function G_ij(ω) to compute (0 ≤ i,j < 2M).
+    M : int
+        Number of spatial orbitals (so Norb = 2M including spin).
+    psi0_wf : Wavefunction
+        Ground state wavefunction.
+    e0 : float
+        Ground state energy.
+    ws : ndarray
+        Frequency grid.
+    eta : float
+        Broadening parameter (imaginary shift).
+    impurity_indices : list[int]
+        Indices of impurity orbitals (not directly needed here).
+    NappH : int
+        Number of H-applications to expand determinant basis.
+    h0_clean, U_clean, one_body_terms, two_body_terms :
+        Hamiltonian input data.
+    coeff_thresh : float
+        Threshold for determinant coefficients.
+    L : int
+        Maximum Lanczos steps.
+    reorth : bool
+        Reorthogonalize Lanczos vectors.
+
+    Returns
+    -------
+    g : ndarray (len(ws),)
+        Complex retarded Green's function values at given ω grid.
+    """
+
+    ws = np.asarray(ws, dtype=float)
+    Norb = 2*M
+    assert 0 <= i < Norb and 0 <= j < Norb
+
+    # Helper: convert global index to (orbital, spin)
+    def _index_to_spin_orb(i, M):
+        si = cc.Spin.Alpha if i < M else cc.Spin.Beta
+        oi = i % M
+        return oi, si
+
+    # Spin/orbital for indices i and j
+    oj, sj = _index_to_spin_orb(j, M)
+    oi, si = _index_to_spin_orb(i, M)
+
+    # Seeds: |a_j> = c_j†|ψ0>, |r_j> = c_j|ψ0>
+    wf_add_j = cc.apply_creation(psi0_wf, oj, sj)
+    wf_rem_j = cc.apply_annihilation(psi0_wf, oj, sj)
+    have_add = bool(wf_add_j.data()); have_rem = bool(wf_rem_j.data())
+    if not have_add and not have_rem:
+        # If both vanish, G_ij(ω) = 0
+        return np.zeros_like(ws, dtype=np.complex128)
+
+    # Bra seeds for overlap evaluation (|a_i>, |r_i>)
+    wf_add_i = cc.apply_creation(psi0_wf, oi, si)
+    wf_rem_i = cc.apply_annihilation(psi0_wf, oi, si)
+
+    # Build determinant bases for N+1 and N-1 sectors by H-expansion
+    basis_add = build_sector_basis_from_seeds(
+        [wf_add_j] if have_add else [], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
+    )
+    basis_rem = build_sector_basis_from_seeds(
+        [wf_rem_j] if have_rem else [], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
+    )
+
+    print(f"basis sizes: add ({len(basis_add)}), remove ({len(basis_rem)})")
+
+    # Build restricted Hamiltonians
+    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if have_add and len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
+    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if have_rem and len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
+
+    # Shift by ground state energy e0 (makes |ψ0> stationary)
+    if H_add.shape[0] > 0:
+        H_add = H_add - e0 * sp.eye(H_add.shape[0], dtype=np.complex128, format='csr')
+    if H_rem.shape[0] > 0:
+        H_rem = H_rem - e0 * sp.eye(H_rem.shape[0], dtype=np.complex128, format='csr')
+
+    # Project seeds into those bases
+    a_j_vec = wf_to_vec(wf_add_j, basis_add) if have_add and H_add.shape[0] else np.zeros((0,), dtype=np.complex128)
+    r_j_vec = wf_to_vec(wf_rem_j, basis_rem) if have_rem and H_rem.shape[0] else np.zeros((0,), dtype=np.complex128)
+    a_i_vec = wf_to_vec(wf_add_i, basis_add) if have_add and H_add.shape[0] else np.zeros((0,), dtype=np.complex128)
+    r_i_vec = wf_to_vec(wf_rem_i, basis_rem) if have_rem and H_rem.shape[0] else np.zeros((0,), dtype=np.complex128)
+
+    # Lanczos on each sector starting from |a_j>, |r_j>
+    Qp=Tp=n0p=None; Qm=Tm=n0m=None
+    if have_add and a_j_vec.size:
+        #Qp, Tp, n0p = _lanczos_tridiagonal(H_add, a_j_vec, L=L, reorth=reorth)
+        Qp, Tp, n0p = lanczos_tridiagonal_stable(H_add, a_j_vec, L=L, reorth=True, symmetrize=False, scale=True)
+    if have_rem and r_j_vec.size:
+        #Qm, Tm, n0m = _lanczos_tridiagonal(H_rem, r_j_vec, L=L, reorth=reorth)
+        Qm, Tm, n0m = lanczos_tridiagonal_stable(H_rem, r_j_vec, L=L, reorth=True, symmetrize=False, scale=True)
+
+
+    # Helper: pick time grid from ws and η
+    def _compute_time_grid(ws, eta):
+        ws = np.asarray(ws, dtype=float)
+        wmin, wmax = ws.min(), ws.max()
+        span = max(wmax - wmin, 1e-6)
+        # target time scales: from η and from frequency spacing
+        t_eta = 8.0 / max(eta, 1e-6)
+        dw = np.median(np.diff(np.unique(np.round(ws, 12)))) if ws.size > 1 else span
+        t_dw = 2.0*np.pi / max(dw, 1e-6)
+        t_max = max(t_eta, t_dw)
+        # dt to avoid aliasing: dt ≲ π/(4Ω)
+        wabs = max(abs(wmin), abs(wmax), 1.0)
+        dt_alias = np.pi / (4.0 * wabs)
+        dt = min(dt_alias, t_max/4096.0)
+        # clamp Nt between 512 and 8192
+        Nt = int(min(max(np.ceil(t_max/dt), 512), 8192))
+        ts = dt * np.arange(Nt, dtype=float)
+        return ts, dt
+
+    ts, dt = _compute_time_grid(ws, eta)
+
+    # Helper: compute time overlaps S(t) = <bra| exp(i sign T t) e1 > * v0_norm
+    def _time_overlaps_from_lanczos(T, Q, bra_vec, v0_norm, ts, sign):
+        if T is None or T.size == 0:
+            return np.zeros_like(ts, dtype=np.complex128)
+        # Project bra onto Lanczos basis
+        c = Q.conj().T @ bra_vec  # coefficients in Lanczos basis
+        # Diagonalize small tridiagonal T
+        evals, U = np.linalg.eigh(T)
+        # e1 = (1,0,0,…)
+        e1 = np.zeros((T.shape[0],), dtype=np.complex128); e1[0] = 1.0
+        Udag_e1 = U.conj().T @ e1         # components of e1 in eigenbasis
+        cdag_U  = np.conj(c) @ U          # bra projected in eigenbasis
+        # Time evolution exp(i sign λ t) for each eigenvalue
+        phases = np.exp(1j * sign * np.outer(evals, ts))   # (m, Nt)
+        # Overlap sum
+        return v0_norm * (cdag_U[:,None] * Udag_e1[:,None] * phases).sum(axis=0)
+
+    # Time overlaps for addition (sign=-1) and removal (sign=+1)
+    S_add = _time_overlaps_from_lanczos(Tp, Qp, a_i_vec, n0p, ts, sign=-1) if Qp is not None else np.zeros_like(ts, dtype=np.complex128)
+    S_rem = _time_overlaps_from_lanczos(Tm, Qm, r_i_vec, n0m, ts, sign=+1) if Qm is not None else np.zeros_like(ts, dtype=np.complex128)
+
+    # Fourier integration to G(ω): retarded integral with damping exp(-ηt)
+    phase = np.exp(1j * np.outer(ws, ts)) * np.exp(-eta * ts)[None, :]
+    g = -1j * dt * (phase @ (S_add + S_rem))  # -i factor for retarded GF
+
+    return g
+# gfs.py
+import numpy as np
+from . import clic_clib as cc
+import scipy.sparse as sp
+import numpy.linalg as npl
+from numpy.linalg import norm
+
+# -----------------------------
+# Helpers: wavefunction <-> basis
+# -----------------------------
+
+def wavefunction_support(wf, coeff_thresh=1e-14):
+    """
+    Return the set of determinants in a Wavefunction with |coeff|>coeff_thresh.
+    Assumes wf.data() is a mapping {SlaterDeterminant: complex}.
+    """
+    data = wf.data()
+    return {det for det, c in data.items() if abs(c) > coeff_thresh}
+
+def wf_to_vec(wf, basis_list):
+    """
+    Project wavefunction onto a given determinant basis ordering -> dense vector.
+    """
+    data = wf.data()
+    idx = {det: k for k, det in enumerate(basis_list)}
+    v = np.zeros(len(basis_list), dtype=np.complex128)
+    for det, c in data.items():
+        k = idx.get(det, None)
+        if k is not None:
+            v[k] += c
+    return v
+
+# -----------------------------
+# Build fixed Krylov basis by repeated H-applications at determinant level
+# -----------------------------
+
+def expand_basis_by_H(seed_dets, one_body_terms, two_body_terms, NappH):
+    """
+    Determinant-level expansion:
+    B_0 = seed_dets
+    B_{t+1} = B_t ∪ H*B_t connections (via one- and two-body graph expansion)
+    Stop after NappH expansions.
+    """
+    current = set(seed_dets)
+    for _ in range(NappH):
+        conn1 = cc.get_connections_one_body(list(current), one_body_terms)
+        conn2 = cc.get_connections_two_body(list(current), two_body_terms)
+        current |= set(conn1)
+        current |= set(conn2)
+    return sorted(list(current))
+
+def build_sector_basis_from_seeds(seeds_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=1e-14):
+    """
+    seeds_wf: list of seed Wavefunctions for a given particle sector.
+    1) collect support determinants from all seeds
+    2) expand that set by NappH applications of H
+    """
+    if not seeds_wf:
+        return []
+    seed_support = set()
+    for wf in seeds_wf:
+        seed_support |= wavefunction_support(wf, coeff_thresh=coeff_thresh)
+    return expand_basis_by_H(seed_support, one_body_terms, two_body_terms, NappH)
+
+# -----------------------------
+# Hamiltonian restricted to a fixed determinant basis
+# -----------------------------
+
+def build_H_in_basis(basis_dets, h0_clean, U_clean):
+    """
+    Use your fast OpenMP builder on the restricted basis.
+    Returns a scipy.spmatrix (CSR).
+    """
+    if len(basis_dets) == 0:
+        return sp.csr_matrix((0,0), dtype=np.complex128)
+    H = cc.build_hamiltonian_openmp(basis_dets, h0_clean, U_clean)
+    return H
+
+# -----------------------------
+# Block Lanczos on a fixed basis with dense/sparse @
+# -----------------------------
+
+def gram_schmidt_qr_dense(block_V, reorth=False, eps=1e-20):
+    """
+    Gram-Schmidt QR on a list of dense vectors (numpy arrays), returns (Q_list, R).
+    Q_list contains orthonormal dense vectors (same length as v).
+    R has shape (len(Q_list), n). If columns are dependent, len(Q_list) < n.
+    """
+    n = len(block_V)
+    if n == 0:
+        return [], np.array([[]], dtype=np.complex128)
+    # Copy inputs
+    V = [v.astype(np.complex128, copy=True) for v in block_V]
+    Q = []
+    R = np.zeros((n, n), dtype=np.complex128)
+    for j in range(n):
+        vj = V[j]
+        for i, qi in enumerate(Q):
+            hij = np.vdot(qi, vj)
+            R[i, j] = hij
+            vj -= hij * qi
+        if reorth and len(Q):
+            # one extra pass
+            for i, qi in enumerate(Q):
+                hij = np.vdot(qi, vj)
+                R[i, j] += hij
+                vj -= hij * qi
+        nrm2 = np.vdot(vj, vj).real
+        if nrm2 > eps:
+            nrm = np.sqrt(nrm2)
+            R[j, j] = nrm
+            Q.append(vj / nrm)
+        else:
+            break
+    r = len(Q)
+    return Q, R[:r, :n]
+
+def block_lanczos_fixed_basis(H, seed_vecs, L, reorth=False):
+    """
+    Standard block-Lanczos where H is a matrix in the fixed basis (dense or sparse),
+    and seed_vecs is a list of dense vectors (already in that basis).
+    Returns As, Bs, Qblocks, R0, where:
+      - Qblocks[k] is a list of orthonormal vectors (columns) at block k
+      - As[k], Bs[k] are the small block matrices like in your previous routine
+    """
+    Q0, R0 = gram_schmidt_qr_dense(seed_vecs, reorth=reorth)
+    if len(Q0) == 0:
+        return [], [], [], R0
+
+    # Convert block list to column-block matrix helpers
+    def block_to_mat(Qblock):
+        return np.column_stack(Qblock) if len(Qblock) else np.zeros((H.shape[0], 0), dtype=np.complex128)
+
+    Qblocks = [Q0]
+    As, Bs = [], []
+
+    Qk = block_to_mat(Q0)
+    HQk = H @ Qk
+    Ak = Qk.conj().T @ HQk
+    As.append(Ak)
+
+    Qkm1 = np.zeros((H.shape[0], 0), dtype=np.complex128)  # empty previous block
+
+    for _ in range(L):
+        # W = H Qk - Qk Ak - Q_{k-1} B_{k-1}^H
+        W = HQk - Qk @ Ak
+        if len(Bs) > 0:
+            W -= Qkm1 @ Bs[-1].conj().T
+
+        # Orthonormalize W
+        W_cols = [W[:, j].copy() for j in range(W.shape[1])]
+        Qnext_list, Bk = gram_schmidt_qr_dense(W_cols, reorth=reorth)
+        if len(Qnext_list) == 0:
+            break
+
+        Bs.append(Bk)
+        Qkm1 = Qk
+        Qk = np.column_stack(Qnext_list)
+
+        # Update Ak+1
+        HQk = H @ Qk
+        Ak = Qk.conj().T @ HQk
+        As.append(Ak)
+
+        Qblocks.append(Qnext_list)
+
+    return As, Bs, Qblocks, R0
+
+# -----------------------------
+# Continued fraction for top-left block (unchanged)
+# -----------------------------
+
+def block_cf_top_left(As, Bs, z):
+    """
+    Evaluate the top left block of the block tridiagonal resolvent using a
+    backward continued fraction with linear solves.
+    """
+    if not As:
+        return np.array([[]], dtype=np.complex128)
+    m0 = As[0].shape[0]
+    Id0 = np.eye(m0, dtype=np.complex128)
+    Sigma = np.zeros_like(As[-1], dtype=np.complex128)
+    for k in range(len(As) - 2, -1, -1):
+        Bkp1 = Bs[k]
+        Ikp1 = np.eye(As[k+1].shape[0], dtype=np.complex128)
+        try:
+            # Solve (z I - A_{k+1} - Sigma) X = B rather than invert
+            X = npl.solve(z * Ikp1 - As[k+1] - Sigma, Bkp1)
+        except npl.LinAlgError:
+            return np.full_like(Id0, np.nan)
+        Sigma = Bkp1.conj().T @ X
+    try:
+        return npl.solve(z * Id0 - As[0] - Sigma, np.eye(m0, dtype=np.complex128))
+    except npl.LinAlgError:
+        return np.full_like(Id0, np.nan)
+
+# -----------------------------
+# Top-level: fixed-basis block-Lanczos Green's function
+# -----------------------------
+
+def green_function_block_lanczos_fixed_basis(
+    M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
+    h0_clean, U_clean, one_body_terms, two_body_terms, coeff_thresh=1e-12, L=100, reorth=False
+):
+    """
+    For each sector (N+1 and N-1):
+      1) Build seed wavefunctions by applying creation/annihilation on psi0
+      2) Build fixed Krylov determinant basis by NappH H-expansions
+      3) Build H_in_basis once
+      4) Run block-Lanczos using plain matrix multiplications with H_in_basis
+      5) Assemble G(ω) on the subspace of selected impurity indices, embedded back
+         into the full spin-orbital space (size 2M), like your previous routine.
+    """
+    Norb = 2*M
+    Nw = len(ws)
+
+    # 1) seeds in each sector, keep maps to the global spin-orbital indices
+    seed_add_wf, add_src_idx = [], []
+    seed_rem_wf, rem_src_idx = [], []
+    for i in impurity_indices:
+        si = cc.Spin.Alpha if i < M else cc.Spin.Beta
+        oi = i % M
+        wa = cc.apply_creation(psi0_wf, oi, si)
+        if wa.data():  # non-empty
+            seed_add_wf.append(wa)
+            add_src_idx.append(i)
+        wr = cc.apply_annihilation(psi0_wf, oi, si)
+        if wr.data():
+            seed_rem_wf.append(wr)
+            rem_src_idx.append(i)
+
+    # 2) fixed determinant bases
+    basis_add = build_sector_basis_from_seeds(seed_add_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+    basis_rem = build_sector_basis_from_seeds(seed_rem_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+
+    # 3) build H in those bases
+    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
+    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
+
+    # 4) initial block vectors Q0 in each sector: project seeds to the fixed bases
+    seed_vecs_add = [wf_to_vec(wf, basis_add) for wf in seed_add_wf] if len(basis_add) else []
+    seed_vecs_rem = [wf_to_vec(wf, basis_rem) for wf in seed_rem_wf] if len(basis_rem) else []
+
+    # Run block-Lanczos on the fixed bases
+    As_g, Bs_g, Qs_g, R0_g = ([], [], [], np.array([]))
+    As_l, Bs_l, Qs_l, R0_l = ([], [], [], np.array([]))
+
+    # Drop a sector if all projected seeds are numerically zero
+    if seed_vecs_add and all(norm(v) < 1e-30 for v in seed_vecs_add):
+        seed_vecs_add, add_src_idx, basis_add, H_add = [], [], [], sp.csr_matrix((0,0), dtype=np.complex128)
+    if seed_vecs_rem and all(norm(v) < 1e-30 for v in seed_vecs_rem):
+        seed_vecs_rem, rem_src_idx, basis_rem, H_rem = [], [], [], sp.csr_matrix((0,0), dtype=np.complex128)
+
+    if len(seed_vecs_add):
+        # convert CSR to linear operator by dense/sparse @ in the iteration
+        As_g, Bs_g, Qs_g, R0_g = block_lanczos_fixed_basis(H_add, seed_vecs_add, L=L, reorth=reorth)
+
+    if len(seed_vecs_rem):
+        As_l, Bs_l, Qs_l, R0_l = block_lanczos_fixed_basis(H_rem, seed_vecs_rem, L=L, reorth=reorth)
+
+    have_g = (R0_g.size != 0 and len(As_g) > 0)
+    have_l = (R0_l.size != 0 and len(As_l) > 0)
+
+    # Indices in the small blocks correspond one-to-one to the surviving seeds order
+    # We preserved the mapping to the global spin-orbital indices in add_src_idx and rem_src_idx
+
+    # 5) Evaluate G(ω) in the seed subspace and embed back to [Norb x Norb] using the preserved maps
+    G_all = np.zeros((Nw, Norb, Norb), dtype=np.complex128)
+
+    for iw, w in enumerate(ws):
+        z_g = (w + e0) + 1j*eta
+        z_l = (-w + e0) - 1j*eta
+
+        Gg_eff = None
+        if have_g:
+            G00_g = block_cf_top_left(As_g, Bs_g, z_g)
+            if G00_g.size != 0 and not np.isnan(G00_g).any():
+                # Note: here R0_g is the QR R factor. The "impurity block" in this fixed-basis variant
+                #       corresponds to the seed subspace, so the correct coupling into CF top-left is
+                #       exactly like before: G_eff = R^H G00 R.
+                Gg_eff = R0_g.conj().T @ G00_g @ R0_g
+
+        Gl_eff = None
+        if have_l:
+            G00_l = block_cf_top_left(As_l, Bs_l, z_l)
+            if G00_l.size != 0 and not np.isnan(G00_l).any():
+                Gl_eff = R0_l.conj().T @ G00_l @ R0_l
+
+        # place back into the full Norb x Norb with the seed ordering matching impurity_indices
+        # but only for those seeds that actually survived
+        if Gg_eff is not None:
+            for a, ia in enumerate(add_src_idx):
+                for b, ib in enumerate(add_src_idx):
+                    G_all[iw, ia, ib] += Gg_eff[a, b]
+
+        if Gl_eff is not None:
+            for a, ia in enumerate(rem_src_idx):
+                for b, ib in enumerate(rem_src_idx):
+                    G_all[iw, ia, ib] -= Gl_eff[a, b]
+
+    return G_all, dict(
+        basis_add_size=len(basis_add), basis_rem_size=len(basis_rem),
+        have_g=have_g, have_l=have_l
+    )
+
+
+def green_function_scalar_fixed_basis(
+    M, psi0_wf, e0, ws, eta, i, NappH,
+    h0_clean, U_clean, one_body_terms, two_body_terms,
+    coeff_thresh=1e-12, L=100, reorth=False
+):
+    """
+    Compute the single-diagonal element G_ii(ω) for a given spin-orbital index i (0..2M-1)
+    using the fixed-basis block-Lanczos approach specialized to a scalar seed subspace.
+
+    Returns
+    -------
+    Gii : np.ndarray of shape (Nw,), complex128
+        The diagonal Green's function element G_ii(ω) for each ω in `ws`.
+    info : dict
+        Diagnostics: sizes of addition/removal bases, flags for having each sector, etc.
+    """
+    Norb = 2*M
+    assert 0 <= i < Norb, "i must be in [0, 2M)"
+
+    Nw = len(ws)
+    Gii = np.zeros(Nw, dtype=np.complex128)
+
+    # --- Build the two sector seeds only for index i
+    si = cc.Spin.Alpha if i < M else cc.Spin.Beta
+    oi = i % M
+
+    wf_add = cc.apply_creation(psi0_wf, oi, si)
+    wf_rem = cc.apply_annihilation(psi0_wf, oi, si)
+
+    have_add_seed = bool(wf_add.data())
+    have_rem_seed = bool(wf_rem.data())
+
+    # Early exit if both seeds vanish (matrix element zero)
+    if not have_add_seed and not have_rem_seed:
+        return Gii, dict(
+            basis_add_size=0, basis_rem_size=0,
+            have_g=False, have_l=False,
+            seed_nonzero=False
+        )
+
+    # --- Determinant bases by H-expansion from the single seeds
+    basis_add = build_sector_basis_from_seeds(
+        [wf_add] if have_add_seed else [],
+        one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
+    )
+    basis_rem = build_sector_basis_from_seeds(
+        [wf_rem] if have_rem_seed else [],
+        one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
+    )
+
+    # --- Restrict H
+    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
+    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
+
+    # --- Project seeds into their bases (each is a single dense vector)
+    seed_vecs_add = [wf_to_vec(wf_add, basis_add)] if have_add_seed and len(basis_add) else []
+    seed_vecs_rem = [wf_to_vec(wf_rem, basis_rem)] if have_rem_seed and len(basis_rem) else []
+
+    # Drop sector if the projected seed is numerically zero after expansion
+    if seed_vecs_add and norm(seed_vecs_add[0]) < 1e-30:
+        seed_vecs_add = []
+    if seed_vecs_rem and norm(seed_vecs_rem[0]) < 1e-30:
+        seed_vecs_rem = []
+
+    # --- Block Lanczos in each sector (block size will be 1 if present)
+    As_g, Bs_g, R0_g = [], [], np.array([])
+    As_l, Bs_l, R0_l = [], [], np.array([])
+
+    if seed_vecs_add:
+        As_g, Bs_g, _, R0_g = block_lanczos_fixed_basis(H_add, seed_vecs_add, L=L, reorth=reorth)
+
+    if seed_vecs_rem:
+        As_l, Bs_l, _, R0_l = block_lanczos_fixed_basis(H_rem, seed_vecs_rem, L=L, reorth=reorth)
+
+    have_g = (R0_g.size != 0 and len(As_g) > 0)
+    have_l = (R0_l.size != 0 and len(As_l) > 0)
+
+    # --- Evaluate scalar CFs and assemble G_ii(ω) = (R* G00 R)_{00}^add - (R* G00 R)_{00}^rem
+    # For 1x1 blocks: G_eff = |R0|^2 * G00
+    for iw, w in enumerate(ws):
+        # particle sector: z_g = w + e0 + iη
+        if have_g:
+            z_g = (w + e0) + 1j*eta
+            G00_g = block_cf_top_left(As_g, Bs_g, z_g)  # shape (1,1)
+            if G00_g.size and not np.isnan(G00_g).any():
+                r = R0_g[0, 0] if R0_g.ndim == 2 else R0_g
+                Gii[iw] += (abs(r)**2) * G00_g[0, 0]
+
+        # hole sector: z_l = -w + e0 - iη
+        if have_l:
+            z_l = (-w + e0) - 1j*eta
+            G00_l = block_cf_top_left(As_l, Bs_l, z_l)  # shape (1,1)
+            if G00_l.size and not np.isnan(G00_l).any():
+                r = R0_l[0, 0] if R0_l.ndim == 2 else R0_l
+                Gii[iw] -= (abs(r)**2) * G00_l[0, 0]
+
+    return Gii, dict(
+        basis_add_size=len(basis_add), basis_rem_size=len(basis_rem),
+        have_g=have_g, have_l=have_l, seed_nonzero=True
+    )
+
+
+# ---------------------------------------------------------------------------
+# TIME PROPAGATION 
+# ---------------------------------------------------------------------------
+
+def _lanczos_tridiagonal(H, v0, L=200, reorth=False):
+    """
+    Perform Hermitian Lanczos iteration starting from vector v0.
+    Constructs an orthonormal Krylov basis Q and the tridiagonal matrix T.
+
+    Parameters
+    ----------
+    H : (N×N) linear operator (csr_matrix or LinearOperator)
+        Hermitian Hamiltonian, must support `@` for matrix-vector product.
+    v0 : ndarray (N,)
+        Initial vector to start the Krylov subspace.
+    L : int
+        Maximum number of Lanczos steps.
+    reorth : bool
+        If True, apply a (single-pass) reorthogonalization against all previous vectors
+        to improve numerical stability.
+
+    Returns
+    -------
+    Q : ndarray (N×m)
+        Orthonormal Lanczos basis vectors.
+    T : ndarray (m×m)
+        Tridiagonal Lanczos matrix.
+    v0_norm : float
+        Norm of the initial vector v0.
+    """
+
+    # Ensure v0 is a complex128 array
+    v0 = np.asarray(v0, dtype=np.complex128)
+    N = v0.size
+
+    # Normalize the initial vector
+    v0_norm = np.linalg.norm(v0)
+    if v0_norm == 0:
+        # If v0 is zero, return empty basis and matrix
+        return np.zeros((N,0), dtype=np.complex128), np.zeros((0,0), dtype=np.complex128), 0.0
+
+    # Initialize first basis vector q = v0 / ||v0||
+    q_prev = np.zeros_like(v0)   # "ghost" previous vector, initially zero
+    q = v0 / v0_norm
+    Qcols = [q.copy()]           # list to store basis vectors
+    alphas, betas = [], []       # diagonals and off-diagonals of T
+
+    beta = 0.0
+    for _ in range(L):
+        # Apply Hamiltonian
+        w = H @ q
+        # Rayleigh quotient α = <q|H|q>
+        alpha = np.vdot(q, w)
+        # Remove components along current and previous q (three-term recurrence)
+        w = w - alpha * q - beta * q_prev
+
+        # Optional reorthogonalization against all previous Q vectors
+        if reorth and Qcols:
+            Qmat = np.column_stack(Qcols)
+            w -= Qmat @ (Qmat.conj().T @ w)
+
+        # Next off-diagonal β = ||w||
+        beta = np.linalg.norm(w)
+        alphas.append(alpha)
+
+        # If β ≈ 0, Krylov subspace has closed (breakdown)
+        if beta < 1e-14:
+            break
+
+        # Store β and normalize new q
+        betas.append(beta)
+        q_prev, q = q, w / beta
+        Qcols.append(q.copy())
+
+    # Number of steps actually performed
+    m = len(alphas)
+    if m == 0:
+        # Should not normally happen, but guard against empty Krylov space
+        return np.zeros((N,0), dtype=np.complex128), np.zeros((0,0), dtype=np.complex128), v0_norm
+
+    # Construct Q matrix (columns are q0, q1, …, q_{m-1})
+    Q = np.column_stack(Qcols[:m])
+
+    # Construct tridiagonal T from α and β coefficients
+    T = np.zeros((m, m), dtype=np.complex128)
+    for k in range(m):
+        T[k, k] = alphas[k]      # diagonal entries
+        if k+1 < m:
+            T[k, k+1] = betas[k] # upper diagonal
+            T[k+1, k] = betas[k] # lower diagonal
+
+    return Q, T, v0_norm
+
+def lanczos_tridiagonal_stable(H, v0, L=200, reorth=True, symmetrize=True, scale=True,
+                               reorth_tol=1e-10, breakdown_tol=1e-14, powerit=20):
+    """
+    Hermitian Lanczos with optional symmetrization, spectral scaling, and two-pass MGS reorth.
+    Returns Q (N×m), T (m×m), ||v0||.
+    """
+
+    # optional symmetrization
+    if symmetrize:
+        if sp.issparse(H):
+            H = 0.5*(H + H.conj().T)
+            H.setdiag(H.diagonal().real)
+        else:
+            H = 0.5*(H + H.conj().T)
+            np.fill_diagonal(H, np.real(np.diag(H)))
+
+    # estimate spectral radius for scaling
+    rho = 1.0
+    if scale:
+        # power iteration on a random unit vector
+        rng = np.random.default_rng(12345)
+        x = rng.standard_normal(H.shape[0]) + 1j*rng.standard_normal(H.shape[0])
+        x /= norm(x)
+        n = 1.0
+        for _ in range(powerit):
+            x = H @ x
+            n = norm(x)
+            if not np.isfinite(n) or n < 1e-300:
+                break
+            x /= n
+        rho = max(n, 1.0, 1e-12)
+    Hdot = (lambda x: (H @ x) / rho) if scale else (lambda x: H @ x)
+
+    v0 = np.asarray(v0, dtype=np.complex128)
+    N = v0.size
+    v0_norm = norm(v0)
+    if v0_norm == 0.0:
+        return np.zeros((N,0), np.complex128), np.zeros((0,0), np.complex128), 0.0
+
+    q_prev = np.zeros_like(v0)
+    q = v0 / v0_norm
+
+    # preallocate Q with an upper bound of L+1 columns
+    Q = np.empty((N, L+1), dtype=np.complex128)
+    Q[:, 0] = q
+    k = 0
+    alphas = np.empty(L, dtype=np.float64)
+    betas  = np.empty(L, dtype=np.float64)
+
+    beta = 0.0
+    while k < L:
+        w = Hdot(q)
+        alpha = np.vdot(q, w)
+        # Hermitian guard: take the real part
+        alpha = float(np.real(alpha))
+        # three term recurrence
+        w = w - alpha*q - beta*q_prev
+
+        # selective reorth trigger
+        if reorth:
+            # test loss of orthogonality: max|Q[:,:k+1]^H w|
+            hk = Q[:, :k+1].conj().T @ w
+            maxlost = np.max(np.abs(hk))
+            if maxlost > reorth_tol*norm(w):
+                # two-pass MGS
+                w -= Q[:, :k+1] @ hk
+                hk2 = Q[:, :k+1].conj().T @ w
+                w -= Q[:, :k+1] @ hk2
+
+        beta = norm(w)
+        alphas[k] = alpha
+
+        if not np.isfinite(beta) or beta < breakdown_tol:
+            # happy breakdown or numerical failure
+            break
+
+        q_prev, q = q, w / beta
+        k += 1
+        Q[:, k] = q
+        betas[k-1] = beta
+
+    m = max(1, k)  # at least one alpha
+    Q = Q[:, :m]
+    T = np.zeros((m, m), dtype=np.complex128)
+    for i in range(m):
+        # scale back the spectrum if we scaled H
+        T[i, i] = alphas[i]*rho
+        if i+1 < m:
+            T[i, i+1] = betas[i]*rho
+            T[i+1, i] = betas[i]*rho
+
+    return Q, T, v0_norm
+
+def green_function_from_time_propagation(
+    i, j,
+    M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
+    h0_clean, U_clean, one_body_terms, two_body_terms,
+    coeff_thresh=1e-12, L=100, reorth=True
+):
+    """
+    Compute the retarded Green's function G_ij(ω) using time propagation + Lanczos.
+
+    Strategy:
+      - Build N+1 and N-1 sector bases starting from |a_j> = c_j†|ψ0> and |r_j> = c_j|ψ0>.
+      - Restrict H to those bases and shift by E0 so ground state is stationary.
+      - Run Lanczos on each sector to get tridiagonal T matrices.
+      - Use T’s spectral decomposition to compute time overlaps S_add(t), S_rem(t).
+      - Fourier-integrate with damping exp(-ηt) to get G_ij(ω).
+
+    Parameters
+    ----------
+    i, j : int
+        Indices of the Green's function G_ij(ω) to compute (0 ≤ i,j < 2M).
+    M : int
+        Number of spatial orbitals (so Norb = 2M including spin).
+    psi0_wf : Wavefunction
+        Ground state wavefunction.
+    e0 : float
+        Ground state energy.
+    ws : ndarray
+        Frequency grid.
+    eta : float
+        Broadening parameter (imaginary shift).
+    impurity_indices : list[int]
+        Indices of impurity orbitals (not directly needed here).
+    NappH : int
+        Number of H-applications to expand determinant basis.
+    h0_clean, U_clean, one_body_terms, two_body_terms :
+        Hamiltonian input data.
+    coeff_thresh : float
+        Threshold for determinant coefficients.
+    L : int
+        Maximum Lanczos steps.
+    reorth : bool
+        Reorthogonalize Lanczos vectors.
+
+    Returns
+    -------
+    g : ndarray (len(ws),)
+        Complex retarded Green's function values at given ω grid.
+    """
+
+    ws = np.asarray(ws, dtype=float)
+    Norb = 2*M
+    assert 0 <= i < Norb and 0 <= j < Norb
+
+    # Helper: convert global index to (orbital, spin)
+    def _index_to_spin_orb(i, M):
+        si = cc.Spin.Alpha if i < M else cc.Spin.Beta
+        oi = i % M
+        return oi, si
+
+    # Spin/orbital for indices i and j
+    oj, sj = _index_to_spin_orb(j, M)
+    oi, si = _index_to_spin_orb(i, M)
+
+    # Seeds: |a_j> = c_j†|ψ0>, |r_j> = c_j|ψ0>
+    wf_add_j = cc.apply_creation(psi0_wf, oj, sj)
+    wf_rem_j = cc.apply_annihilation(psi0_wf, oj, sj)
+    have_add = bool(wf_add_j.data()); have_rem = bool(wf_rem_j.data())
+    if not have_add and not have_rem:
+        # If both vanish, G_ij(ω) = 0
+        return np.zeros_like(ws, dtype=np.complex128)
+
+    # Bra seeds for overlap evaluation (|a_i>, |r_i>)
+    wf_add_i = cc.apply_creation(psi0_wf, oi, si)
+    wf_rem_i = cc.apply_annihilation(psi0_wf, oi, si)
+
+    # Build determinant bases for N+1 and N-1 sectors by H-expansion
+    basis_add = build_sector_basis_from_seeds(
+        [wf_add_j] if have_add else [], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
+    )
+    basis_rem = build_sector_basis_from_seeds(
+        [wf_rem_j] if have_rem else [], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
+    )
+
+    # Build restricted Hamiltonians
+    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if have_add and len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
+    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if have_rem and len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
+
+    # Shift by ground state energy e0 so the ground state is stationary
+    if H_add.shape[0] > 0:
+        H_add = H_add - e0 * sp.eye(H_add.shape[0], dtype=np.complex128, format='csr')
+    if H_rem.shape[0] > 0:
+        H_rem = H_rem - e0 * sp.eye(H_rem.shape[0], dtype=np.complex128, format='csr')
+
+    # Project seeds into those bases
+    a_j_vec = wf_to_vec(wf_add_j, basis_add) if have_add and H_add.shape[0] else np.zeros((0,), dtype=np.complex128)
+    r_j_vec = wf_to_vec(wf_rem_j, basis_rem) if have_rem and H_rem.shape[0] else np.zeros((0,), dtype=np.complex128)
+    a_i_vec = wf_to_vec(wf_add_i, basis_add) if have_add and H_add.shape[0] else np.zeros((0,), dtype=np.complex128)
+    r_i_vec = wf_to_vec(wf_rem_i, basis_rem) if have_rem and H_rem.shape[0] else np.zeros((0,), dtype=np.complex128)
+
+    # Lanczos on each sector starting from |a_j>, |r_j>
+    Qp=Tp=n0p=None; Qm=Tm=n0m=None
+    if have_add and a_j_vec.size:
+        # stable variant with symmetrization and spectral scaling
+        Qp, Tp, n0p = lanczos_tridiagonal_stable(H_add, a_j_vec, L=L, reorth=True, symmetrize=True, scale=True)
+    if have_rem and r_j_vec.size:
+        Qm, Tm, n0m = lanczos_tridiagonal_stable(H_rem, r_j_vec, L=L, reorth=True, symmetrize=True, scale=True)
+
+    # Helper: pick time grid from ws and η
+    def _compute_time_grid(ws, eta):
+        ws = np.asarray(ws, dtype=float)
+        wmin, wmax = ws.min(), ws.max()
+        span = max(wmax - wmin, 1e-6)
+        # target time scales: from η and from frequency spacing
+        t_eta = 8.0 / max(eta, 1e-6)
+        dw = np.median(np.diff(np.unique(np.round(ws, 12)))) if ws.size > 1 else span
+        t_dw = 2.0*np.pi / max(dw, 1e-6)
+        t_max = max(t_eta, t_dw)
+        # dt to avoid aliasing: dt ≲ π/(4Ω)
+        wabs = max(abs(wmin), abs(wmax), 1.0)
+        dt_alias = np.pi / (4.0 * wabs)
+        dt = min(dt_alias, t_max/4096.0)
+        # clamp Nt between 512 and 8192
+        Nt = int(min(max(np.ceil(t_max/dt), 512), 8192))
+        ts = dt * np.arange(Nt, dtype=float)
+        return ts, dt
+
+    ts, dt = _compute_time_grid(ws, eta)
+
+    # Helper: compute time overlaps S(t) = <bra| exp(i sign T t) e1 > * v0_norm
+    def _time_overlaps_from_lanczos(T, Q, bra_vec, v0_norm, ts, sign):
+        if T is None or T.size == 0:
+            return np.zeros_like(ts, dtype=np.complex128)
+        # Project bra onto Lanczos basis
+        c = Q.conj().T @ bra_vec  # coefficients in Lanczos basis
+        # Diagonalize small tridiagonal T
+        evals, U = np.linalg.eigh(T)
+        # e1 = (1,0,0,…)
+        e1 = np.zeros((T.shape[0],), dtype=np.complex128); e1[0] = 1.0
+        Udag_e1 = U.conj().T @ e1         # components of e1 in eigenbasis
+        cdag_U  = np.conj(c) @ U          # bra projected in eigenbasis
+        # Time evolution exp(i sign λ t) for each eigenvalue
+        phases = np.exp(1j * sign * np.outer(evals, ts))   # (m, Nt)
+        # Overlap sum
+        return v0_norm * (cdag_U[:,None] * Udag_e1[:,None] * phases).sum(axis=0)
+
+    # Time overlaps for addition (sign=-1) and removal (sign=+1)
+    S_add = _time_overlaps_from_lanczos(Tp, Qp, a_i_vec, n0p, ts, sign=-1) if Qp is not None else np.zeros_like(ts, dtype=np.complex128)
+    S_rem = _time_overlaps_from_lanczos(Tm, Qm, r_i_vec, n0m, ts, sign=+1) if Qm is not None else np.zeros_like(ts, dtype=np.complex128)
+
+    # Fourier integration to G(ω): retarded integral with damping exp(-ηt)
+    phase = np.exp(1j * np.outer(ws, ts)) * np.exp(-eta * ts)[None, :]
+    g = -1j * dt * (phase @ (S_add + S_rem))  # -i factor for retarded GF
+
+    return g# hamiltonians.py
 import numpy as np 
 from . import clic_clib as cc
 import scipy.sparse
@@ -1998,10 +3295,93 @@ def calculate_bath_filling(h0: np.ndarray, M_imp: int, zero_threshold: float = 1
             # Your Julia code does this, so we replicate it.
             bath_filling += 0.5
     
-    return int(np.floor(bath_filling))# mf.py
+    return int(np.floor(bath_filling))import os
 import numpy as np
+from typing import Union
 
-def mfscf(h0_0, U_0, Ne, maxiter=100):
+def dump(
+    F: Union[np.ndarray, float, int, complex],
+    x: np.ndarray,
+    filename: str,
+    output_dir: str = "dump",
+    float_fmt: str = "%.5f",
+    header_comment: str = "#"
+) -> None:
+    """
+    Writes the array `x` and array `F` to a file.
+
+    This is a direct Python port of the provided Julia function. The key
+    difference is that the dependent axis in `F` is the FIRST axis (F.shape[0]).
+
+    - `x`: 1D array to be the first column in the output.
+    - `F`: Array that can be a scalar, 1D, 2D, or 3D.
+    - `filename`: String specifying the path to the output file.
+    """
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir)
+    full_path = os.path.join(output_dir, filename)
+
+    # --- Prepare data based on F's dimensions ---
+    header = ""
+    F_processed = None
+
+    if not isinstance(F, np.ndarray):  # Scalar case
+        if not np.isscalar(F):
+             raise TypeError("F must be a scalar or a numpy array.")
+        # Create a column vector by repeating the scalar F
+        F_processed = np.full((len(x), 1), F)
+    else:
+        nd = F.ndim
+        # Python convention: first dimension must match x
+        if F.shape[0] != len(x):
+            raise ValueError(
+                f"The first dimension of F (shape: {F.shape}) must match the "
+                f"length of x ({len(x)})"
+            )
+
+        if nd == 1:
+            F_processed = F.reshape(-1, 1)
+        elif nd == 2:
+            F_processed = F
+        elif nd == 3:
+            p, q = F.shape[1], F.shape[2]
+            F_processed = F.reshape(len(x), p * q)
+            # Generate the exact header from the Julia function
+            header_lines = [f"{header_comment} Column index map to original (p, q) indices:"]
+            counter = 2  # Column 1 is 'x'
+            for i in range(p):
+                line = " ".join([f"{counter + j:<4d}" for j in range(q)])
+                header_lines.append(f"{header_comment} {line}")
+                counter += q
+            header = "\n".join(header_lines)
+        else:
+            raise ValueError(f"Unsupported number of dimensions for F: {nd}")
+
+    # Combine x and the processed F into a single array
+    # Note: the data array can have a mix of types if F is complex
+    data_to_save = np.c_[x, F_processed]
+
+    # --- Manual file writing to replicate Julia's sprintf behavior ---
+    with open(full_path, "w") as f:
+        if header:
+            f.write(header + "\n")
+
+        for row in data_to_save:
+            formatted_parts = []
+            for item in row:
+                # Format floats with the specified format string,
+                # otherwise, convert to a standard string (handles complex numbers).
+                if isinstance(item, (float, np.floating)):
+                    formatted_parts.append(format(item, float_fmt.lstrip('%')))
+                else:
+                    formatted_parts.append(str(item))
+            f.write(" ".join(formatted_parts) + "\n")
+
+    print(f"Data saved to '{full_path}'")# mf.py
+import numpy as np
+from . import symmetries
+
+def mfscf_(h0_0, U_0, Ne, maxiter=100):
     """
     Mean-field self-consistent field (MF-SCF) loop with simple linear mixing,
     in a basis where spins are BLOCKED (↑ then ↓):
@@ -2036,6 +3416,7 @@ def mfscf(h0_0, U_0, Ne, maxiter=100):
     NF = h0_0.shape[0]
     M = NF // 2
 
+
     # Spin-up block (top-left M×M)
     h0_up = h0_0[:M, :M]
 
@@ -2055,6 +3436,7 @@ def mfscf(h0_0, U_0, Ne, maxiter=100):
     print(f"mixing parameter: α = {alpha}")
 
     hmf = None
+    Vmf = None
     E0 = 1_000.0
     threshold = 1e-6
 
@@ -2095,6 +3477,7 @@ def mfscf(h0_0, U_0, Ne, maxiter=100):
 
     if it == maxiter:
         print(f"NOT CONVERGED IN {maxiter} ITERATIONS")
+
 
     #print(f"HF energies : {es}")
     print(f"tr rho = {np.trace(rho)}")
@@ -2157,57 +3540,8 @@ def double_es_Vs_blocked(es_up, Vs_up):
     Vs_[M:, M:] = Vs_up          # spin-down block columns
     return es_, Vs_
 
-def get_mean_field_(U, rho, use_einsum=True, nz=None):
-    """
-    V_{ik} = sum_{j,l} rho_{jl} * ( U_{i j k l} - U_{i j l k} )
-    EC     = -1/2 * Tr( rho V )
-
-    Args:
-        U  : (NF,NF,NF,NF) ndarray
-        rho: (NF,NF) ndarray
-        use_einsum : bool
-            If True, build V with a fully vectorized contraction via np.einsum.
-        nz : optional list of (i,j,k,l) tuples (fallback loop if provided and use_einsum=False)
-
-    Returns:
-        V  : (NF,NF) complex ndarray
-        EC : float
-    """
-    NF = U.shape[0]
-
-    if use_einsum:
-        # A_{ik} = Σ_{j,l} U_{i j k l} rho_{j l}
-        # B_{ik} = Σ_{j,l} U_{i j l k} rho_{j l}
-        A = np.einsum('ijkl,jl->ik', U, rho, optimize=True)
-        B = np.einsum('ijlk,jl->ik', U, rho, optimize=True)
-        V = A - B
-    else:
-        # Fallback: Python loop (kept for completeness)
-        if nz is None:
-            nz = [tuple(idx) for idx in np.argwhere(U != 0)]
-        V = np.zeros((NF, NF), dtype=np.complex128)
-        for (i, j, k, l) in nz:
-            V[i, k] += rho[j, l] * (U[i, j, k, l] - U[i, j, l, k])
-
-    EC = -0.5 * np.trace(rho @ V)
-    return V, float(np.real(EC))
 
 def get_mean_field(U, rho, use_einsum=True, nz=None):
-    # Standard physicist's notation V_{ik} = Σ_{jl} (U_{ijlk} - U_{iljk}) ρ_{lj}
-    # Let's write it with rho_{jl}
-    # V_{ik} = Σ_{jl} U_{ilkj} ρ_{lj} - Σ_{jl} U_{ijlk} ρ_{lj}
-    # V_{ik} = Σ_{jl} U_{ikjl} ρ_{lj} - Σ_{jl} U_{ijlk} ρ_{jl} # Renaming dummy indices l->k, k->j, j->l
-    
-    # Original Python code:
-    # A = np.einsum('ijkl,jl->ik', U, rho) 
-    # B = np.einsum('ijlk,jl->ik', U, rho)
-    # V = A - B
-
-    # Let's try the other common convention.
-    # U[i,k,j,l] corresponds to c_i^+ c_j^+ c_l c_k
-    # V_ik = Sum_jl <ik|v|jl> rho_lj - <il|v|jk> rho_lj
-    # V_ik = Sum_jl U_ikjl rho_lj - U_iljk rho_lj
-    # NOTE: rho is symmetric, so rho_lj = rho_jl
     
     # Coulomb term with U_ikjl
     J = np.einsum('ijkl,jl->ik', U, rho, optimize=True)
@@ -2250,7 +3584,155 @@ def _bisection(f, a, b, tol=1e-12, maxiter=200):
             b, fb = m, fm
         else:
             a, fa = m, fm
-    return 0.5 * (a + b)# ops.py
+    return 0.5 * (a + b)
+
+
+# -------------------------------------------------
+
+def _reorder_to_spin_blocks(es_sorted, Vs_sorted, M):
+    """
+    Reorders globally sorted eigenvalues and eigenvectors back into a
+    spin-blocked (AlphaFirst) convention. This is necessary when degenerate
+    eigenvalues (like in RHF) cause sorting to interleave spin channels.
+
+    Args:
+        es_sorted (np.ndarray): Globally sorted eigenvalues.
+        Vs_sorted (np.ndarray): Corresponding eigenvectors (columns).
+        M (int): Number of spatial orbitals (size of one spin block).
+
+    Returns:
+        es_reordered (np.ndarray): Eigenvalues in [alpha..., beta...] order.
+        Vs_reordered (np.ndarray): Eigenvectors in the same spin-blocked order.
+    """
+    NF = 2 * M
+    alpha_vectors = []
+    beta_vectors = []
+    alpha_energies = []
+    beta_energies = []
+
+    # Classify each MO as alpha or beta
+    for i in range(NF):
+        vec = Vs_sorted[:, i]
+        # An MO is alpha if its weight is predominantly in the first M components
+        is_alpha = np.sum(np.abs(vec[:M])**2) > 0.5
+        if is_alpha:
+            alpha_vectors.append(vec)
+            alpha_energies.append(es_sorted[i])
+        else:
+            beta_vectors.append(vec)
+            beta_energies.append(es_sorted[i])
+            
+    # Reassemble into the desired block structure
+    es_reordered = np.array(alpha_energies + beta_energies)
+    Vs_reordered = np.zeros_like(Vs_sorted)
+    
+    if alpha_vectors:
+        Vs_reordered[:, :M] = np.column_stack(alpha_vectors)
+    if beta_vectors:
+        Vs_reordered[:, M:] = np.column_stack(beta_vectors)
+        
+    return es_reordered, Vs_reordered
+
+def _solve_h_symmetric(h0: np.ndarray):
+    """
+    (This function is correct as it was, the problem is handled after its use)
+    Diagonalizes a hermitian matrix by exploiting its block-diagonal symmetry.
+    Returns globally sorted eigenvalues and eigenvectors.
+    """
+    sym_dict = symmetries.analyze_symmetries(h0)
+    blocks = sym_dict['blocks']
+    identical_groups = sym_dict['identical_groups']
+
+    unique_Vs_blocks, unique_es_blocks = {}, {}
+    for group in identical_groups:
+        leader_idx = group[0]
+        leader_block_indices = blocks[leader_idx]
+        h_block = h0[np.ix_(leader_block_indices, leader_block_indices)]
+        es_block, Vs_block = np.linalg.eigh(h_block)
+        unique_es_blocks[leader_idx] = es_block
+        unique_Vs_blocks[leader_idx] = Vs_block
+        
+    Vs = symmetries.assemble_symmetric_hamiltonian(sym_dict, unique_matrices=unique_Vs_blocks)
+
+    all_es = []
+    for i in range(len(blocks)):
+        found_leader = -1
+        for group in identical_groups:
+            if i in group:
+                found_leader = group[0]
+                break
+        all_es.extend(unique_es_blocks[found_leader])
+    all_es = np.array(all_es)
+
+    sort_indices = np.argsort(np.real(all_es))
+    es_sorted = all_es[sort_indices]
+    Vs_sorted = Vs[:, sort_indices]
+    
+    return np.real(es_sorted), Vs_sorted, sym_dict
+
+
+def mfscf(h0_0, U_0, Ne, maxiter=100, alpha=0.2, threshold=1e-8):
+    """
+    Symmetry-aware mean-field self-consistent field (MF-SCF) loop.
+    This version now returns eigenvectors and eigenvalues in a spin-blocked
+    (AlphaFirst) convention, even when degeneracies are present.
+    """
+    NF = h0_0.shape[0]
+    M = NF // 2
+
+    print("--- Initializing SCF from h0 ---")
+    es, Vs, sym_dict = _solve_h_symmetric(h0_0)
+    print(f"Symmetry analysis found {len(sym_dict['blocks'])} blocks.")
+    print(f"Found {len(sym_dict['identical_groups'])} unique groups of blocks.")
+    
+    rho = get_rho(es, Vs, Ne)
+    # The rest of the initial prints...
+    print(f"iter 0, Tr(rho*h0) = {np.real(np.trace(rho @ h0_0)):.8f}")
+    print(f"Ne = {Ne}, initial tr(rho) = {np.trace(rho):.8f}")
+    print(f"mixing parameter: α = {alpha}")
+
+    hmf, E0_total = None, 1_000.0
+    
+    nz_count = int(np.count_nonzero(U_0))
+    print(f"\nNumber of non-zero U elements: {nz_count}")
+    print(f"{'Iter':>4s} {'E_total':>15s} {'E_corr':>15s} {'ΔE_total':>15s}")
+    
+    it = 0
+    for it in range(1, maxiter + 1):
+        Vmf, ec = get_mean_field(U_0, rho)
+        hmf = h0_0 + Vmf
+        es, Vs, _ = _solve_h_symmetric(hmf) # es and Vs are globally sorted here
+
+        E_total = 0.5 * np.real(np.trace(rho @ (h0_0+hmf)))
+        DE = abs(E_total - E0_total)
+        
+        if it % 10 == 0 or it == 1:
+            print(f"{it:4d} {E_total:15.8f} {np.real(ec):15.8f} {DE:15.4e}")
+
+        if DE < threshold:
+            print(f"\nConverged in {it} iterations.")
+            break
+        
+        E0_total = E_total
+
+        rho_new = get_rho(es, Vs, Ne)
+        rho = alpha * rho_new + (1.0 - alpha) * rho
+
+    if it == maxiter:
+        print(f"\nNOT CONVERGED IN {maxiter} ITERATIONS")
+
+    print(f"\nFinal tr(rho) = {np.trace(rho):.8f}")
+    
+    # --- FINAL FIX-UP STEP ---
+    # Reorder the final results to conform to the spin-blocked convention
+    print("Reordering final eigenvectors to spin-blocked convention...")
+    es_final, Vs_final = _reorder_to_spin_blocks(es, Vs, M)
+    
+    # Return the reordered, user-friendly results
+    return hmf, es_final, Vs_final, rho
+
+
+# ops.py
 from . import clic_clib as cc
 import numpy as np
 
@@ -2273,13 +3755,13 @@ def one_rdm(wf,M,block=None):
         K = len(block)
 
     rdm = np.zeros((K, K), dtype=np.complex128)
-    for i in block:
-        for j in block:
+    for (i,ib) in enumerate(block):
+        for (j,jb) in enumerate(block):
             # Create the operator term c†_i c_j
-            spin_i = cc.Spin.Alpha if i < M else cc.Spin.Beta
-            spin_j = cc.Spin.Alpha if j < M else cc.Spin.Beta
-            orb_i = i if i < M else i - M
-            orb_j = j if j < M else j - M
+            spin_i = cc.Spin.Alpha if ib < M else cc.Spin.Beta
+            spin_j = cc.Spin.Alpha if jb < M else cc.Spin.Beta
+            orb_i = ib if ib < M else ib - M
+            orb_j = jb if jb < M else jb - M
             
             # The operator term is a list containing a single tuple (h_ij = 1.0)
             op_term = [(orb_i, orb_j, spin_i, spin_j, 1.0)]
@@ -2359,8 +3841,10 @@ def plot_spectral_function(ws, A_w, impurity_indices, title, filename=None):
     Plots the impurity spectral function A(w) and saves it to a file.
     """
     print(f"impurity_indices = {impurity_indices}")
-    dos = np.sum(A_w[:, impurity_indices, impurity_indices], axis=1).real
-    
+    if len(np.shape(A_w)) == 3:
+        dos = np.sum(A_w[:, impurity_indices, impurity_indices], axis=1).real
+    elif len(np.shape(A_w)) == 2:
+        dos = np.sum(A_w[:, impurity_indices], axis=1).real
     plt.figure(figsize=(8, 5))
     plt.plot(ws, dos, label="Total Impurity DOS")
     plt.title(title)
@@ -2419,10 +3903,6 @@ class NelecLowEnergySubspace:
         Args:
             target: A filename (str) or an h5py.Group object.
         """
-        if not self.basis:
-            print("Warning: Cannot save result with an empty basis.")
-            return
-
         def _save_to_group(group: h5py.Group):
             # Flatten basis occupation lists for robust HDF5 saving
             alpha_indices_flat = []
@@ -2685,13 +4165,13 @@ class ThermalGroundState:
 from . import clic_clib as cc
 from itertools import combinations
 import numpy as np
-from . import basis_Np,hamiltonians,ops,results
+from . import basis_Np,hamiltonians,ops,results,basis_1p
 from scipy.sparse.linalg import eigsh 
-from numpy.linalg import eigh
+from numpy.linalg import eigh,eig
 
 
 def selective_ci(
-    h0, U,
+    h0, U, C,
     M, Nelec,
     seed,
     generator,
@@ -2703,6 +4183,8 @@ def selective_ci(
     conv_tol=1e-6,
     prune_thr=1e-7,
     Nmul = None,
+    min_size=512,
+    max_size=5e4,
     verbose=True,
 ):
     """
@@ -2714,6 +4196,8 @@ def selective_ci(
         One-particle Hamiltonian (spin-orbital or spatial; your helpers decide).
     U  : (K,K,K,K) array_like
         Two-particle Hamiltonian (spin-orbital convention matching `get_*_terms`).
+    C : (K,K) array_like 
+        Transformation matrix (we want to keep track of it)
     M  : int
         Number of spatial orbitals.
     Nelec : int
@@ -2739,6 +4223,8 @@ def selective_ci(
     Nmul : float 
         If positive, the size of the retained elements in generated basis is Nmul * len(current basis)
         If None, we keep the full generated basis.
+    min_size : Int -> to do  
+    max_size : Int -> to do 
     verbose : bool
         Print iteration logs.
 
@@ -2764,7 +4250,7 @@ def selective_ci(
     H = ops.get_ham(basis0, h0, U)
     # For small bases, a dense eig can be faster / safer; otherwise eigsh.
     dim0 = H.shape[0]
-    if dim0 <= 64:
+    if dim0 <= 256:
         from numpy.linalg import eigh
         evals, evecs = eigh(H.toarray())
         e0 = float(evals[0])
@@ -2788,33 +4274,69 @@ def selective_ci(
             two_bh = ops.get_two_body_terms(U, M)
 
     def get_roots(H,nroots,dim):
-            if dim <= 64:
-                evals, evecs = eigh(H.toarray())
-            else:
-                evals, evecs = eigsh(H, k=nroots, which='SA')
-            return evals,evecs
+        if dim <= 64:
+            evals, evecs = eigh(H.toarray())
+        else:
+            evals, evecs = eigsh(H, k=nroots, which='SA')
+        indsort = np.argsort(np.real(evals))
+        evals=evals[indsort]
+        evecs=evecs[:,indsort]
+                
+        return evals,evecs
+
+
+
 
     # Main selection loop
     for it in range(max_iter):
         # Propose new determinants using the provided generator
 
-        lenb = len(basis0)
+        inds,blocks = basis_Np.partition_by_Sz(basis0)
+        print(f"blocks = {blocks}")
+
+        current_size = len(basis0)
 
         gen_basis,hwf = generator(psi0,one_bh,two_bh,thr=prune_thr,return_hwf=True)
         selected_basis = selector(hwf,e0,gen_basis,2*M,h0,U)
 
         # If Nmul = 1.0, at each iteration we double the basis size 
-        if Nmul != None : 
-            nkeep = Nmul * lenb 
-            nkeep = int(min(nkeep, len(selected_basis)))
-            selected_basis = selected_basis[:nkeep]
+        #if Nmul != None : 
+        #    nkeep = Nmul * lenb 
+        #    nkeep = int(min(nkeep, len(selected_basis)))
+        #    selected_basis = selected_basis[:nkeep]
+        # --- Determine how many new determinants to keep based on size constraints ---
+        num_candidates = len(selected_basis)
 
+        # 1. Calculate target number of new states from Nmul
+        if Nmul is not None:
+            n_add_nmul = int(Nmul * current_size)
+        else:
+            # If Nmul is None, we are unconstrained by it, so consider all candidates
+            n_add_nmul = num_candidates
+
+        # 2. Calculate number of new states needed to reach min_size
+        n_add_min = max(0, min_size - current_size)
+        # 3. Take the maximum of the two suggestions
+        n_to_add = max(n_add_nmul, n_add_min)
+
+        # 4. Cap by the number of available candidates
+        n_to_add = min(n_to_add, num_candidates)
+        
+        # 5. Cap to not exceed max_size
+        n_to_add = min(n_to_add, max_size - current_size)
+
+        n_to_add = int(max(0, n_to_add)) # Ensure it's not negative
+
+        # Truncate the selected basis to the final number of states to add
+        final_selected = selected_basis[:n_to_add]
         # Merge and sort the basis
-        new_basis = set(basis0) | set(selected_basis)
+        new_basis = set(basis0) | set(final_selected)
+
         if len(new_basis) == len(basis0):
             if verbose:
                 print(f"[iter {it}] no new determinants proposed; stopping.")
             break
+
         basis0 = sorted(list(new_basis))
 
 
@@ -2823,12 +4345,8 @@ def selective_ci(
         # Rebuild H and solve ground state
         H = ops.get_ham(basis0, h0, U)
         dim = H.shape[0]
-
         
-
-
-        
-        evals, evecs = get_roots(H, 1, dim)
+        evals, evecs = get_roots(H, num_roots, dim)
         e_new = float(evals[0])
         psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
 
@@ -2837,12 +4355,14 @@ def selective_ci(
         sizes.append(dim)
 
         if verbose:
-            print(f"[iter {it}] dim={dim:>6}  E0={e_new:.12f}  |dE|={dE:.3e}")
+            Es_str = " ".join(f"{ev:.12f}" for ev in evals[:num_roots])
+            print(f"[iter {it}] dim={dim:>6}  Es=[{Es_str}]  |dE0|={dE:.3e}")
 
         if dE < conv_tol:
             if verbose:
                 print(f"[conv] reached |dE| < {conv_tol}")
             break
+
 
     
     if num_roots > len(basis0):
@@ -2850,13 +4370,14 @@ def selective_ci(
         num_roots = len(basis0)
 
     evals, evecs = get_roots(H, num_roots, len(basis0))
-    psis = [cc.Wavefunction(M, basis0, evecs[:, i]) for i in range(num_roots)]
+    psis = [cc.Wavefunction(M, basis0, evecs[:, i], keep_zeros=True) for i in range(num_roots)]
+
 
     sci_res = results.NelecLowEnergySubspace(M=M,Nelec=Nelec,
         energies=evals,
         wavefunctions=psis,
         basis=basis0,
-        transformation_matrix=None
+        transformation_matrix=C
     )
 
     return sci_res
@@ -2871,8 +4392,12 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=0,verbose=True):
 
     H_sparse = ops.get_ham(basis,h0,U,method="openmp")
     eigvals, eigvecs = eigsh(H_sparse, k=num_roots, which='SA')
+    indsort = np.argsort(np.real(eigvals))
+    eigvals=eigvals[indsort]
+    eigvecs=eigvecs[:,indsort]
     if verbose:
-        print(f"Ground State Energy: {eigvals[0]:.6f}")
+        Es_str = " ".join(f"{ev:.12f}" for ev in eigvals[:num_roots])
+        print(f"Es=[{Es_str}]")
     psis = [cc.Wavefunction(M, basis, eigvecs[:,i]) for i in range(num_roots)]
 
     fci_res = results.NelecLowEnergySubspace(M=M,Nelec=Nelec,
@@ -2906,11 +4431,11 @@ def hamiltonian_generator(wf,one_body_terms,two_body_terms,thr=1e-7,return_hwf=T
         hwf: optional, the new wavefunction
 
     """
-    wf.prune(thr)
+    #wf.prune(thr)
 
     if return_hwf:
         hwf = cc.apply_one_body_operator(wf,one_body_terms) + cc.apply_two_body_operator(wf,two_body_terms)
-
+        hwf.prune(thr)
         basis_hwf = hwf.get_basis()
         diffbasis = list(set(basis_hwf) - set(wf.get_basis()))
 
@@ -3072,3 +4597,259 @@ def epsilon_support_size(
     else:
         raise ValueError("mode must be 'amplitude' or 'prob'")
 
+import numpy as np
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components
+from typing import List, Dict
+
+def get_block_structure(h0: np.ndarray, tol: float = 1e-6) -> List[List[int]]:
+    """
+    Finds the block-diagonal structure of a Hamiltonian.
+
+    This function treats the orbitals as nodes in a graph where an edge exists
+    if the corresponding off-diagonal element in the Hamiltonian `h0` is
+    non-zero (larger than `tol`). It then finds the connected components
+    of this graph, which correspond to the decoupled blocks of the Hamiltonian.
+
+    Args:
+        h0 (np.ndarray): The one-body Hamiltonian matrix (M x M or 2M x 2M).
+        tol (float): The tolerance for considering an off-diagonal element
+                     to be non-zero.
+
+    Returns:
+        List[List[int]]: A list of blocks, where each block is a list of
+                         the orbital indices that belong to it.
+    """
+    if h0.ndim != 2 or h0.shape[0] != h0.shape[1]:
+        raise ValueError("h0 must be a square 2D array.")
+
+    n_orb = h0.shape[0]
+    
+    # Create a boolean adjacency matrix: True where orbitals are coupled
+    mask = np.abs(h0) > tol
+    
+    # The diagonal doesn't determine connections between different nodes
+    np.fill_diagonal(mask, False)
+
+    # Use scipy's graph tools to find connected components
+    graph = csr_matrix(mask)
+    n_components, labels = connected_components(graph, directed=False, connection='weak')
+
+    # Group indices by their component label
+    blocks = [[] for _ in range(n_components)]
+    for i, label in enumerate(labels):
+        blocks[label].append(i)
+        
+    return [sorted(block) for block in blocks]
+
+
+def get_identical_blocks(blocks: List[List[int]], h0: np.ndarray, tol: float = 1e-6) -> List[List[int]]:
+    """
+    Finds groups of identical blocks within a block-diagonal Hamiltonian.
+
+    For identifying symmetries, such as spin degeneracy if the
+    spin-up and spin-down blocks are identical.
+
+    Args:
+        blocks (List[List[int]]): The block structure, as returned by
+                                  `get_block_structure`.
+        h0 (np.ndarray): The full one-body Hamiltonian matrix.
+        tol (float): The tolerance for comparing submatrices of the blocks.
+
+    Returns:
+        List[List[int]]: A list of groups. Each group is a list of the
+                         original indices (from the `blocks` list) of the
+                         blocks that were found to be identical.
+    """
+    num_blocks = len(blocks)
+    identical_groups = []
+    visited_block_indices = set()
+
+    for i in range(num_blocks):
+        if i in visited_block_indices:
+            continue
+
+        current_group = [i]
+        block_i = blocks[i]
+        h_i = h0[np.ix_(block_i, block_i)]
+
+        for j in range(i + 1, num_blocks):
+            if j in visited_block_indices:
+                continue
+            
+            block_j = blocks[j]
+
+            # A necessary condition for being identical is having the same size
+            if len(block_i) != len(block_j):
+                continue
+            
+            h_j = h0[np.ix_(block_j, block_j)]
+
+            # Compare the submatrices within the specified tolerance
+            if np.allclose(h_i, h_j, atol=tol):
+                current_group.append(j)
+                visited_block_indices.add(j)
+        
+        identical_groups.append(current_group)
+        visited_block_indices.add(i)
+        
+    return identical_groups
+
+
+def is_diagonal(blocks: List[List[int]]) -> bool:
+    """
+    Checks if the Hamiltonian is purely diagonal based on its block structure.
+
+    Args:
+        blocks (List[List[int]]): The block structure from `get_block_structure`.
+
+    Returns:
+        bool: True if every block contains only a single orbital, False otherwise.
+    """
+    return all(len(block) == 1 for block in blocks)
+
+
+def analyze_symmetries(h0: np.ndarray, tol: float = 1e-6, verbose=False) -> Dict:
+    """
+    A convenient wrapper function to perform a full symmetry analysis.
+
+    Args:
+        h0 (np.ndarray): The one-body Hamiltonian matrix.
+        tol (float): The tolerance for all comparisons.
+
+    Returns:
+        Dict: A dictionary containing the analysis results:
+              - 'blocks': The decoupled blocks of indices.
+              - 'identical_groups': Groups of indices of identical blocks.
+              - 'is_diagonal': A boolean indicating if h0 is diagonal.
+    """
+    blocks = get_block_structure(h0, tol)
+    identical = get_identical_blocks(blocks, h0, tol)
+    diag = is_diagonal(blocks)
+
+    if verbose:
+        print("\n--- Analyzed Structure ---")
+        print(f"Blocks: {blocks}")
+        print(f"Identical Groups (by block index): {identical}")
+    
+    return {
+        "blocks": blocks,
+        "identical_groups": identical,
+        "is_diagonal": diag
+    }
+
+
+# ---------------------------------------------------------
+
+def reconstruct_matrix_from_blocks(
+    blocks: List[List[int]], 
+    block_matrices: List[np.ndarray],
+    dtype=np.complex128
+) -> np.ndarray:
+    """
+    Reconstructs a full matrix from its block-diagonal components.
+
+    This is the inverse operation of `get_block_structure`. It places each
+    matrix from `block_matrices` onto the diagonal of a larger zero matrix
+    at the locations specified by `blocks`.
+
+    Args:
+        blocks (List[List[int]]): The block structure, where each inner list
+                                  contains the indices for that block.
+        block_matrices (List[np.ndarray]): A list of square matrices, where
+                                          `block_matrices[i]` corresponds
+                                          to the block defined by `blocks[i]`.
+        dtype: The numpy data type for the output matrix.
+
+    Returns:
+        np.ndarray: The assembled full matrix.
+        
+    Example:
+        >>> blocks = [[0, 2], [1]]
+        >>> block_mats = [np.array([[1,1],[1,1]]), np.array([[5]])]
+        >>> reconstruct_matrix_from_blocks(blocks, block_mats)
+        array([[1., 0., 1.],
+               [0., 5., 0.],
+               [1., 0., 1.]])
+    """
+    if len(blocks) != len(block_matrices):
+        raise ValueError(
+            f"Mismatch: {len(blocks)} blocks were provided, but "
+            f"{len(block_matrices)} block matrices were given."
+        )
+
+    # Determine the size of the final matrix
+    if not blocks:
+        return np.array([[]], dtype=dtype)
+    
+    # Check for overlapping indices and validate matrix sizes
+    all_indices = []
+    for i, b_indices in enumerate(blocks):
+        mat = block_matrices[i]
+        if mat.shape != (len(b_indices), len(b_indices)):
+            raise ValueError(
+                f"Shape mismatch for block {i}: block indices have size "
+                f"{len(b_indices)}, but provided matrix has shape {mat.shape}."
+            )
+        all_indices.extend(b_indices)
+    
+    if len(set(all_indices)) != len(all_indices):
+        raise ValueError("Overlapping indices detected in the block structure.")
+
+    max_index = max(all_indices) if all_indices else -1
+    full_size = max_index + 1
+
+    # Create the full matrix and fill it
+    full_matrix = np.zeros((full_size, full_size), dtype=dtype)
+    
+    for block_indices, matrix in zip(blocks, block_matrices):
+        # Use np.ix_ for elegant and efficient submatrix assignment
+        full_matrix[np.ix_(block_indices, block_indices)] = matrix
+        
+    return full_matrix
+
+
+def assemble_symmetric_hamiltonian(
+    sym_dict,
+    unique_matrices: Dict[int, np.ndarray],
+    dtype=np.complex128
+) -> np.ndarray:
+    """
+    A high-level wrapper to reconstruct a Hamiltonian using symmetry information.
+
+    This function simplifies the creation of a full Hamiltonian when you know
+    which blocks are identical and only need to define the matrix for one
+    member of each identical group.
+
+    Args:
+        sym_dict : Dictionnary holding the block structure
+        unique_matrices (Dict[int, np.ndarray]): A dictionary mapping the first index
+                                                 of an identical group to its
+                                                 corresponding matrix.
+        dtype: The numpy data type for the output matrix.
+
+    Returns:
+        np.ndarray: The assembled full symmetric Hamiltonian.
+    """
+
+ 
+    blocks = sym_dict["blocks"]
+    identical_groups = sym_dict["identical_groups"]
+
+    num_blocks = len(blocks)
+    full_block_matrices = [None] * num_blocks
+
+    for group in identical_groups:
+        leader_idx = group[0]
+        if leader_idx not in unique_matrices:
+            raise KeyError(f"Matrix for representative block index {leader_idx} was not provided.")
+        
+        matrix_for_group = unique_matrices[leader_idx]
+        
+        for member_idx in group:
+            full_block_matrices[member_idx] = matrix_for_group
+            
+    if any(m is None for m in full_block_matrices):
+        raise ValueError("Some blocks were not assigned a matrix. Check `identical_groups`.")
+
+    return reconstruct_matrix_from_blocks(blocks, full_block_matrices, dtype=dtype)

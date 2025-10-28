@@ -20,7 +20,7 @@ def selective_ci(
     conv_tol=1e-6,
     prune_thr=1e-7,
     Nmul = None,
-    min_size=64,
+    min_size=512,
     max_size=5e4,
     verbose=True,
 ):
@@ -87,7 +87,7 @@ def selective_ci(
     H = ops.get_ham(basis0, h0, U)
     # For small bases, a dense eig can be faster / safer; otherwise eigsh.
     dim0 = H.shape[0]
-    if dim0 <= 64:
+    if dim0 <= 256:
         from numpy.linalg import eigh
         evals, evecs = eigh(H.toarray())
         e0 = float(evals[0])
@@ -111,18 +111,23 @@ def selective_ci(
             two_bh = ops.get_two_body_terms(U, M)
 
     def get_roots(H,nroots,dim):
-            if dim <= 64:
-                evals, evecs = eigh(H.toarray())
-            else:
-                evals, evecs = eigsh(H, k=nroots, which='SA')
-            return evals,evecs
-
+        if dim <= 64:
+            evals, evecs = eigh(H.toarray())
+        else:
+            evals, evecs = eigsh(H, k=nroots, which='SA')
+        indsort = np.argsort(np.real(evals))
+        evals=evals[indsort]
+        evecs=evecs[:,indsort]
+        return evals[:nroots], evecs[:, :nroots]
 
 
 
     # Main selection loop
     for it in range(max_iter):
         # Propose new determinants using the provided generator
+
+        inds,blocks = basis_Np.partition_by_Sz(basis0)
+        print(f"blocks = {blocks}")
 
         current_size = len(basis0)
 
@@ -166,6 +171,7 @@ def selective_ci(
             if verbose:
                 print(f"[iter {it}] no new determinants proposed; stopping.")
             break
+
         basis0 = sorted(list(new_basis))
 
 
@@ -175,7 +181,7 @@ def selective_ci(
         H = ops.get_ham(basis0, h0, U)
         dim = H.shape[0]
         
-        evals, evecs = get_roots(H, 1, dim)
+        evals, evecs = get_roots(H, num_roots, dim)
         e_new = float(evals[0])
         psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
 
@@ -184,13 +190,13 @@ def selective_ci(
         sizes.append(dim)
 
         if verbose:
-            print(f"[iter {it}] dim={dim:>6}  E0={e_new:.12f}  |dE|={dE:.3e}")
+            Es_str = " ".join(f"{ev:.12f}" for ev in evals[:num_roots])
+            print(f"[iter {it}] dim={dim:>6}  Es=[{Es_str}]  |dE0|={dE:.3e}")
 
         if dE < conv_tol:
             if verbose:
                 print(f"[conv] reached |dE| < {conv_tol}")
             break
-
 
 
     
@@ -199,7 +205,8 @@ def selective_ci(
         num_roots = len(basis0)
 
     evals, evecs = get_roots(H, num_roots, len(basis0))
-    psis = [cc.Wavefunction(M, basis0, evecs[:, i]) for i in range(num_roots)]
+    psis = [cc.Wavefunction(M, basis0, evecs[:, i], keep_zeros=True) for i in range(num_roots)]
+
 
     sci_res = results.NelecLowEnergySubspace(M=M,Nelec=Nelec,
         energies=evals,
@@ -220,8 +227,12 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=0,verbose=True):
 
     H_sparse = ops.get_ham(basis,h0,U,method="openmp")
     eigvals, eigvecs = eigsh(H_sparse, k=num_roots, which='SA')
+    indsort = np.argsort(np.real(eigvals))
+    eigvals=eigvals[indsort]
+    eigvecs=eigvecs[:,indsort]
     if verbose:
-        print(f"Ground State Energy: {eigvals[0]:.6f}")
+        Es_str = " ".join(f"{ev:.12f}" for ev in eigvals[:num_roots])
+        print(f"Es=[{Es_str}]")
     psis = [cc.Wavefunction(M, basis, eigvecs[:,i]) for i in range(num_roots)]
 
     fci_res = results.NelecLowEnergySubspace(M=M,Nelec=Nelec,
@@ -255,11 +266,11 @@ def hamiltonian_generator(wf,one_body_terms,two_body_terms,thr=1e-7,return_hwf=T
         hwf: optional, the new wavefunction
 
     """
-    wf.prune(thr)
+    #wf.prune(thr)
 
     if return_hwf:
         hwf = cc.apply_one_body_operator(wf,one_body_terms) + cc.apply_two_body_operator(wf,two_body_terms)
-
+        hwf.prune(thr)
         basis_hwf = hwf.get_basis()
         diffbasis = list(set(basis_hwf) - set(wf.get_basis()))
 

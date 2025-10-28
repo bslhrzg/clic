@@ -255,6 +255,10 @@ template<> struct std::hash<ci::SlaterDeterminant> {
     std::size_t operator()(const ci::SlaterDeterminant& s) const noexcept;
 };
 
+template<> struct std::hash<ci::BitsetVec> {
+    std::size_t operator()(const ci::BitsetVec& b) const noexcept;
+};
+
 
 
 
@@ -286,12 +290,16 @@ public:
 
     Wavefunction(std::size_t n_spatial, const Data& init);
 
-    Wavefunction(std::size_t n_spatial, const std::vector<SlaterDeterminant>& basis, const std::vector<Coeff>& coeffs);
+
+    Wavefunction(std::size_t n_spatial, 
+        const std::vector<SlaterDeterminant>& basis, 
+        const std::vector<Coeff>& coeffs,
+        bool keep_zeros = true);
 
     std::size_t  num_spatial_orbitals() const noexcept;
     const Data&  data() const noexcept;
 
-    void add_term(const SlaterDeterminant& det, Coeff c, double tol=1e-15);
+    void add_term(const SlaterDeterminant& det, Coeff c, double tol=0);
     void normalize(double tol=1e-15);
     void prune(double threshold);
 

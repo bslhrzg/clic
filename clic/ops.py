@@ -20,14 +20,15 @@ def one_rdm(wf,M,block=None):
     else : 
         K = len(block)
 
+    #wf.normalize()
     rdm = np.zeros((K, K), dtype=np.complex128)
-    for i in block:
-        for j in block:
+    for (i,ib) in enumerate(block):
+        for (j,jb) in enumerate(block):
             # Create the operator term c†_i c_j
-            spin_i = cc.Spin.Alpha if i < M else cc.Spin.Beta
-            spin_j = cc.Spin.Alpha if j < M else cc.Spin.Beta
-            orb_i = i if i < M else i - M
-            orb_j = j if j < M else j - M
+            spin_i = cc.Spin.Alpha if ib < M else cc.Spin.Beta
+            spin_j = cc.Spin.Alpha if jb < M else cc.Spin.Beta
+            orb_i = ib if ib < M else ib - M
+            orb_j = jb if jb < M else jb - M
             
             # The operator term is a list containing a single tuple (h_ij = 1.0)
             op_term = [(orb_i, orb_j, spin_i, spin_j, 1.0)]
@@ -35,6 +36,7 @@ def one_rdm(wf,M,block=None):
             # Apply the operator c†_i c_j to the ground state
             # This creates the state |Φ⟩ = c†_i c_j |Ψ⟩
             phi_wf = cc.apply_one_body_operator(wf, op_term)
+            #phi_wf.normalize()
             
             # The RDM element is <Ψ|Φ>
             rdm[i, j] = wf.dot(phi_wf)
@@ -100,3 +102,85 @@ def get_two_body_terms(U, M, thr=1e-12):
                                       spins[0], spins[1], spins[2], spins[3],
                                       complex(U[i, j, k, l])))
     return terms
+
+
+
+def expect_Sz_from_rdm(rdm, M, block):
+    # uses the block mapping you built in one_rdm
+    val = 0.0
+    for i, ib in enumerate(block):
+        if ib < M:
+            val += 0.5 * rdm[i, i]
+        else:
+            val -= 0.5 * rdm[i, i]
+    return np.real(val)
+
+def apply_Sz(wf, M, block=None):
+    if block is None:
+        block = list(range(2*M))
+    terms = []
+    for ib in block:
+        spin = cc.Spin.Alpha if ib < M else cc.Spin.Beta
+        orb  = ib if ib < M else ib - M
+        coeff = 0.5 if ib < M else -0.5
+        terms.append((orb, orb, spin, spin, coeff))
+    # try batched apply if available
+    try:
+        return cc.apply_one_body_operator(wf, terms)
+    except Exception:
+        acc = wf.zero_like()
+        for t in terms:
+            acc = acc + cc.apply_one_body_operator(wf, [t])
+        return acc
+
+def expect_Sz(wf, M, block=None):
+    if block is None:
+        block = list(range(2*M))
+    rdm = one_rdm(wf, M, block)
+    return expect_Sz_from_rdm(rdm, M, block)
+
+# prebuild S± term lists once per M
+def _terms_Sminus(M):
+    # S- = sum_p c†_{pβ} c_{pα}
+    return [(p, p, cc.Spin.Beta,  cc.Spin.Alpha, 1.0) for p in range(M)]
+
+def _terms_Splus(M):
+    # S+ = sum_p c†_{pα} c_{pβ}
+    return [(p, p, cc.Spin.Alpha, cc.Spin.Beta,  1.0) for p in range(M)]
+
+def _apply_sum_terms(wf, terms):
+    # try one batched call; fallback to accumulation
+    try:
+        return cc.apply_one_body_operator(wf, terms)
+    except Exception:
+        acc = wf.zero_like()
+        for t in terms:
+            acc = acc + cc.apply_one_body_operator(wf, [t])
+        return acc
+
+def expect_Splus_Sminus(wf, M):
+    # ⟨Ψ| S+ S- |Ψ⟩ = ⟨Ψ| S+ (S- |Ψ⟩)⟩
+    psi1 = _apply_sum_terms(wf, _terms_Sminus(M))
+    psi2 = _apply_sum_terms(psi1, _terms_Splus(M))
+    return np.real(wf.dot(psi2))
+
+def expect_Sminus_Splus(wf, M):
+    psi1 = _apply_sum_terms(wf, _terms_Splus(M))
+    psi2 = _apply_sum_terms(psi1, _terms_Sminus(M))
+    return np.real(wf.dot(psi2))
+
+def expect_S2(wf, M, block=None):
+    # ⟨S_z⟩ and ⟨S_z^2⟩
+    if block is None:
+        block = list(range(2*M))
+    Sz = expect_Sz(wf, M, block)
+    phi = apply_Sz(wf, M, block)
+    Sz2 = np.real(phi.dot(phi))
+    # ladder pieces
+    SpSm = expect_Splus_Sminus(wf, M)
+    SmSp = expect_Sminus_Splus(wf, M)
+    S2 = Sz2 + 0.5*(SpSm + SmSp)
+    return S2, Sz
+
+
+

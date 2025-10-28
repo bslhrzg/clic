@@ -181,7 +181,7 @@ def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
     return sorted(dets)
 
 
-def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst", tol=1e-12):
+def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst", tol=0.01):
     """
     Generates starting determinants with a fixed number of electrons on the impurity.
     It partitions the system, solves for ground states in each subspace, and then
@@ -189,6 +189,12 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
     """
     K = h0.shape[0]
     M_global = K // 2 # This is the total M for the full system
+
+    if Nelec == 0:
+        print("Generating basis for Nelec = 0 (vacuum state).")
+        # The only determinant is the one with no occupied orbitals.
+        vacuum_det = cc.SlaterDeterminant(M_global, [], [])
+        return [vacuum_det]
     
     # --- 1. Partition the system ---
     imp_indices = sorted(list(set(imp_indices)))
@@ -249,6 +255,13 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
     # Remove duplicates if any were generated (e.g., from odd electron cases)
     # The hash and eq bindings on your C++ class make this possible.
     unique_dets = sorted(list(set(final_dets)))
+    if Nelec % 2 == 0:
+        target_Sz = 0 
+        print(f"Retaining only Sz={target_Sz} in starting basis")
+        unique_dets,_ = subbasis_by_Sz(unique_dets, target_Sz)
+
+    #for det in unique_dets:
+    #    print(f"det : {det}")
     
     print(f"Generated a total of {len(unique_dets)} unique starting determinants.")
     return unique_dets
