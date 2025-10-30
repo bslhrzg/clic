@@ -67,3 +67,5 @@ from .bath_transform import *
 from .sci import selective_ci, hamiltonian_generator, cipsi_one_iter
 
 from .symmetries import *
+
+from . import hybfit

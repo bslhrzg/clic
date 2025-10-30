@@ -66,12 +66,16 @@ from .bath_transform import *
 
 from .sci import selective_ci, hamiltonian_generator, cipsi_one_iter
 
-from .symmetries import *# clic/api.py
+from .symmetries import *
+
+from . import hybfit# clic/api.py
 import numpy as np
 from . import bath_transform, clic_clib as cc # Import for Wavefunction, SlaterDeterminant
 from . import hamiltonians, basis_1p, basis_Np, ops, sci, mf, gfs, plotting
 from . import results
 from .config_models import SolverParameters, GfConfig # Use Pydantic for validated settings
+from typing import Literal, Union, List, Optional 
+
 from scipy.linalg import eigh,block_diag
 import copy
 from . import symmetries, io_utils
@@ -82,6 +86,11 @@ class Model:
     """Represents the physical system via its Hamiltonian integrals."""
     def __init__(self, h0: np.ndarray, U: np.ndarray, M_spatial: int, Nelec: int):
         self.h0 = np.ascontiguousarray(h0, dtype=np.complex128)
+
+        print("diag h0 = ")
+        for i in range(np.shape(h0)[0]):
+            print(f"{i} : {np.real(h0[i,i]):.3e}")
+
         self.U = np.ascontiguousarray(U, dtype=np.complex128)
         self.M = M_spatial
         self.Nelec = Nelec
@@ -102,7 +111,8 @@ class GroundStateSolver:
         else:
             self.settings = settings
         
-        self.result: results.NelecLowEnergySubspace | None = None # Type hint for the result
+
+        self.result: results.ThermalGroundState | None = None 
         self.transformation_matrix = None # Store the transform here
 
     def _prepare_basis(self):
@@ -209,12 +219,31 @@ class GroundStateSolver:
         )
         return result_obj
 
-    def solve(self) -> results.NelecLowEnergySubspace:
+    def solve(self) -> results.ThermalGroundState:
         """Runs the full workflow, including the optional NO step."""
 
-        print("diag h0:")
-        for i in range(np.shape(self.model.h0)[0]):
-            print(self.model.h0[i,i])
+        # Create a deep copy of the original model BEFORE any transformations are applied
+        original_model = copy.deepcopy(self.model)
+
+        # Edge case, Nelec = 0 
+        if self.model.Nelec == 0 :
+            vacuum_det = cc.SlaterDeterminant(self.model.M, [], [])
+            psis = [cc.Wavefunction(self.model.M, [vacuum_det], [0+0j])]
+            self.result = results.NelecLowEnergySubspace(M=self.model.M,Nelec=0,
+                energies=[0],
+                wavefunctions=psis,
+                basis=[vacuum_det],
+                transformation_matrix=None
+            )
+            # Even for this simple case, we create the full ThermalGroundState object
+            thermal_result = results.ThermalGroundState(
+                results_by_nelec={0: self.result},
+                base_model=original_model,
+                temperature=self.settings.initial_temperature
+            )
+            self.result = thermal_result
+            return self.result
+
 
         self._prepare_basis()
 
@@ -274,35 +303,32 @@ class GroundStateSolver:
                 # 6. Run the final SCI 
                 result_obj = self._run_sci(seed=final_seed)
 
-                #print("Calculating 1-RDM from approximate wavefunction...")
-                #psi_approx = result_obj.ground_state_wavefunction
-                #rdm1_spatial = self.get_one_rdm(wavefunction=psi_approx, spatial=True)
-                #print("rdm1 = ")
-                #print(rdm1_spatial)
-
-                #print("diag el")
-                #print(np.diag(rdm1_spatial))
-              
-
             else: # --- Standard SCI Workflow (use_no == 'none') ---
                 result_obj = self._run_sci(seed=initial_seed)
 
         # Finalize and store results
         result_obj.transformation_matrix = self.transformation_matrix
-        self.result = result_obj
         
-        print(f"\nCalculation finished. Ground state energy = {self.result.ground_state_energy:.12f}")
+        print(f"\nCalculation finished. Ground state energy = {result_obj.ground_state_energy:.12f}")
 
-        self.compute_stats(result_obj.ground_state_wavefunction)
+        # Instantiate the final results object with the computed subspace and original model
+        final_thermal_state = results.ThermalGroundState(
+            results_by_nelec={result_obj.Nelec: result_obj},
+            base_model=original_model, # Pass the whole original model
+            temperature=self.settings.initial_temperature
+        )
 
+        self.result = final_thermal_state
         return self.result
+
 
     def get_one_rdm(self, wavefunction: cc.Wavefunction | None = None, spatial: bool = False) -> np.ndarray:
         """Computes the 1-RDM. Can compute for a provided wavefunction."""
         if wavefunction is None:
             if not self.result:
                 raise RuntimeError("Solver has not been run and no wavefunction was provided.")
-            wavefunction = self.result.ground_state_wavefunction
+            # We need the ground state wavefunction from the correct Nelec sector
+            _, _, wavefunction = self.result.find_absolute_ground_state()
 
         rdm = ops.one_rdm(wavefunction, self.model.M)
         
@@ -327,31 +353,11 @@ class GroundStateSolver:
                 print(f"occ[{i}] = {np.real(occs[i]):.3e}")
 
 
-
-
     def save_result(self, filename: str):
-        """
-        Saves the results to a comprehensive HDF5 file, including all data
-        needed for subsequent Green's function calculations.
-        """
+        """Saves the ThermalGroundState result to a single HDF5 file."""
         if not self.result:
             raise RuntimeError("Solver has not been run yet.")
-        
-        print(f"Saving comprehensive results to HDF5 file '{filename}'...")
-        with h5py.File(filename, 'w') as f:
-            # --- 1. Use the existing method to save wavefunction, basis, etc. ---
-            # This will create groups like 'metadata', 'basis', 'wavefunctions'.
-            self.result.save(f)
-            
-            # --- 2. Add extra top-level datasets needed by GreenFunctionCalculator ---
-            # Save the final Hamiltonian integrals used in the calculation.
-            f.create_dataset("final_h0", data=self.model.h0)
-            f.create_dataset("final_U", data=self.model.U)
-
-            # Save impurity information as attributes for easy access.
-            f.attrs["is_impurity_model"] = self.model.is_impurity_model
-            if self.model.is_impurity_model:
-                f.attrs["imp_indices"] = self.model.imp_indices
+        self.result.save(filename)
         
 class FockSpaceSolver:
     """
@@ -359,7 +365,7 @@ class FockSpaceSolver:
     numbers (Nelec). It orchestrates multiple fixed-Nelec calculations and
     combines them into a ThermalGroundState object for thermodynamic analysis.
     """
-    def __init__(self, model: Model, settings: dict | SolverParameters, nelec_range: tuple[int, int]):
+    def __init__(self, model: Model, settings: dict | SolverParameters, nelec_range: Union[tuple[int, int], Literal["auto"]]):
         self.base_model = model
         
         if isinstance(settings, dict):
@@ -367,39 +373,137 @@ class FockSpaceSolver:
         else:
             self.settings = settings
             
-        self.nelec_range = range(nelec_range[0], nelec_range[1] + 1)
+        self.nelec_setting = nelec_range
         self.result: results.ThermalGroundState | None = None
+
+    def _solve_single_nelec(self, nelec: int, cache: dict) -> results.ThermalGroundState:
+        """
+        Helper to run a calculation for a single Nelec, using a cache.
+        Returns a ThermalGroundState object, which contains the NelecLowEnergySubspace.
+        """
+        if nelec in cache:
+            return cache[nelec]
+
+        print(f"\n--- Solving for Nelec = {nelec} ---")
+        current_model = copy.deepcopy(self.base_model)
+        current_model.Nelec = nelec
+        
+        solver = GroundStateSolver(current_model, self.settings)
+        # solver.solve() returns a ThermalGroundState object
+        nelec_result_thermal = solver.solve() 
+        
+        cache[nelec] = nelec_result_thermal
+        return nelec_result_thermal
+
+    def _find_optimal_nelec(self) -> dict[int, results.NelecLowEnergySubspace]:
+        """
+        Iteratively searches for the Nelec that minimizes the ground state energy.
+        Returns a dictionary of NelecLowEnergySubspace results centered around the minimum.
+        """
+        if not self.base_model.is_impurity_model:
+            raise ValueError("Automatic Nelec search is only supported for impurity models.")
+
+        nelec_start = self.base_model.Nelec
+        print(f"\n--- Starting Automatic Search for Optimal Nelec (start = {nelec_start}) ---")
+
+        energies = {}
+        results_cache = {} # Caches ThermalGroundState objects
+        subspace_cache = {} # Caches NelecLowEnergySubspace objects
+
+        # --- Initial Point ---
+        print(f"Calculating for starting Nelec = {nelec_start}...")
+        result_thermal = self._solve_single_nelec(nelec_start, results_cache)
+        _, e0, _ = result_thermal.find_absolute_ground_state()
+        energies[nelec_start] = e0
+        subspace_cache[nelec_start] = result_thermal.results_by_nelec[nelec_start]
+        
+        # --- Search Upwards ---
+        print("\n--- Searching for minimum in increasing Nelec direction ---")
+        nelec_curr = nelec_start
+        while True:
+            nelec_next = nelec_curr + 1
+            if nelec_next > 2 * self.base_model.M:
+                print("Reached maximum possible electrons. Stopping upward search.")
+                break
+
+            e_curr = energies[nelec_curr]
+            result_thermal_next = self._solve_single_nelec(nelec_next, results_cache)
+            _, e_next, _ = result_thermal_next.find_absolute_ground_state()
+            energies[nelec_next] = e_next
+            subspace_cache[nelec_next] = result_thermal_next.results_by_nelec[nelec_next]
+            
+            print(f"E({nelec_curr}) = {e_curr:.6f}, E({nelec_next}) = {e_next:.6f}")
+            if e_next >= e_curr:
+                print("Energy is no longer decreasing. Stopping upward search.")
+                break
+            nelec_curr = nelec_next
+
+        # --- Search Downwards ---
+        print("\n--- Searching for minimum in decreasing Nelec direction ---")
+        nelec_curr = nelec_start
+        while True:
+            nelec_next = nelec_curr - 1
+            if nelec_next < 0:
+                print("Reached zero electrons. Stopping downward search.")
+                break
+
+            e_curr = energies[nelec_curr]
+            result_thermal_next = self._solve_single_nelec(nelec_next, results_cache)
+            _, e_next, _ = result_thermal_next.find_absolute_ground_state()
+            energies[nelec_next] = e_next
+            subspace_cache[nelec_next] = result_thermal_next.results_by_nelec[nelec_next]
+            
+            print(f"E({nelec_curr}) = {e_curr:.6f}, E({nelec_next}) = {e_next:.6f}")
+            if e_next >= e_curr:
+                print("Energy is no longer decreasing. Stopping downward search.")
+                break
+            nelec_curr = nelec_next
+            
+        # --- Find minimum and collect results ---
+        nelec_min = min(energies, key=energies.get)
+        
+        print(f"\n--- Minimum energy found at Nelec = {nelec_min} (E = {energies[nelec_min]:.8f}) ---")
+        print("Collecting results for thermal state around the minimum.")
+
+        final_subspaces = {}
+        for nelec_final in [nelec_min - 1, nelec_min, nelec_min + 1]:
+            if 0 <= nelec_final <= 2 * self.base_model.M:
+                if nelec_final in subspace_cache:
+                    final_subspaces[nelec_final] = subspace_cache[nelec_final]
+                else:
+                    # This case should be rare but is included for robustness
+                    result_thermal = self._solve_single_nelec(nelec_final, results_cache)
+                    final_subspaces[nelec_final] = result_thermal.results_by_nelec[nelec_final]
+        
+        return final_subspaces
+
 
     def solve(self, initial_temperature: float = 300.0) -> results.ThermalGroundState:
         """
-        Runs the full workflow for each Nelec in the specified range and
-        returns a combined ThermalGroundState result object.
-
-        Args:
-            initial_temperature (float): The initial temperature in Kelvin to
-                                         use for the resulting ThermalGroundState object.
+        Runs the full workflow for each Nelec and returns a combined result.
+        If nelec_setting is 'auto', it finds the optimal Nelec first.
         """
-        all_results = {}
+        all_subspaces = {}
+
+        if self.nelec_setting == "auto":
+            all_subspaces = self._find_optimal_nelec()
+        else:
+            # Original behavior for a fixed range
+            nelec_range = range(self.nelec_setting[0], self.nelec_setting[1] + 1)
+            print(f"\n--- Starting Fock Space Calculation for Nelec in {list(nelec_range)} ---")
+            results_cache = {} # Caches ThermalGroundState objects
+            for nelec in nelec_range:
+                # _solve_single_nelec returns a full ThermalGroundState object
+                result_thermal = self._solve_single_nelec(nelec, results_cache)
+                # We only need the NelecLowEnergySubspace from it
+                all_subspaces[nelec] = result_thermal.results_by_nelec[nelec]
         
-        print(f"\n--- Starting Fock Space Calculation for Nelec in {list(self.nelec_range)} ---")
-        
-        for nelec in self.nelec_range:
-            print(f"\n--- Solving for Nelec = {nelec} ---")
-            
-            # Use a deepcopy to ensure basis preparations or other mutations
-            # do not leak between calculations for different Nelec.
-            current_model = copy.deepcopy(self.base_model)
-            current_model.Nelec = nelec
-            
-            # Use the existing solver as the engine for this specific Nelec
-            solver = GroundStateSolver(current_model, self.settings)
-            
-            # Run the calculation and store the result
-            nelec_result = solver.solve()
-            all_results[nelec] = nelec_result
-        
-        # Instantiate the final results object with all the computed subspaces
-        self.result = results.ThermalGroundState(all_results, temperature=initial_temperature)
+        # Instantiate the final results object with all computed subspaces and the base model
+        self.result = results.ThermalGroundState(
+            results_by_nelec=all_subspaces,
+            base_model=self.base_model, # Pass the entire base model
+            temperature=initial_temperature
+        )
         
         # Report the absolute ground state found
         gs_nelec, gs_energy, _ = self.result.find_absolute_ground_state()
@@ -408,16 +512,18 @@ class FockSpaceSolver:
         
         return self.result
 
+
     def save_result(self, filename: str):
         if not self.result:
             raise RuntimeError("Solver has not been run yet.")
         self.result.save(filename)
 
+
 # ----------------------------------------------------------------------------------
+
 class GreenFunctionCalculator:
     """
-    The main API endpoint for calculating Green's functions using a symmetry-aware,
-    time-propagation-based Lanczos method, loading data from HDF5.
+    Calculates the thermally-averaged Green's function from a saved ThermalGroundState.
     """
     def __init__(self, settings: dict | GfConfig):
         if isinstance(settings, dict):
@@ -425,206 +531,103 @@ class GreenFunctionCalculator:
         else:
             self.settings = settings
         
-        # Attributes to be loaded from the ground state file
-        self.M: int | None = None
-        self.psi0_wf: cc.Wavefunction | None = None
-        self.e0: float | None = None
-        self.h0: np.ndarray | None = None
-        self.U: np.ndarray | None = None
-        self.imp_indices: list[int] | None = None
+        self.thermal_state: results.ThermalGroundState | None = None
 
-    def load_ground_state(self):
-        """Loads all necessary data from the comprehensive HDF5 ground state file."""
+    def load_thermal_state(self):
+        """Loads the ThermalGroundState from HDF5 and prepares it for calculation."""
         filepath = self.settings.ground_state_file
-        print(f"Loading ground state from HDF5 file '{filepath}'...")
+        print(f"Loading thermal state from HDF5 file '{filepath}'...")
         try:
-            with h5py.File(filepath, 'r') as f:
-                # 1. Load the top-level datasets and attributes
-                self.h0 = f["final_h0"][:]
-                self.U = f["final_U"][:]
-                self.imp_indices = list(f.attrs.get("imp_indices", []))
-
-                # 2. Use the results classmethod to load the wavefunction and metadata
-                gs_result = results.NelecLowEnergySubspace.load(f)
-                
-                # 3. Populate the remaining attributes from the loaded object
-                self.psi0_wf = gs_result.ground_state_wavefunction
-                self.e0 = gs_result.ground_state_energy
-                self.M = gs_result.M
-                
-            print("Ground state loaded successfully.")
-        except FileNotFoundError:
-            raise RuntimeError(f"Ground state file not found at: {filepath}")
-        except KeyError as e:
-            raise RuntimeError(f"Missing key {e} in HDF5 file. Ensure it was saved correctly.")
-    
-    def _determine_work_list(self, target_indices: list[int], sym_dict: dict) -> list[tuple[int, int]]:
-        """Determines the minimal set of (i, j) pairs to compute based on symmetry."""
-        orbital_to_rep = {}
-        for group in sym_dict['identical_groups']:
-            leader_block_indices = sym_dict['blocks'][group[0]]
-            for member_block_idx in group:
-                member_block_indices = sym_dict['blocks'][member_block_idx]
-                for i in range(len(leader_block_indices)):
-                    orbital_to_rep[member_block_indices[i]] = leader_block_indices[i]
+            self.thermal_state = results.ThermalGroundState.load(filepath)
+        except (FileNotFoundError, KeyError) as e:
+            raise RuntimeError(f"Failed to load ground state file: {e}")
         
-        work_set = set()
-        for i in target_indices:
-            for j in target_indices:
-                rep_i = orbital_to_rep.get(i, i)
-                rep_j = orbital_to_rep.get(j, j)
-                work_set.add(tuple(sorted((rep_i, rep_j))))
-
-        print(f"Symmetry analysis complete. Need to compute {len(work_set)} unique G_ij elements.")
-        return sorted(list(work_set))
-
-    def run_(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Runs the Green's function calculation and returns the results."""
-        self.load_ground_state()
-
-        p_gf = self.settings.green_function
-        p_lanczos = self.settings.lanczos
-        ws = np.linspace(p_gf.omega_mesh[0], p_gf.omega_mesh[1], int(p_gf.omega_mesh[2]))
-        print(ws[0],ws[-1])
-        if p_gf.block_indices == "impurity":
-            if not self.imp_indices:
-                raise ValueError("GF block set to 'impurity' but no impurity indices found.")
-            target_indices = sorted(self.imp_indices + [i + self.M for i in self.imp_indices])
-        else:
-            target_indices = sorted(list(set(p_gf.block_indices)))
-
-        print(f"\nTargeting Green's function block for indices: {target_indices}")
-        
-        sym_dict = symmetries.analyze_symmetries(self.h0)
-        work_list = self._determine_work_list(target_indices, sym_dict)
-        
-        one_bh = ops.get_one_body_terms(self.h0, self.M)
-        two_bh = ops.get_two_body_terms(self.U, self.M)
-
-        computed_gfs = {}
-        for i, j in tqdm(work_list, desc="Calculating G_ij(ω)"):
-            g_ij = gfs.green_function_from_time_propagation(
-                i, j, self.M, self.psi0_wf, self.e0, ws, p_gf.eta,
-                target_indices, p_lanczos.NappH, self.h0, self.U,
-                one_bh, two_bh, p_lanczos.coeff_thresh, p_lanczos.L
-            )
-            computed_gfs[(i, j)] = g_ij
-            
-        print("\nReconstructing full GF block from unique elements...")
-        num_target = len(target_indices)
-        idx_map = {orb_idx: k for k, orb_idx in enumerate(target_indices)}
-        G_block = np.zeros((len(ws), num_target, num_target), dtype=np.complex128)
-        
-        orbital_to_rep = {i: i for i in range(2 * self.M)}
-        for group in sym_dict['identical_groups']:
-            leader_block_indices = sym_dict['blocks'][group[0]]
-            for member_block_idx in group[1:]:
-                member_block_indices = sym_dict['blocks'][member_block_idx]
-                for i in range(len(leader_block_indices)):
-                    orbital_to_rep[member_block_indices[i]] = leader_block_indices[i]
-
-        for k, i in enumerate(target_indices):
-            for l, j in enumerate(target_indices):
-                rep_i, rep_j = orbital_to_rep.get(i, i), orbital_to_rep.get(j, j)
-                key = tuple(sorted((rep_i, rep_j)))
-                
-                if (i, j) == (rep_i, rep_j): # This is the computed value
-                    G_block[:, k, l] = computed_gfs[key]
-                elif (j, i) == (rep_i, rep_j): # This is the conjugate
-                    G_block[:, k, l] = np.conj(computed_gfs[key])
-                else: # This is a symmetry-equivalent value
-                    G_block[:, k, l] = computed_gfs[key]
-        
-        print("Calculation finished.")
-        A_w = -(1 / np.pi) * np.imag(G_block)
-        
-        if self.settings.output.gf_data_file:
-            # Saving to .npz is fine for the final data product
-            np.savez_compressed(
-                self.settings.output.gf_data_file,
-                G_w=G_block, A_w=A_w, omega=ws, indices=np.array(target_indices)
-            )
-            print(f"GF data saved to '{self.settings.output.gf_data_file}'")
-
-        if self.settings.output.plot_file:
-            plotting.plot_spectral_function(
-                ws, A_w, list(range(num_target)),
-                "Spectral Function",
-                self.settings.output.plot_file
-            )
-        
-        return ws, G_block, A_w
-
-
+        print(f"Thermal state loaded. Initial temperature: {self.thermal_state.temperature:.1f} K.")
+        print(f"Prepared thermal state with {len(self.thermal_state._all_states)} states for GF calculation.")
 
     def run(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Runs the Green's function calculation and returns the results."""
-        self.load_ground_state()
+        """
+        Runs the thermally-averaged Green's function calculation.
+        """
+        self.load_thermal_state()
 
         p_gf = self.settings.green_function
         p_lanczos = self.settings.lanczos
         ws = np.linspace(p_gf.omega_mesh[0], p_gf.omega_mesh[1], int(p_gf.omega_mesh[2]))
 
         if p_gf.block_indices == "impurity":
-            if not self.imp_indices:
-                raise ValueError("GF block set to 'impurity' but no impurity indices found.")
-            target_indices = sorted(self.imp_indices + [i + self.M for i in self.imp_indices])
+            if not self.thermal_state.is_impurity_model:
+                raise ValueError("GF block set to 'impurity' but loaded state is not an impurity model.")
+            target_indices = sorted(self.thermal_state.imp_indices + [i + self.thermal_state.M for i in self.thermal_state.imp_indices])
         else:
             target_indices = sorted(list(set(p_gf.block_indices)))
 
         print(f"\nTargeting Green's function block for indices: {target_indices}")
         
-        
-
-        one_bh = ops.get_one_body_terms(self.h0, self.M)
-        two_bh = ops.get_two_body_terms(self.U, self.M)
-
         num_target = len(target_indices)
-        G_diag = np.zeros((len(ws), num_target), dtype=np.complex128)
-
-        for (i,ii) in enumerate(target_indices):
-            print(f"computing for i = {ii}")
-            g_ii = gfs.green_function_from_time_propagation(
-                ii, ii, self.M, self.psi0_wf, self.e0, ws, p_gf.eta,
-                target_indices, p_lanczos.NappH, self.h0, self.U,
-                one_bh, two_bh, p_lanczos.coeff_thresh, p_lanczos.L
-            )
-            #g_ii,_ = gfs.green_function_scalar_fixed_basis(
-            #    self.M, self.psi0_wf, self.e0, ws, p_gf.eta, i, p_lanczos.NappH,
-            #    self.h0, self.U, one_bh, two_bh,
-            #    coeff_thresh=1e-12, L=100, reorth=True)
-            #print(f"g_ii shape : {np.shape(g_ii)}")
-            G_diag[:, i] = g_ii
-                    
-        print("Calculation finished.")
-        A_w = -(1 / np.pi) * np.imag(G_diag)
+        # We will calculate the diagonal elements for now, as in your previous code.
+        # This can be extended to the full block later if needed.
+        G_total_diag = np.zeros((len(ws), num_target), dtype=np.complex128)
         
+        # Cache for transformed Hamiltonians to avoid redundant calculations
+        hamiltonian_cache = {}
+        base_h0 = self.thermal_state.base_h0
+        base_U = self.thermal_state.base_U
+        M = self.thermal_state.M
 
-        savetxt = True
-        #if hasattr(self.settings.output, 'gf_diag_txt_file') and self.settings.output.gf_diag_txt_file:
-        if savetxt:
-            # G_block shape is (n_omega, n_target, n_target)
-            # We want the diagonal elements for each omega point
-            # np.diagonal gives shape (n_target, n_omega), so we transpose it
+        # Main loop over all states in the thermal ensemble
+        iterator = zip(self.thermal_state._all_states, self.thermal_state.boltzmann_weights)
+        for (state_info, weight) in tqdm(iterator, total=len(self.thermal_state._all_states), desc="Processing thermal states"):
+            e_n, nelec_n, psi_n = state_info
 
-            # Now call the dump function
+            # Get the correct transformed Hamiltonian for this state's Nelec sector
+            if nelec_n not in hamiltonian_cache:
+                subspace = self.thermal_state.results_by_nelec[nelec_n]
+                C = subspace.transformation_matrix
+                if C is None:
+                    h0_n, U_n = base_h0, base_U
+                else:
+                    h0_n, U_n = basis_1p.basis_change_h0_U(base_h0, base_U, C)
+                
+                one_bh_n = ops.get_one_body_terms(h0_n, M)
+                two_bh_n = ops.get_two_body_terms(U_n, M)
+                hamiltonian_cache[nelec_n] = (h0_n, U_n, one_bh_n, two_bh_n)
+            
+            h0_n, U_n, one_bh_n, two_bh_n = hamiltonian_cache[nelec_n]
+            
+            # Calculate the GF contribution from this single state
+            for i, orb_idx in enumerate(target_indices):
+                g_ii_n = gfs.green_function_from_time_propagation(
+                    orb_idx, orb_idx, M, psi_n, e_n, ws, p_gf.eta,
+                    target_indices, p_lanczos.NappH, h0_n, U_n,
+                    one_bh_n, two_bh_n, p_lanczos.coeff_thresh, p_lanczos.L
+                )
+                G_total_diag[:, i] += weight * g_ii_n
+
+        print("\nThermally-averaged calculation finished.")
+        A_w_total = -(1 / np.pi) * np.imag(G_total_diag)
+        
+        # Save and plot the final, thermally-averaged results
+        #if self.settings.output.gf_diag_txt_file:
+        dodump=True 
+        if dodump:
             io_utils.dump(
-            A_w, # This is a 2D complex array, shape (n_omega, n_target)
-            ws,
-            'A_w',
-            # output_dir=self.settings.output.directory # Optional
-        )
-        # --- End Modification 3 ---
+                A_w_total,
+                ws,
+                'A_w_thermal',
+            )
 
-        if self.settings.output.plot_file:
+        doplot=True
+        #if self.settings.output.plot_file:
+        if doplot:
             plotting.plot_spectral_function(
-                ws, A_w, list(range(num_target)),
-                "Spectral Function",
+                ws, A_w_total, list(range(num_target)),
+                f"Thermally-Averaged Spectral Function (T={self.thermal_state.temperature}K)",
                 self.settings.output.plot_file
             )
         
-        return ws, G_diag, A_w   
-
+        return ws, G_total_diag, A_w_total
+    
 # basis_1p.py
 import numpy as np
 from . import clic_clib as cc
@@ -929,6 +932,12 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
     """
     K = h0.shape[0]
     M_global = K // 2 # This is the total M for the full system
+
+    if Nelec == 0:
+        print("Generating basis for Nelec = 0 (vacuum state).")
+        # The only determinant is the one with no occupied orbitals.
+        vacuum_det = cc.SlaterDeterminant(M_global, [], [])
+        return [vacuum_det]
     
     # --- 1. Partition the system ---
     imp_indices = sorted(list(set(imp_indices)))
@@ -989,9 +998,10 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
     # Remove duplicates if any were generated (e.g., from odd electron cases)
     # The hash and eq bindings on your C++ class make this possible.
     unique_dets = sorted(list(set(final_dets)))
-    target_Sz = 0 
-    print(f"Retaining only Sz={target_Sz} in starting basis")
-    unique_dets,_ = subbasis_by_Sz(unique_dets, target_Sz)
+    if Nelec % 2 == 0:
+        target_Sz = 0 
+        print(f"Retaining only Sz={target_Sz} in starting basis")
+        unique_dets,_ = subbasis_by_Sz(unique_dets, target_Sz)
 
     #for det in unique_dets:
     #    print(f"det : {det}")
@@ -1588,7 +1598,7 @@ class SolverParameters(BaseModel):
     basis_prep_method: Literal["none", "rhf", "rhf_no", "bath_no","dbl_chain"]
     use_no: Literal["none","no0","no"] = "none"
     ci_method: CiMethodConfig
-    nelec_range: tuple[int, int] | None = None 
+    nelec_range: Union[tuple[int, int], Literal["auto"], None] = None
     initial_temperature: float = 10.0 
 
 class OutputConfig(BaseModel):
@@ -1619,741 +1629,481 @@ class GfConfig(BaseModel):
     ground_state_file: str
     green_function: GreenFunctionParameters
     lanczos: LanczosParameters
-    output: GfOutputConfig# gfs.py
+    output: GfOutputConfig# block_hybridization_fitter.py (v3.1)
+
 import numpy as np
-from . import clic_clib as cc
-import scipy.sparse as sp
 import numpy.linalg as npl
-from numpy.linalg import norm
-# -----------------------------
-# Helpers: wavefunction <-> basis
-# -----------------------------
+import matplotlib.pyplot as plt
 
-def wavefunction_support(wf, coeff_thresh=1e-14):
-    """
-    Return the set of determinants in a Wavefunction with |coeff|>coeff_thresh.
-    Assumes wf.data() is a mapping {SlaterDeterminant: complex}.
-    """
-    data = wf.data()
-    return {det for det, c in data.items() if abs(c) > coeff_thresh}
+np.set_printoptions(precision=6, suppress=True)
 
-def wf_to_vec(wf, basis_list):
-    """
-    Project wavefunction onto a given determinant basis ordering -> dense vector.
-    """
-    data = wf.data()
-    idx = {det: k for k, det in enumerate(basis_list)}
-    v = np.zeros(len(basis_list), dtype=np.complex128)
-    for det, c in data.items():
-        k = idx.get(det, None)
-        if k is not None:
-            v[k] += c
-    return v
 
-# -----------------------------
-# Build fixed Krylov basis by repeated H-applications at determinant level
-# -----------------------------
+class HybridizationFitter:
+    """
+    Fit a pole representation to a matrix valued hybridization Δ(ω).
 
-def expand_basis_by_H(seed_dets, one_body_terms, two_body_terms, NappH):
-    """
-    Determinant-level expansion:
-    B_0 = seed_dets
-    B_{t+1} = B_t ∪ H*B_t connections (via one- and two-body graph expansion)
-    Stop after NappH expansions.
-    """
-    current = set(seed_dets)
-    for _ in range(NappH):
-        conn1 = cc.get_connections_one_body(list(current), one_body_terms)
-        conn2 = cc.get_connections_two_body(list(current), two_body_terms)
-        current |= set(conn1)
-        current |= set(conn2)
-    return sorted(list(current))
+    Input
+      omega_grid: shape (N,)
+      delta_complex: shape (N,) or (N, M, M)
+      n_lanczos_blocks: number of Lanczos blocks to construct
+      n_target_poles: number of poles after merging
 
-def build_sector_basis_from_seeds(seeds_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=1e-14):
+    Pipeline
+      1) Build a discrete measure μ_k = [−Im Δ(ω_k)/π] * w_k with trapezoid weights w_k
+      2) Block Lanczos on the grid using μ_k to get a block Jacobi matrix T and M0
+      3) Extract poles ε_j and PSD Hermitian residues R_j from T
+      4) Merge adjacent poles using a warped metric controlled by kind and w0
+      5) Reconstruct Δ on the grid and report errors
     """
-    seeds_wf: list of seed Wavefunctions for a given particle sector.
-    1) collect support determinants from all seeds
-    2) expand that set by NappH applications of H
-    """
-    if not seeds_wf:
-        return []
-    seed_support = set()
-    for wf in seeds_wf:
-        seed_support |= wavefunction_support(wf, coeff_thresh=coeff_thresh)
-    return expand_basis_by_H(seed_support, one_body_terms, two_body_terms, NappH)
 
-# -----------------------------
-# Hamiltonian restricted to a fixed determinant basis
-# -----------------------------
+    def __init__(self, omega_grid, delta_complex, n_lanczos_blocks, n_target_poles):
+        self.omega = np.asarray(omega_grid, dtype=float)
 
-def build_H_in_basis(basis_dets, h0_clean, U_clean):
-    """
-    Use your fast OpenMP builder on the restricted basis.
-    Returns a scipy.spmatrix (CSR).
-    """
-    if len(basis_dets) == 0:
-        return sp.csr_matrix((0,0), dtype=np.complex128)
-    H = cc.build_hamiltonian_openmp(basis_dets, h0_clean, U_clean)
-    return H
-
-# -----------------------------
-# Block Lanczos on a fixed basis with dense/sparse @
-# -----------------------------
-
-def gram_schmidt_qr_dense(block_V, reorth=False, eps=1e-24):
-    """
-    Gram-Schmidt QR on a list of dense vectors (numpy arrays), returns (Q_list, R).
-    Q_list contains orthonormal dense vectors (same length as v).
-    """
-    n = len(block_V)
-    if n == 0:
-        return [], np.array([[]], dtype=np.complex128)
-    # Copy inputs
-    V = [v.astype(np.complex128, copy=True) for v in block_V]
-    Q = []
-    R = np.zeros((n, n), dtype=np.complex128)
-    for j in range(n):
-        vj = V[j]
-        for i, qi in enumerate(Q):
-            hij = np.vdot(qi, vj)
-            R[i, j] = hij
-            vj -= hij * qi
-        if reorth:
-            # one extra pass
-            for i, qi in enumerate(Q):
-                hij = np.vdot(qi, vj)
-                R[i, j] += hij
-                vj -= hij * qi
-        nrm2 = np.vdot(vj, vj).real
-        if nrm2 > eps:
-            nrm = np.sqrt(nrm2)
-            R[j, j] = nrm
-            Q.append(vj / nrm)
+        delta_in = np.asarray(delta_complex, dtype=np.complex128)
+        if delta_in.ndim == 1:
+            # promote to (N,1,1)
+            self.delta_input = delta_in[:, np.newaxis, np.newaxis]
+        elif delta_in.ndim == 3:
+            self.delta_input = delta_in
         else:
-            break
-    r = len(Q)
-    return Q, R[:r, :n]
+            raise ValueError("delta_complex must be 1D or 3D")
 
-def block_lanczos_fixed_basis(H, seed_vecs, L, reorth=False):
-    """
-    Standard block-Lanczos where H is a matrix in the fixed basis (dense or sparse),
-    and seed_vecs is a list of dense vectors (already in that basis).
-    Returns As, Bs, Qblocks, R0, where:
-      - Qblocks[k] is a list of orthonormal vectors (columns) at block k
-      - As[k], Bs[k] are the small block matrices like in your previous routine
-    """
-    Q0, R0 = gram_schmidt_qr_dense(seed_vecs, reorth=reorth)
-    if len(Q0) == 0:
-        return [], [], [], R0
+        self.n_omega, self.m_orb, _ = self.delta_input.shape
+        if self.omega.shape[0] != self.n_omega:
+            raise ValueError("omega_grid and delta_complex length mismatch")
 
-    # Convert block list to column-block matrix helpers
-    def block_to_mat(Qblock):
-        return np.column_stack(Qblock) if len(Qblock) else np.zeros((H.shape[0], 0), dtype=np.complex128)
+        self.block_size = self.m_orb
+        self.n_lanczos_blocks = int(n_lanczos_blocks)
+        self.n_target_poles = int(n_target_poles)
 
-    Qblocks = [Q0]
-    As, Bs = [], []
+        # results
+        self.T_lanczos = None
+        self.M0_sqrt_lanczos = None
+        self.delta_lanczos = None
+        self.eps_lanczos = None
+        self.R_lanczos = None
+        self.eps_merged = None
+        self.R_merged = None
+        self.delta_merged = None
 
-    Qk = block_to_mat(Q0)
-    HQk = H @ Qk
-    Ak = Qk.conj().T @ HQk
-    As.append(Ak)
+        print("HybridizationFitter initialized")
+        print(f"  M = {self.m_orb}")
+        print(f"  Lanczos blocks = {self.n_lanczos_blocks}")
+        print(f"  Target poles = {self.n_target_poles}")
 
-    Qkm1 = np.zeros((H.shape[0], 0), dtype=np.complex128)  # empty previous block
+    # ------------- public API -------------
 
-    for k in range(L):
-        # W = H Qk - Qk Ak - Q_{k-1} B_{k-1}^H
-        W = HQk - Qk @ Ak
-        if k > 0:
-            W -= Qkm1 @ Bs[-1].conj().T
+    def run_fit(self, warp_kind="atan", warp_w0=0.1, eta_broadening=0.005):
+        print("\n--- Fitting and merging ---")
+        self._fit_block_lanczos()
+        self._extract_poles_from_T()
 
-        # Orthonormalize W
-        W_cols = [W[:, j].copy() for j in range(W.shape[1])]
-        Qnext_list, Bk = gram_schmidt_qr_dense(W_cols, reorth=reorth)
-        if len(Qnext_list) == 0:
-            break
+        z = self.omega + 1j * eta_broadening
+        self.delta_lanczos = self._delta_from_poles(z, self.eps_lanczos, self.R_lanczos)
 
-        Bs.append(Bk)
-        Qkm1 = Qk
-        Qk = np.column_stack(Qnext_list)
+        self._merge_poles_block(kind=warp_kind, w0=warp_w0)
 
-        # Update Ak+1
-        HQk = H @ Qk
-        Ak = Qk.conj().T @ HQk
-        As.append(Ak)
+        self.delta_merged = self._delta_from_poles(z, self.eps_merged, self.R_merged)
 
-        Qblocks.append(Qnext_list)
+        print("--- Done ---")
+        print("\nFinal merged poles")
+        for i in range(len(self.eps_merged)):
+            c = np.sqrt(max(np.real(np.trace(self.R_merged[i])), 0.0))
+            print(f"  pole {i}: e = {self.eps_merged[i]:+.6f}, sqrt Tr(R) = {c:.6f}")
+        return self
 
-        if len(Qblocks) >= L + 1:
-            break
+    def analyze(self, eta_broadening=0.005):
+        if self.delta_merged is None:
+            raise RuntimeError("run_fit must be called first")
 
-    return As, Bs, Qblocks, R0
+        print("\n--- Analysis ---")
+        eL_im = self._rel_l2_mat(np.imag(self.delta_input), np.imag(self.delta_lanczos))
+        eL_re = self._rel_l2_mat(np.real(self.delta_input), np.real(self.delta_lanczos))
+        print(f"Lanczos ({len(self.eps_lanczos)} poles): Im = {eL_im:.3e}, Re = {eL_re:.3e}")
 
-# -----------------------------
-# Continued fraction for top-left block (unchanged)
-# -----------------------------
+        eM_im = self._rel_l2_mat(np.imag(self.delta_input), np.imag(self.delta_merged))
+        eM_re = self._rel_l2_mat(np.real(self.delta_input), np.real(self.delta_merged))
+        print(f"Merged  ({self.n_target_poles} poles): Im = {eM_im:.3e}, Re = {eM_re:.3e}")
 
-def block_cf_top_left(As, Bs, z):
-    if not As:
-        return np.array([[]], dtype=np.complex128)
-    m0 = As[0].shape[0]
-    Id = np.eye(m0, dtype=np.complex128)
-    Sigma = np.zeros_like(As[-1], dtype=np.complex128)
-    for k in range(len(As)-2, -1, -1):
-        Bkp1 = Bs[k]
-        Ikp1 = np.eye(As[k+1].shape[0], dtype=np.complex128)
-        try:
-            Sigma = Bkp1.conj().T @ npl.inv(z*Ikp1 - As[k+1] - Sigma) @ Bkp1
-        except npl.LinAlgError:
-            return np.full_like(Id, np.nan)
-    return npl.inv(z*Id - As[0] - Sigma)
+        chi = self._cost_function_mat(self.eps_merged, self.R_merged, self.omega,
+                                      self.delta_input, eta_broadening)
+        print(f"Chi squared (Frobenius): {chi:.6e}")
+        print("--- End analysis ---")
+        return self
 
-# -----------------------------
-# Top-level: fixed-basis block-Lanczos Green's function
-# -----------------------------
+    def plot_results(self):
+        if self.delta_merged is None:
+            print("Call run_fit first")
+            return
 
-def green_function_block_lanczos_fixed_basis(
-    M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
-    h0_clean, U_clean, one_body_terms, two_body_terms, coeff_thresh=1e-12, L=100, reorth=False
-):
-    """
-    For each sector (N+1 and N-1):
-      1) Build seed wavefunctions by applying creation/annihilation on psi0
-      2) Build fixed Krylov determinant basis by NappH H-expansions
-      3) Build H_in_basis once
-      4) Run block-Lanczos using plain matrix multiplications with H_in_basis
-      5) Assemble G(ω) on the subspace of selected impurity indices, embedded back
-         into the full spin-orbital space (size 2M), like your previous routine.
-    """
-    Norb = 2*M
-    Nw = len(ws)
+        sel = (0, 0)
+        tr_input = np.trace(self.delta_input, axis1=1, axis2=2)
+        tr_lanczos = np.trace(self.delta_lanczos, axis1=1, axis2=2)
+        tr_merged = np.trace(self.delta_merged, axis1=1, axis2=2)
 
-    # 1) seeds in each sector
-    seed_add_wf = []
-    seed_rem_wf = []
-    for i in impurity_indices:
-        si = cc.Spin.Alpha if i < M else cc.Spin.Beta
-        oi = i % M
-        wa = cc.apply_creation(psi0_wf, oi, si)
-        if wa.data():  # non-empty
-            seed_add_wf.append(wa)
-        wr = cc.apply_annihilation(psi0_wf, oi, si)
-        if wr.data():
-            seed_rem_wf.append(wr)
+        fig, axes = plt.subplots(2, 2, figsize=(14, 8), sharex=True)
 
-    # 2) fixed determinant bases
-    basis_add = build_sector_basis_from_seeds(seed_add_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
-    basis_rem = build_sector_basis_from_seeds(seed_rem_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+        axes[0, 0].plot(self.omega, np.real(self.delta_input[:, sel[0], sel[1]]), 'k-', label='Input')
+        axes[0, 0].plot(self.omega, np.real(self.delta_lanczos[:, sel[0], sel[1]]), 'r--', label='Lanczos')
+        axes[0, 0].plot(self.omega, np.real(self.delta_merged[:, sel[0], sel[1]]), 'b:', lw=2, label='Merged')
+        axes[0, 0].set_ylabel(f"Re Δ[{sel[0]},{sel[1]}]")
+        axes[0, 0].set_title(f"Element [{sel[0]},{sel[1]}]")
+        axes[0, 0].legend()
+        axes[0, 0].grid(True, alpha=0.3)
 
-    # 3) build H in those bases
-    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
-    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
+        axes[1, 0].plot(self.omega, np.imag(self.delta_input[:, sel[0], sel[1]]), 'k-')
+        axes[1, 0].plot(self.omega, np.imag(self.delta_lanczos[:, sel[0], sel[1]]), 'r--')
+        axes[1, 0].plot(self.omega, np.imag(self.delta_merged[:, sel[0], sel[1]]), 'b:', lw=2)
+        axes[1, 0].set_xlabel("ω")
+        axes[1, 0].set_ylabel(f"Im Δ[{sel[0]},{sel[1]}]")
+        axes[1, 0].grid(True, alpha=0.3)
 
-    # 4) initial block vectors Q0 in each sector: project seeds to the fixed bases
-    seed_vecs_add = [wf_to_vec(wf, basis_add) for wf in seed_add_wf] if len(basis_add) else []
-    seed_vecs_rem = [wf_to_vec(wf, basis_rem) for wf in seed_rem_wf] if len(basis_rem) else []
+        axes[0, 1].plot(self.omega, np.real(tr_input), 'k-', label='Input')
+        axes[0, 1].plot(self.omega, np.real(tr_lanczos), 'r--', label='Lanczos')
+        axes[0, 1].plot(self.omega, np.real(tr_merged), 'b:', lw=2, label='Merged')
+        axes[0, 1].set_ylabel("Re Tr Δ")
+        axes[0, 1].set_title("Trace")
+        axes[0, 1].legend()
+        axes[0, 1].grid(True, alpha=0.3)
 
-    # Run block-Lanczos on the fixed bases
-    As_g, Bs_g, Qs_g, R0_g = ([], [], [], np.array([]))
-    As_l, Bs_l, Qs_l, R0_l = ([], [], [], np.array([]))
+        axes[1, 1].plot(self.omega, np.imag(tr_input), 'k-')
+        axes[1, 1].plot(self.omega, np.imag(tr_lanczos), 'r--')
+        axes[1, 1].plot(self.omega, np.imag(tr_merged), 'b:', lw=2)
+        axes[1, 1].set_xlabel("ω")
+        axes[1, 1].set_ylabel("Im Tr Δ")
+        axes[1, 1].grid(True, alpha=0.3)
 
-    if len(seed_vecs_add):
-        # convert CSR to linear operator by dense/sparse @ in the iteration
-        As_g, Bs_g, Qs_g, R0_g = block_lanczos_fixed_basis(H_add, seed_vecs_add, L=L, reorth=reorth)
+        plt.tight_layout()
+        plt.show()
 
-    if len(seed_vecs_rem):
-        As_l, Bs_l, Qs_l, R0_l = block_lanczos_fixed_basis(H_rem, seed_vecs_rem, L=L, reorth=reorth)
+    # ------------- helpers and internals -------------
 
-    have_g = (R0_g.size != 0 and len(As_g) > 0)
-    have_l = (R0_l.size != 0 and len(As_l) > 0)
+    @staticmethod
+    def load_delta_from_files(file_re, file_im, col_re=5, col_im=5):
+        data_re = np.loadtxt(file_re)
+        data_im = np.loadtxt(file_im)
+        omega_re, re_vals = data_re[:, 0], data_re[:, col_re]
+        omega_im, im_vals = data_im[:, 0], data_im[:, col_im]
+        if not np.allclose(omega_re, omega_im, rtol=1e-12, atol=1e-14):
+            raise ValueError("omega grids do not match")
+        return omega_re.astype(float), (re_vals + 1j * im_vals).astype(np.complex128)
 
-    # Indices in the *small* blocks correspond one-to-one to the seed order
-    add_idx_map = list(range(len(seed_vecs_add)))
-    rem_idx_map = list(range(len(seed_vecs_rem)))
+    def _fit_block_lanczos(self):
+        print(f"1) Block Lanczos with trapezoid weights. Blocks = {self.n_lanczos_blocks}")
 
-    # 5) Evaluate G(ω) in the seed subspace and embed back to [Norb x Norb] using impurity_indices
-    G_all = np.zeros((Nw, Norb, Norb), dtype=np.complex128)
+        # trapezoid weights on possibly non uniform grid
+        dx = np.diff(self.omega)
+        w = np.empty_like(self.omega)
+        w[1:-1] = 0.5 * (dx[:-1] + dx[1:])
+        w[0] = 0.5 * dx[0]
+        w[-1] = 0.5 * dx[-1]
 
-    for iw, w in enumerate(ws):
-        z_g = (w + e0) + 1j*eta
-        z_l = (-w + e0) - 1j*eta
+        rho_meas = -np.imag(self.delta_input) / np.pi
+        mu_grid = [rho_meas[i] * w[i] for i in range(self.n_omega)]
 
-        Gg_eff = None
-        if have_g:
-            G00_g = block_cf_top_left(As_g, Bs_g, z_g)
-            if G00_g.size != 0 and not np.isnan(G00_g).any():
-                # Note: here R0_g is the QR R factor. The "impurity block" in this fixed-basis variant
-                #       corresponds to the seed subspace, so the correct coupling into CF top-left is
-                #       exactly like before: G_eff = R^H G00 R.
-                Gg_eff = R0_g.conj().T @ G00_g @ R0_g
+        if self.block_size == -1:
+            # collapse to scalar Gauss quadrature exactly like your script
+            mu = np.array([float(M[0,0]) for M in mu_grid], dtype=np.float64)
+            N = min(self.n_lanczos_blocks, self.n_omega)
+            eps, wdiag, T = self._scalar_lanczos_quadrature(self.omega, mu, N)
+            # lift back to block form
+            self.eps_lanczos = eps
+            self.R_lanczos = [np.array([[wj]], dtype=np.float64) for wj in wdiag]
+            self.T_lanczos = T
+            self.M0_sqrt_lanczos = np.array([[np.sqrt(mu.sum())]], dtype=np.float64)
+            return
 
-        Gl_eff = None
-        if have_l:
-            G00_l = block_cf_top_left(As_l, Bs_l, z_l)
-            if G00_l.size != 0 and not np.isnan(G00_l).any():
-                Gl_eff = R0_l.conj().T @ G00_l @ R0_l
-
-        # place back into the full Norb x Norb with the seed ordering matching impurity_indices
-        # seed ordering for addition/removal is exactly the order we built seeds_wf with
-        if Gg_eff is not None:
-            for a, ia in enumerate(impurity_indices):
-                for b, ib in enumerate(impurity_indices):
-                    if a < len(add_idx_map) and b < len(add_idx_map):
-                        G_all[iw, ia, ib] += Gg_eff[a, b]
-
-        if Gl_eff is not None:
-            for a, ia in enumerate(impurity_indices):
-                for b, ib in enumerate(impurity_indices):
-                    if a < len(rem_idx_map) and b < len(rem_idx_map):
-                        G_all[iw, ia, ib] -= Gl_eff[a, b]
-
-    return G_all, dict(
-        basis_add_size=len(basis_add), basis_rem_size=len(basis_rem),
-        have_g=have_g, have_l=have_l
-    )    
-
-
-def green_function_scalar_fixed_basis(
-    M, psi0_wf, e0, ws, eta, i, NappH,
-    h0_clean, U_clean, one_body_terms, two_body_terms,
-    coeff_thresh=1e-12, L=100, reorth=False
-):
-    """
-    Compute the single-diagonal element G_ii(ω) for a given spin-orbital index i (0..2M-1)
-    using the fixed-basis block-Lanczos approach specialized to a scalar seed subspace.
-
-    Returns
-    -------
-    Gii : np.ndarray of shape (Nw,), complex128
-        The diagonal Green's function element G_ii(ω) for each ω in `ws`.
-    info : dict
-        Diagnostics: sizes of addition/removal bases, flags for having each sector, etc.
-    """
-    Norb = 2*M
-    assert 0 <= i < Norb, "i must be in [0, 2M)"
-
-    Nw = len(ws)
-    Gii = np.zeros(Nw, dtype=np.complex128)
-
-    # --- Build the two sector seeds only for index i
-    si = cc.Spin.Alpha if i < M else cc.Spin.Beta
-    oi = i % M
-
-    wf_add = cc.apply_creation(psi0_wf, oi, si)
-    wf_rem = cc.apply_annihilation(psi0_wf, oi, si)
-
-    have_add_seed = bool(wf_add.data())
-    have_rem_seed = bool(wf_rem.data())
-
-    # Early exit if both seeds vanish (matrix element zero)
-    if not have_add_seed and not have_rem_seed:
-        return Gii, dict(
-            basis_add_size=0, basis_rem_size=0,
-            have_g=False, have_l=False,
-            seed_nonzero=False
+        A_blocks, B_blocks, _, M0 = self._block_lanczos_alg(
+            x_vals=self.omega,
+            weight_mats=mu_grid,
+            K=self.n_lanczos_blocks,
+            b=self.block_size
         )
 
-    # --- Determinant bases by H-expansion from the single seeds
-    basis_add = build_sector_basis_from_seeds(
-        [wf_add] if have_add_seed else [],
-        one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
-    )
-    basis_rem = build_sector_basis_from_seeds(
-        [wf_rem] if have_rem_seed else [],
-        one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
-    )
+        # guard: trim B if needed and build T of size (len(B)+1)*b
+        if B_blocks and len(B_blocks) != len(A_blocks) - 1:
+            B_blocks = B_blocks[:max(0, len(A_blocks) - 1)]
 
-    # --- Restrict H
-    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
-    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
+        self.T_lanczos = self._build_block_tridiagonal(A_blocks, B_blocks)
+        self.M0_sqrt_lanczos = self._sym_sqrt_psd(M0)
+        print(f"   T shape = {self.T_lanczos.shape}")
 
-    # --- Project seeds into their bases (each is a single dense vector)
-    seed_vecs_add = [wf_to_vec(wf_add, basis_add)] if have_add_seed and len(basis_add) else []
-    seed_vecs_rem = [wf_to_vec(wf_rem, basis_rem)] if have_rem_seed and len(basis_rem) else []
+    def _extract_poles_from_T(self):
+        if self.T_lanczos is None:
+            raise RuntimeError("run _fit_block_lanczos first")
 
-    # --- Block Lanczos in each sector (block size will be 1 if present)
-    As_g, Bs_g, R0_g = [], [], np.array([])
-    As_l, Bs_l, R0_l = [], [], np.array([])
+        print("2) Extracting poles and residues from T")
+        if self.T_lanczos.size == 0:
+            self.eps_lanczos, self.R_lanczos = np.array([]), []
+            return
 
-    if seed_vecs_add:
-        As_g, Bs_g, _, R0_g = block_lanczos_fixed_basis(H_add, seed_vecs_add, L=L, reorth=reorth)
+        evals, evecs = npl.eigh(self.T_lanczos)
+        self.eps_lanczos = evals
 
-    if seed_vecs_rem:
-        As_l, Bs_l, _, R0_l = block_lanczos_fixed_basis(H_rem, seed_vecs_rem, L=L, reorth=reorth)
+        b = self.block_size
+        n_T = self.T_lanczos.shape[0]
+        E1 = np.zeros((n_T, b))
+        E1[:b, :b] = np.eye(b)
 
-    have_g = (R0_g.size != 0 and len(As_g) > 0)
-    have_l = (R0_l.size != 0 and len(As_l) > 0)
+        R = []
+        for j in range(n_T):
+            uj = evecs[:, j:j+1]                     # (n_T,1)
+            vj = self.M0_sqrt_lanczos.T @ E1.T @ uj  # (b,1)
+            Rj = vj @ vj.conj().T                    # PSD Hermitian
+            R.append(Rj)
+        self.R_lanczos = R
+        print(f"   poles extracted = {len(self.eps_lanczos)}")
 
-    # --- Evaluate scalar CFs and assemble G_ii(ω) = (R* G00 R)_{00}^add - (R* G00 R)_{00}^rem
-    # For 1×1 blocks: G_eff = |R0|^2 * G00
-    for iw, w in enumerate(ws):
-        # particle sector: z_g = w + e0 + iη
-        if have_g:
-            z_g = (w + e0) + 1j*eta
-            G00_g = block_cf_top_left(As_g, Bs_g, z_g)  # shape (1,1)
-            if G00_g.size and not np.isnan(G00_g).any():
-                r = R0_g[0, 0] if R0_g.ndim == 2 else R0_g
-                Gii[iw] += (abs(r)**2) * G00_g[0, 0]
+    def _merge_poles_block(self, kind="atan", w0=0.1):
+        if self.eps_lanczos is None:
+            raise RuntimeError("run _extract_poles_from_T first")
+        print(f"3) Merging to {self.n_target_poles} poles using warp = {kind}, w0 = {w0}")
+        self.eps_merged, self.R_merged = self._merge_poles_block_warped(
+            self.eps_lanczos, self.R_lanczos, self.n_target_poles, kind=kind, w0=w0
+        )
 
-        # hole sector: z_l = -w + e0 - iη
-        if have_l:
-            z_l = (-w + e0) - 1j*eta
-            G00_l = block_cf_top_left(As_l, Bs_l, z_l)  # shape (1,1)
-            if G00_l.size and not np.isnan(G00_l).any():
-                r = R0_l[0, 0] if R0_l.ndim == 2 else R0_l
-                Gii[iw] -= (abs(r)**2) * G00_l[0, 0]
+    @staticmethod
+    def _delta_from_poles(z, eps, residues):
+        z_arr = np.atleast_1d(np.asarray(z, dtype=np.complex128))
+        if len(eps) == 0:
+            # derive M if possible, else default to 1
+            M = residues[0].shape[0] if len(residues) > 0 else 1
+            out = np.zeros(z_arr.shape + (M, M), dtype=np.complex128)
+            return out[0] if np.isscalar(z) else out
 
-    return Gii, dict(
-        basis_add_size=len(basis_add), basis_rem_size=len(basis_rem),
-        have_g=have_g, have_l=have_l, seed_nonzero=True
-    )
+        M = residues[0].shape[0]
+        out = np.zeros(z_arr.shape + (M, M), dtype=np.complex128)
+        for j, ej in enumerate(eps):
+            denom = (z_arr - ej)[..., None, None]
+            out += residues[j][None, :, :] / denom
+        return out[0] if np.isscalar(z) else out
 
+    @staticmethod
+    def _sym_sqrt_psd(A, tol=1e-12):
+        A = 0.5 * (A + A.T.conj())
+        w, Q = npl.eigh(A)
+        w = np.clip(w, 0.0, None)
+        return Q @ np.diag(np.sqrt(w)) @ Q.T.conj()
 
-# ---------------------------------------------------------------------------
-# TIME PROPAGATION 
-# ---------------------------------------------------------------------------
+    @classmethod
+    def _merge_poles_block_warped(cls, eps, R_list, n_target, kind="atan", w0=0.1):
+        phi, inv = cls._make_warp(kind, w0)
 
-def _lanczos_tridiagonal(H, v0, L=200, reorth=False):
-    """
-    Perform Hermitian Lanczos iteration starting from vector v0.
-    Constructs an orthonormal Krylov basis Q and the tridiagonal matrix T.
+        eps = np.asarray(eps, float).copy()
+        R = list(R_list)
 
-    Parameters
-    ----------
-    H : (N×N) linear operator (csr_matrix or LinearOperator)
-        Hermitian Hamiltonian, must support `@` for matrix-vector product.
-    v0 : ndarray (N,)
-        Initial vector to start the Krylov subspace.
-    L : int
-        Maximum number of Lanczos steps.
-    reorth : bool
-        If True, apply a (single-pass) reorthogonalization against all previous vectors
-        to improve numerical stability.
+        order = np.argsort(eps)
+        eps = eps[order]
+        R = [R[i] for i in order]
 
-    Returns
-    -------
-    Q : ndarray (N×m)
-        Orthonormal Lanczos basis vectors.
-    T : ndarray (m×m)
-        Tridiagonal Lanczos matrix.
-    v0_norm : float
-        Norm of the initial vector v0.
-    """
+        z = phi(eps)
+        Tr_R = np.array([np.real(np.trace(Ri)) for Ri in R])
 
-    # Ensure v0 is a complex128 array
-    v0 = np.asarray(v0, dtype=np.complex128)
-    N = v0.size
+        while len(eps) > n_target:
+            tr_prod = Tr_R[:-1] * Tr_R[1:]
+            tr_sum = Tr_R[:-1] + Tr_R[1:]
+            # variance loss in warped space with scalarization Tr(R)
+            costs = (tr_prod / (tr_sum + 1e-300)) * (z[:-1] - z[1:])**2
+            i = int(np.argmin(costs))
 
-    # Normalize the initial vector
-    v0_norm = np.linalg.norm(v0)
-    if v0_norm == 0:
-        # If v0 is zero, return empty basis and matrix
-        return np.zeros((N,0), dtype=np.complex128), np.zeros((0,0), dtype=np.complex128), 0.0
+            R_new = R[i] + R[i+1]
+            Tr_new = Tr_R[i] + Tr_R[i+1]
 
-    # Initialize first basis vector q = v0 / ||v0||
-    q_prev = np.zeros_like(v0)   # "ghost" previous vector, initially zero
-    q = v0 / v0_norm
-    Qcols = [q.copy()]           # list to store basis vectors
-    alphas, betas = [], []       # diagonals and off-diagonals of T
+            if Tr_new < 1e-300:
+                e_new = 0.5 * (eps[i] + eps[i+1])
+            else:
+                e_new = (eps[i] * Tr_R[i] + eps[i+1] * Tr_R[i+1]) / Tr_new
 
-    beta = 0.0
-    for _ in range(L):
-        # Apply Hamiltonian
-        w = H @ q
-        # Rayleigh quotient α = <q|H|q>
-        alpha = np.vdot(q, w)
-        # Remove components along current and previous q (three-term recurrence)
-        w = w - alpha * q - beta * q_prev
+            z_new = phi(e_new)
 
-        # Optional reorthogonalization against all previous Q vectors
-        if reorth and Qcols:
-            Qmat = np.column_stack(Qcols)
-            w -= Qmat @ (Qmat.conj().T @ w)
+            eps = np.concatenate([eps[:i], [e_new], eps[i+2:]])
+            R = R[:i] + [R_new] + R[i+2:]
+            Tr_R = np.concatenate([Tr_R[:i], [Tr_new], Tr_R[i+2:]])
+            z = np.concatenate([z[:i], [z_new], z[i+2:]])
 
-        # Next off-diagonal β = ||w||
-        beta = np.linalg.norm(w)
-        alphas.append(alpha)
+        return eps, R
 
-        # If β ≈ 0, Krylov subspace has closed (breakdown)
-        if beta < 1e-14:
-            break
+    @staticmethod
+    def _make_warp(kind="atan", w0=0.1):
+        if kind == "atan":
+            return (lambda x: np.arctan(x / w0), lambda y: w0 * np.tan(y))
+        if kind == "asinh":
+            return (lambda x: np.arcsinh(x / w0), lambda y: w0 * np.sinh(y))
+        return (lambda x: x, lambda y: y)
 
-        # Store β and normalize new q
-        betas.append(beta)
-        q_prev, q = q, w / beta
-        Qcols.append(q.copy())
+    @staticmethod
+    def _block_lanczos_alg(x_vals, weight_mats, K, b, tol=1e-12):
+        """
+        Robust block Lanczos with full reorthogonalization and rank aware steps.
+        Inner product is <Φ,Ψ> = sum_i Φ_i^† μ_i Ψ_i, Hermitian symmetrized.
+        """
+        x_vals = np.asarray(x_vals, float)
+        S = len(x_vals)
+        M = weight_mats[0].shape[0]
 
-    # Number of steps actually performed
-    m = len(alphas)
-    if m == 0:
-        # Should not normally happen, but guard against empty Krylov space
-        return np.zeros((N,0), dtype=np.complex128), np.zeros((0,0), dtype=np.complex128), v0_norm
+        def blk_ip_grid(Phi, Psi, mu_list):
+            # shapes: Phi, Psi -> (S,M,b); mu_list -> (S,M,M)
+            mu = np.stack(mu_list, axis=0)                         # (S,M,M)
+            acc = np.einsum('smi,smn,snj->ij', 
+                            Phi.conj(), mu, Psi, optimize=True)    # (b,b)
+            return 0.5*(acc + acc.conj().T)
 
-    # Construct Q matrix (columns are q0, q1, …, q_{m-1})
-    Q = np.column_stack(Qcols[:m])
+        def _sqrt_and_pinv_from_gram(G):
+            Gs = 0.5 * (G + G.conj().T)
+            s, U = npl.eigh(Gs)
+            s = np.clip(s, 0.0, None)
+            smax = np.max(s) if s.size else 0.0
+            thr = max(tol, smax * 1e-12)
+            s_clipped = np.where(s > thr, s, 0.0)
 
-    # Construct tridiagonal T from α and β coefficients
-    T = np.zeros((m, m), dtype=np.complex128)
-    for k in range(m):
-        T[k, k] = alphas[k]      # diagonal entries
-        if k+1 < m:
-            T[k, k+1] = betas[k] # upper diagonal
-            T[k+1, k] = betas[k] # lower diagonal
+            sqrt_s = np.zeros_like(s_clipped)
+            pisqrt_s = np.zeros_like(s_clipped)
+            mask = s_clipped > 0.0
+            sqrt_s[mask] = np.sqrt(s_clipped[mask])
+            pisqrt_s[mask] = 1.0 / sqrt_s[mask]
 
-    return Q, T, v0_norm
+            B = U @ np.diag(sqrt_s) @ U.T.conj()
+            B_pinv = U @ np.diag(pisqrt_s) @ U.T.conj()
+            eff_rank = int(np.sum(mask))
+            return B, B_pinv, eff_rank
 
-def lanczos_tridiagonal_stable(H, v0, L=200, reorth=True, symmetrize=False, scale=True,
-                               reorth_tol=1e-10, breakdown_tol=1e-14, powerit=20):
-    """
-    Hermitian Lanczos with optional symmetrization, spectral scaling, and two-pass MGS reorth.
-    Returns Q (N×m), T (m×m), ||v0||.
-    """
+        # M0
+        M0 = np.zeros((M, M), dtype=np.complex128)
+        for Wi in weight_mats:
+            M0 += Wi
+        M0 = 0.5 * (M0 + M0.conj().T)
 
+        # starting block: identities orthonormalized
+        Phi0_raw = np.zeros((S, M, b), dtype=np.complex128)
+        for s in range(S):
+            Phi0_raw[s] = np.eye(M, b, dtype=np.complex128)
 
+        G0 = blk_ip_grid(Phi0_raw, Phi0_raw, weight_mats)
+        _, B0_pinv, _ = _sqrt_and_pinv_from_gram(G0)
+        Phi_i = Phi0_raw @ B0_pinv
+        Phi_im1 = np.zeros_like(Phi_i)
 
-    # optional symmetrization
-    if symmetrize:
-        if sp.issparse(H):
-            H = 0.5*(H + H.conj().T)
-            H.setdiag(H.diagonal().real)
-        else:
-            H = 0.5*(H + H.conj().T)
-            np.fill_diagonal(H, np.real(np.diag(H)))
+        A_blocks, B_blocks, Phi_list = [], [], [Phi_i.copy()]
+        B_im1 = np.zeros((b, b), dtype=np.complex128)
 
-    # estimate spectral radius for scaling
-    rho = 1.0
-    if scale:
-        # power iteration on a random unit vector
-        rng = np.random.default_rng(12345)
-        x = rng.standard_normal(H.shape[0]) + 1j*rng.standard_normal(H.shape[0])
-        x /= norm(x)
-        for _ in range(powerit):
-            x = H @ x
-            n = norm(x)
-            if not np.isfinite(n) or n < 1e-300:
+        for k in range(K):
+            XPhi = x_vals[:, None, None] * Phi_i
+            Ak = blk_ip_grid(Phi_i, XPhi, weight_mats)
+            Ak = 0.5 * (Ak + Ak.conj().T)
+            A_blocks.append(Ak)
+
+            W = XPhi - Phi_i @ Ak - Phi_im1 @ B_im1.T.conj()
+
+            # full reorthogonalization, two passes
+            for _ in range(2):
+                for P in Phi_list:
+                    C = blk_ip_grid(P, W, weight_mats)
+                    W = W - P @ C
+
+            G = blk_ip_grid(W, W, weight_mats)
+            Bk, Bk_pinv, eff_rank = _sqrt_and_pinv_from_gram(G)
+
+            if eff_rank == 0:
                 break
-            x /= n
-        rho = max(n, 1.0)
-    Hdot = (lambda x: (H @ x) / rho) if scale else (lambda x: H @ x)
 
-    v0 = np.asarray(v0, dtype=np.complex128)
-    N = v0.size
-    v0_norm = norm(v0)
-    if v0_norm == 0.0:
-        return np.zeros((N,0), np.complex128), np.zeros((0,0), np.complex128), 0.0
+            if k < K - 1:
+                B_blocks.append(Bk)
+                Phi_ip1 = W @ Bk_pinv
+                Phi_im1, Phi_i = Phi_i, Phi_ip1
+                Phi_list.append(Phi_i.copy())
+                B_im1 = Bk
+            else:
+                break
 
-    q_prev = np.zeros_like(v0)
-    q = v0 / v0_norm
+        return A_blocks, B_blocks, Phi_list, M0
 
-    # preallocate Q with an upper bound of L+1 columns
-    Q = np.empty((N, L+1), dtype=np.complex128)
-    Q[:, 0] = q
-    k = 0
-    alphas = np.empty(L, dtype=np.float64)
-    betas  = np.empty(L, dtype=np.float64)
+    @staticmethod
+    def _build_block_tridiagonal(A_blocks, B_blocks):
+        if not A_blocks:
+            return np.zeros((0, 0), dtype=float)
 
-    beta = 0.0
-    while k < L:
-        w = Hdot(q)
-        alpha = np.vdot(q, w)
-        # Hermitian guard: take the real part
-        alpha = float(np.real(alpha))
-        # three term recurrence
-        w = w - alpha*q - beta*q_prev
+        b = A_blocks[0].shape[0]
+        K_eff = len(B_blocks) + 1
+        A_blocks = A_blocks[:K_eff]
 
-        # selective reorth trigger
-        if reorth:
-            # test loss of orthogonality: max|Q[:,:k+1]^H w|
-            hk = Q[:, :k+1].conj().T @ w
-            maxlost = np.max(np.abs(hk))
-            if maxlost > reorth_tol*norm(w):
-                # two-pass MGS
-                w -= Q[:, :k+1] @ hk
-                hk2 = Q[:, :k+1].conj().T @ w
-                w -= Q[:, :k+1] @ hk2
+        n = K_eff * b
+        T = np.zeros((n, n), dtype=np.complex128)
 
-        beta = norm(w)
-        alphas[k] = alpha
+        for k in range(K_eff):
+            T[k*b:(k+1)*b, k*b:(k+1)*b] = A_blocks[k]
+            if k < len(B_blocks):
+                Bk = B_blocks[k]
+                T[k*b:(k+1)*b, (k+1)*b:(k+2)*b] = Bk
+                T[(k+1)*b:(k+2)*b, k*b:(k+1)*b] = Bk
 
-        if not np.isfinite(beta) or beta < breakdown_tol:
-            # happy breakdown or numerical failure
-            break
+        # return Hermitian real if blocks were real
+        T = 0.5 * (T + T.conj().T)
+        return np.real_if_close(T)
 
-        q_prev, q = q, w / beta
-        k += 1
-        Q[:, k] = q
-        betas[k-1] = beta
+    @staticmethod
+    def _scalar_lanczos_quadrature(x, mu, N):
+        x = np.asarray(x, float); mu = np.asarray(mu, float)
+        N = min(N, x.size)
+        def ip(a,b): return float(np.dot(mu, a*b))
+        def nrm(a): return np.sqrt(max(ip(a,a), 1e-300))
+        v_im1 = np.zeros_like(x); v = np.ones_like(x); v /= nrm(v)
+        al, be = [], []
+        beta_im1 = 0.0
+        for j in range(N):
+            w = x*v
+            a = ip(v,w); al.append(a)
+            w = w - a*v - beta_im1*v_im1
+            beta = nrm(w); 
+            if j < N-1: be.append(beta)
+            v_im1, v = v, w/(beta + 1e-300)
+            beta_im1 = beta
+        T = np.zeros((N,N))
+        i = np.arange(N)
+        T[i,i] = al
+        j = np.arange(N-1)
+        T[j, j+1] = be
+        T[j+1, j] = be
+        evals, evecs = npl.eigh(T)
+        wdiag = mu.sum() * (evecs[0,:]**2)
+        return evals, wdiag, T
 
-    m = max(1, k)  # at least one alpha
-    Q = Q[:, :m]
-    T = np.zeros((m, m), dtype=np.complex128)
-    for i in range(m):
-        # scale back the spectrum if we scaled H
-        T[i, i] = alphas[i]*rho
-        if i+1 < m:
-            T[i, i+1] = betas[i]*rho
-            T[i+1, i] = betas[i]*rho
+    @staticmethod
+    def _rel_l2_mat(F_true, F_rec):
+        diff = F_true - F_rec
+        num = np.sum(np.abs(diff)**2)
+        den = np.sum(np.abs(F_true)**2) + 1e-300
+        return np.sqrt(num / den)
 
-    return Q, T, v0_norm
-
-def green_function_from_time_propagation(
-    i, j,
-    M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
-    h0_clean, U_clean, one_body_terms, two_body_terms,
-    coeff_thresh=1e-12, L=100, reorth=True
-):
-    """
-    Compute the retarded Green's function G_ij(ω) using time propagation + Lanczos.
-
-    Strategy:
-      - Build N+1 and N-1 sector bases starting from |a_j> = c_j†|ψ0> and |r_j> = c_j|ψ0>.
-      - Restrict H to those bases and shift by E0 so ground state is stationary.
-      - Run Lanczos on each sector to get tridiagonal T matrices.
-      - Use T’s spectral decomposition to compute time overlaps S_add(t), S_rem(t).
-      - Fourier-integrate with damping exp(-ηt) to get G_ij(ω).
-
-    Parameters
-    ----------
-    i, j : int
-        Indices of the Green's function G_ij(ω) to compute (0 ≤ i,j < 2M).
-    M : int
-        Number of spatial orbitals (so Norb = 2M including spin).
-    psi0_wf : Wavefunction
-        Ground state wavefunction.
-    e0 : float
-        Ground state energy.
-    ws : ndarray
-        Frequency grid.
-    eta : float
-        Broadening parameter (imaginary shift).
-    impurity_indices : list[int]
-        Indices of impurity orbitals (not directly needed here).
-    NappH : int
-        Number of H-applications to expand determinant basis.
-    h0_clean, U_clean, one_body_terms, two_body_terms :
-        Hamiltonian input data.
-    coeff_thresh : float
-        Threshold for determinant coefficients.
-    L : int
-        Maximum Lanczos steps.
-    reorth : bool
-        Reorthogonalize Lanczos vectors.
-
-    Returns
-    -------
-    g : ndarray (len(ws),)
-        Complex retarded Green's function values at given ω grid.
-    """
-
-    ws = np.asarray(ws, dtype=float)
-    Norb = 2*M
-    assert 0 <= i < Norb and 0 <= j < Norb
-
-    # Helper: convert global index to (orbital, spin)
-    def _index_to_spin_orb(i, M):
-        si = cc.Spin.Alpha if i < M else cc.Spin.Beta
-        oi = i % M
-        return oi, si
-
-    # Spin/orbital for indices i and j
-    oj, sj = _index_to_spin_orb(j, M)
-    oi, si = _index_to_spin_orb(i, M)
-
-    # Seeds: |a_j> = c_j†|ψ0>, |r_j> = c_j|ψ0>
-    wf_add_j = cc.apply_creation(psi0_wf, oj, sj)
-    wf_rem_j = cc.apply_annihilation(psi0_wf, oj, sj)
-    have_add = bool(wf_add_j.data()); have_rem = bool(wf_rem_j.data())
-    if not have_add and not have_rem:
-        # If both vanish, G_ij(ω) = 0
-        return np.zeros_like(ws, dtype=np.complex128)
-
-    # Bra seeds for overlap evaluation (|a_i>, |r_i>)
-    wf_add_i = cc.apply_creation(psi0_wf, oi, si)
-    wf_rem_i = cc.apply_annihilation(psi0_wf, oi, si)
-
-    # Build determinant bases for N+1 and N-1 sectors by H-expansion
-    basis_add = build_sector_basis_from_seeds(
-        [wf_add_j] if have_add else [], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
-    )
-    basis_rem = build_sector_basis_from_seeds(
-        [wf_rem_j] if have_rem else [], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
-    )
-
-    print(f"basis sizes: add ({len(basis_add)}), remove ({len(basis_rem)})")
-
-    # Build restricted Hamiltonians
-    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if have_add and len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
-    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if have_rem and len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
-
-    # Shift by ground state energy e0 (makes |ψ0> stationary)
-    if H_add.shape[0] > 0:
-        H_add = H_add - e0 * sp.eye(H_add.shape[0], dtype=np.complex128, format='csr')
-    if H_rem.shape[0] > 0:
-        H_rem = H_rem - e0 * sp.eye(H_rem.shape[0], dtype=np.complex128, format='csr')
-
-    # Project seeds into those bases
-    a_j_vec = wf_to_vec(wf_add_j, basis_add) if have_add and H_add.shape[0] else np.zeros((0,), dtype=np.complex128)
-    r_j_vec = wf_to_vec(wf_rem_j, basis_rem) if have_rem and H_rem.shape[0] else np.zeros((0,), dtype=np.complex128)
-    a_i_vec = wf_to_vec(wf_add_i, basis_add) if have_add and H_add.shape[0] else np.zeros((0,), dtype=np.complex128)
-    r_i_vec = wf_to_vec(wf_rem_i, basis_rem) if have_rem and H_rem.shape[0] else np.zeros((0,), dtype=np.complex128)
-
-    # Lanczos on each sector starting from |a_j>, |r_j>
-    Qp=Tp=n0p=None; Qm=Tm=n0m=None
-    if have_add and a_j_vec.size:
-        #Qp, Tp, n0p = _lanczos_tridiagonal(H_add, a_j_vec, L=L, reorth=reorth)
-        Qp, Tp, n0p = lanczos_tridiagonal_stable(H_add, a_j_vec, L=L, reorth=True, symmetrize=False, scale=True)
-    if have_rem and r_j_vec.size:
-        #Qm, Tm, n0m = _lanczos_tridiagonal(H_rem, r_j_vec, L=L, reorth=reorth)
-        Qm, Tm, n0m = lanczos_tridiagonal_stable(H_rem, r_j_vec, L=L, reorth=True, symmetrize=False, scale=True)
+    @classmethod
+    def _cost_function_mat(cls, e, R, omega, target_delta, delta):
+        model_delta = cls._delta_from_poles(omega + 1j * delta, e, R)
+        diff = target_delta - model_delta
+        return float(np.sum(np.abs(diff)**2))
 
 
-    # Helper: pick time grid from ws and η
-    def _compute_time_grid(ws, eta):
-        ws = np.asarray(ws, dtype=float)
-        wmin, wmax = ws.min(), ws.max()
-        span = max(wmax - wmin, 1e-6)
-        # target time scales: from η and from frequency spacing
-        t_eta = 8.0 / max(eta, 1e-6)
-        dw = np.median(np.diff(np.unique(np.round(ws, 12)))) if ws.size > 1 else span
-        t_dw = 2.0*np.pi / max(dw, 1e-6)
-        t_max = max(t_eta, t_dw)
-        # dt to avoid aliasing: dt ≲ π/(4Ω)
-        wabs = max(abs(wmin), abs(wmax), 1.0)
-        dt_alias = np.pi / (4.0 * wabs)
-        dt = min(dt_alias, t_max/4096.0)
-        # clamp Nt between 512 and 8192
-        Nt = int(min(max(np.ceil(t_max/dt), 512), 8192))
-        ts = dt * np.arange(Nt, dtype=float)
-        return ts, dt
+if __name__ == "__main__":
+    FILE_RE = "real-hyb-Ce4f.dat"
+    FILE_IM = "imag-hyb-Ce4f.dat"
+    N_LANCZOS_BLOCKS = 101
+    N_TARGET_POLES = 3
+    ETA_INPUT = 0.005
 
-    ts, dt = _compute_time_grid(ws, eta)
-
-    # Helper: compute time overlaps S(t) = <bra| exp(i sign T t) e1 > * v0_norm
-    def _time_overlaps_from_lanczos(T, Q, bra_vec, v0_norm, ts, sign):
-        if T is None or T.size == 0:
-            return np.zeros_like(ts, dtype=np.complex128)
-        # Project bra onto Lanczos basis
-        c = Q.conj().T @ bra_vec  # coefficients in Lanczos basis
-        # Diagonalize small tridiagonal T
-        evals, U = np.linalg.eigh(T)
-        # e1 = (1,0,0,…)
-        e1 = np.zeros((T.shape[0],), dtype=np.complex128); e1[0] = 1.0
-        Udag_e1 = U.conj().T @ e1         # components of e1 in eigenbasis
-        cdag_U  = np.conj(c) @ U          # bra projected in eigenbasis
-        # Time evolution exp(i sign λ t) for each eigenvalue
-        phases = np.exp(1j * sign * np.outer(evals, ts))   # (m, Nt)
-        # Overlap sum
-        return v0_norm * (cdag_U[:,None] * Udag_e1[:,None] * phases).sum(axis=0)
-
-    # Time overlaps for addition (sign=-1) and removal (sign=+1)
-    S_add = _time_overlaps_from_lanczos(Tp, Qp, a_i_vec, n0p, ts, sign=-1) if Qp is not None else np.zeros_like(ts, dtype=np.complex128)
-    S_rem = _time_overlaps_from_lanczos(Tm, Qm, r_i_vec, n0m, ts, sign=+1) if Qm is not None else np.zeros_like(ts, dtype=np.complex128)
-
-    # Fourier integration to G(ω): retarded integral with damping exp(-ηt)
-    phase = np.exp(1j * np.outer(ws, ts)) * np.exp(-eta * ts)[None, :]
-    g = -1j * dt * (phase @ (S_add + S_rem))  # -i factor for retarded GF
-
-    return g
-# gfs.py
+    try:
+        omega_data, delta_data = HybridizationFitter.load_delta_from_files(FILE_RE, FILE_IM)
+        fitter = HybridizationFitter(
+            omega_grid=omega_data,
+            delta_complex=delta_data,
+            n_lanczos_blocks=N_LANCZOS_BLOCKS,
+            n_target_poles=N_TARGET_POLES
+        )
+        fitter.run_fit(eta_broadening=ETA_INPUT).analyze(eta_broadening=ETA_INPUT)
+        fitter.plot_results()
+    except FileNotFoundError:
+        print(f"Error. Missing {FILE_RE} or {FILE_IM}")
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()# gfs.py
 import numpy as np
 from . import clic_clib as cc
 import scipy.sparse as sp
@@ -3256,13 +3006,13 @@ def get_integrals_from_file(filepath: str, spin_structure: str): # <-- Add new a
     
     return h0, U, M
 
-def calculate_bath_filling(h0: np.ndarray, M_imp: int, zero_threshold: float = 1e-3) -> int:
+def calculate_bath_filling(h0: np.ndarray, M_imp: int, zero_threshold: float = 1e-2) -> int:
     """
     Estimates the number of electrons in the non-interacting bath orbitals.
 
-    This function assumes a spin-orbital basis where the first 2*M_imp orbitals
-    belong to the impurity, and the rest belong to the bath. It counts bath
-    orbitals with single-particle energy below a threshold as fully occupied.
+    This function assumes a spin-orbital basis where the first M_imp 
+    and the M -> M+M_imp orbitals belong to the impurity, and the rest belong to the bath. 
+    It counts bath orbitals with single-particle energy below a threshold as fully occupied.
 
     Args:
         h0 (np.ndarray): The one-body Hamiltonian in the spin-orbital basis.
@@ -3273,18 +3023,24 @@ def calculate_bath_filling(h0: np.ndarray, M_imp: int, zero_threshold: float = 1
     Returns:
         int: The estimated number of electrons in the bath.
     """
-    num_spin_orbitals = h0.shape[0]
-    num_impurity_spin_orbitals = 2 * M_imp
+    K = h0.shape[0]
+    M = K // 2
 
-    if num_impurity_spin_orbitals >= num_spin_orbitals:
+
+    num_impurity_spin_orbitals = 2 * M_imp
+    num_bath_spatial_orbitals = M - M_imp
+
+    if num_impurity_spin_orbitals >= K:
+        print("no bath orbitals found")
         return 0 # No bath orbitals
 
     bath_filling = 0.0
-    # The bath spin-orbitals start at this index
-    bath_start_index = num_impurity_spin_orbitals
+
+    bath_indexes_a = [M_imp + i for i in range(num_bath_spatial_orbitals)]
+    bath_indexes = bath_indexes_a + [i+M for i in bath_indexes_a]
     
     # Extract the diagonal energies of the bath orbitals
-    bath_energies = np.real(np.diag(h0)[bath_start_index:])
+    bath_energies = np.real(np.diag(h0)[bath_indexes])
     
     for energy in bath_energies:
         if energy < -zero_threshold:
@@ -3754,6 +3510,7 @@ def one_rdm(wf,M,block=None):
     else : 
         K = len(block)
 
+    #wf.normalize()
     rdm = np.zeros((K, K), dtype=np.complex128)
     for (i,ib) in enumerate(block):
         for (j,jb) in enumerate(block):
@@ -3769,6 +3526,7 @@ def one_rdm(wf,M,block=None):
             # Apply the operator c†_i c_j to the ground state
             # This creates the state |Φ⟩ = c†_i c_j |Ψ⟩
             phi_wf = cc.apply_one_body_operator(wf, op_term)
+            #phi_wf.normalize()
             
             # The RDM element is <Ψ|Φ>
             rdm[i, j] = wf.dot(phi_wf)
@@ -3833,7 +3591,90 @@ def get_two_body_terms(U, M, thr=1e-12):
                         terms.append((orbs[0], orbs[1], orbs[2], orbs[3],
                                       spins[0], spins[1], spins[2], spins[3],
                                       complex(U[i, j, k, l])))
-    return termsimport numpy as np
+    return terms
+
+
+
+def expect_Sz_from_rdm(rdm, M, block):
+    # uses the block mapping you built in one_rdm
+    val = 0.0
+    for i, ib in enumerate(block):
+        if ib < M:
+            val += 0.5 * rdm[i, i]
+        else:
+            val -= 0.5 * rdm[i, i]
+    return np.real(val)
+
+def apply_Sz(wf, M, block=None):
+    if block is None:
+        block = list(range(2*M))
+    terms = []
+    for ib in block:
+        spin = cc.Spin.Alpha if ib < M else cc.Spin.Beta
+        orb  = ib if ib < M else ib - M
+        coeff = 0.5 if ib < M else -0.5
+        terms.append((orb, orb, spin, spin, coeff))
+    # try batched apply if available
+    try:
+        return cc.apply_one_body_operator(wf, terms)
+    except Exception:
+        acc = wf.zero_like()
+        for t in terms:
+            acc = acc + cc.apply_one_body_operator(wf, [t])
+        return acc
+
+def expect_Sz(wf, M, block=None):
+    if block is None:
+        block = list(range(2*M))
+    rdm = one_rdm(wf, M, block)
+    return expect_Sz_from_rdm(rdm, M, block)
+
+# prebuild S± term lists once per M
+def _terms_Sminus(M):
+    # S- = sum_p c†_{pβ} c_{pα}
+    return [(p, p, cc.Spin.Beta,  cc.Spin.Alpha, 1.0) for p in range(M)]
+
+def _terms_Splus(M):
+    # S+ = sum_p c†_{pα} c_{pβ}
+    return [(p, p, cc.Spin.Alpha, cc.Spin.Beta,  1.0) for p in range(M)]
+
+def _apply_sum_terms(wf, terms):
+    # try one batched call; fallback to accumulation
+    try:
+        return cc.apply_one_body_operator(wf, terms)
+    except Exception:
+        acc = wf.zero_like()
+        for t in terms:
+            acc = acc + cc.apply_one_body_operator(wf, [t])
+        return acc
+
+def expect_Splus_Sminus(wf, M):
+    # ⟨Ψ| S+ S- |Ψ⟩ = ⟨Ψ| S+ (S- |Ψ⟩)⟩
+    psi1 = _apply_sum_terms(wf, _terms_Sminus(M))
+    psi2 = _apply_sum_terms(psi1, _terms_Splus(M))
+    return np.real(wf.dot(psi2))
+
+def expect_Sminus_Splus(wf, M):
+    psi1 = _apply_sum_terms(wf, _terms_Splus(M))
+    psi2 = _apply_sum_terms(psi1, _terms_Sminus(M))
+    return np.real(wf.dot(psi2))
+
+def expect_S2(wf, M, block=None):
+    # ⟨S_z⟩ and ⟨S_z^2⟩
+    if block is None:
+        block = list(range(2*M))
+    Sz = expect_Sz(wf, M, block)
+    phi = apply_Sz(wf, M, block)
+    Sz2 = np.real(phi.dot(phi))
+    # ladder pieces
+    SpSm = expect_Splus_Sminus(wf, M)
+    SmSp = expect_Sminus_Splus(wf, M)
+    S2 = Sz2 + 0.5*(SpSm + SmSp)
+    return S2, Sz
+
+
+
+import numpy as np
 import matplotlib.pyplot as plt
 
 def plot_spectral_function(ws, A_w, impurity_indices, title, filename=None):
@@ -3859,10 +3700,121 @@ def plot_spectral_function(ws, A_w, impurity_indices, title, filename=None):
     else:
         plt.show()
 
-    plt.close()# results.py
+    plt.close()# analysis.py (excerpt)
+import numpy as np
+from scipy.sparse import lil_matrix
+from . import results, ops
+from .api import Model
+
+def _get_1p_Sz_matrix(M):
+    sz_diag = np.concatenate([np.full(M, 0.5), np.full(M, -0.5)])
+    return np.diag(sz_diag)
+
+class StateAnalyzer:
+    def __init__(self, result_obj, model: Model):
+        if isinstance(result_obj, results.NelecLowEnergySubspace):
+            res_dict = {result_obj.Nelec: result_obj}
+            self.thermal_state = results.ThermalGroundState(res_dict, temperature=1e-6)
+        elif isinstance(result_obj, results.ThermalGroundState):
+            self.thermal_state = result_obj
+        else:
+            raise TypeError("result_obj must be NelecLowEnergySubspace or ThermalGroundState")
+        self.model = model
+        self._1p_op_cache = {}
+
+    def _get_1p_operators(self):
+        if "Sz" in self._1p_op_cache:
+            return self._1p_op_cache
+        num_imp_spatial = len(self.model.imp_indices)
+        Sz_op = _get_1p_Sz_matrix(num_imp_spatial)
+        self._1p_op_cache = {"Sz": Sz_op}
+        return self._1p_op_cache
+
+    def _calculate_single_state_stats(self, wf, nelec):
+        stats = {}
+
+        # many body expectations without building operators
+        S2, Sz_full = ops.expect_S2(wf, self.model.M)
+
+        # S is only meaningful if eigenstate; still report the derived value
+        S = 0.5 * (np.sqrt(1.0 + 4.0 * np.real(S2)) - 1.0)
+        stats["S2"] = np.real(S2)
+        stats["S"]  = np.real(S)
+
+        if self.model.is_impurity_model:
+            imp_spinfull = self.model.imp_indices + [i + self.model.M for i in self.model.imp_indices]
+            rdm_imp = ops.one_rdm(wf, self.model.M, block=imp_spinfull)
+            stats["occ"] = float(np.sum(np.real(np.diag(rdm_imp))))
+            stats["rdm"] = rdm_imp
+
+            op_1p = self._get_1p_operators()
+            exp_Sz_imp = np.trace(op_1p["Sz"] @ rdm_imp)
+            stats["Sz"] = float(np.real(exp_Sz_imp))
+        else:
+            stats["occ"] = self.model.Nelec
+            stats["rdm"] = None
+            # use the full-system Sz from ops.expect_S2 return
+            stats["Sz"] = float(np.real(Sz_full))
+
+        return stats
+
+    def print_analysis(self):
+        all_states = self.thermal_state._all_states
+        weights = self.thermal_state.boltzmann_weights
+        if not all_states:
+            print("No states to analyze.")
+            return
+
+        _, gs_energy, _ = self.thermal_state.find_absolute_ground_state()
+
+        print("-"*50)
+        print("RETAINED STATES:")
+        print("-"*50)
+        print(f"GS: e0 = {gs_energy:.12f}")
+
+        all_stats = []
+        avg_rdm_imp = 0
+        for i, (energy, nelec, wf) in enumerate(all_states):
+            stats = self._calculate_single_state_stats(wf, nelec)
+            if self.model.is_impurity_model:
+                avg_rdm_imp += weights[i] * stats["rdm"]
+            all_stats.append(stats)
+
+            print(f"e-e0: {energy - gs_energy:10.8f}, "
+                  f"ne: {nelec}, "
+                  f"weight: {weights[i]:10.4f}, "
+                  f"occ: {stats['occ']:10.4f}, "
+                  f"S2: {stats['S2']:10.4f}, "
+                  f"S: {stats['S']:10.4f}, "
+                  f"Sz: {stats['Sz']:10.4f}")
+
+        if self.model.is_impurity_model:
+            print("Saving thermally-averaged impurity density matrix...")
+            np.savetxt("real-imp-dens.dat", np.real(avg_rdm_imp), fmt="% 8.5f")
+            print("-> Saved 'real-imp-dens.dat'")
+            np.savetxt("imag-imp-dens.dat", np.imag(avg_rdm_imp), fmt="% 8.5f")
+            print("-> Saved 'imag-imp-dens.dat'")
+
+        if len(all_states) > 1:
+            avg_occ = float(np.sum(weights * [s["occ"] for s in all_stats]))
+            avg_S2  = float(np.sum(weights * [s["S2"] for s in all_stats]))
+            avg_S   = float(np.sum(weights * [s["S"]  for s in all_stats]))
+            avg_Sz  = float(np.sum(weights * [s["Sz"] for s in all_stats]))
+            print("thermal averages:")
+            print(f"<occ> = {avg_occ:.8f}")
+            print(f"<S2>  = {avg_S2:.8f}")
+            print(f"<S>   = {avg_S:.8f}")
+            print(f"<Sz>  = {avg_Sz:.8f}")
+        print("-"*50)# clic/results.py
 import numpy as np
 import h5py
 from . import clic_clib as cc # for Wavefunction type hint
+
+# Use TYPE_CHECKING block to import for type hints only, preventing circular imports
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .api import Model
+
 
 class NelecLowEnergySubspace:
     """
@@ -4019,29 +3971,30 @@ class ThermalGroundState:
     """
     def __init__(self,
                  results_by_nelec: dict[int, 'NelecLowEnergySubspace'],
-                 temperature: float = 5.0): # Default temperature in Kelvin
+                 base_model: 'Model',
+                 temperature: float = 5.0):
         
         if not isinstance(results_by_nelec, dict):
             raise TypeError("`results_by_nelec` must be a dictionary.")
 
+        # --- Store base model information ---
+        self.base_h0 = base_model.h0
+        self.base_U = base_model.U
+        self.M = base_model.M
+        self.is_impurity_model = base_model.is_impurity_model
+        self.imp_indices = base_model.imp_indices
+        
         self.results_by_nelec = results_by_nelec
         self._temperature = temperature
         
-        # --- Internal flattened representation for easy access ---
-        # List of tuples: (energy, nelec, wavefunction)
         self._all_states: list[tuple[float, int, cc.Wavefunction]] = []
         for nelec, result in self.results_by_nelec.items():
             for i, energy in enumerate(result.energies):
                 self._all_states.append((energy, nelec, result.wavefunctions[i]))
 
-        # Sort all states by their energy for stability and easy GS access
         self._all_states.sort(key=lambda s: s[0])
-
-        # These will be calculated and cached based on temperature
         self.boltzmann_weights: np.ndarray | None = None
         self.partition_function: float | None = None
-        
-        # Initial calculation of thermal properties
         self._recalculate_thermal_properties()
 
     @property
@@ -4068,7 +4021,8 @@ class ThermalGroundState:
             return
 
         # Assumes energies are in eV. Change k_B constant if units differ.
-        beta = 1.0 / (K_B_IN_EV_PER_K * self._temperature)
+        #beta = 1.0 / (K_B_IN_EV_PER_K * self._temperature)
+        beta = 1.0 / (k_B_IN_RY_PER_K * self._temperature)
         
         energies = np.array([s[0] for s in self._all_states])
         
@@ -4085,32 +4039,76 @@ class ThermalGroundState:
     def prune(self, threshold: float = 1e-8):
         """
         Removes states whose Boltzmann weight is below a given threshold.
-        This is useful for reducing the memory footprint by discarding
-        thermally inaccessible states.
-        
-        Args:
-            threshold: The minimum Boltzmann weight for a state to be kept.
+        This method completely rebuilds the internal state of the object,
+        purging all information related to the pruned states.
         """
         if self.boltzmann_weights is None:
             self._recalculate_thermal_properties()
 
-        if not self._all_states:
+        initial_count = len(self._all_states)
+        if initial_count == 0:
             print("No states to prune.")
             return
 
-        initial_count = len(self._all_states)
-        # Find indices of states to keep based on the current weights
+        # 1. Identify which states to keep
         indices_to_keep = np.where(self.boltzmann_weights >= threshold)[0]
         
         if len(indices_to_keep) == initial_count:
             print(f"No states pruned with threshold {threshold:.1e}.")
             return
 
-        # Rebuild the list of states with only the ones we keep
+        # 2. Keep only the surviving states in the flattened list
         self._all_states = [self._all_states[i] for i in indices_to_keep]
         
-        # After pruning, the weights and partition function must be recalculated
-        # with the new, smaller set of states.
+        # --- 3. CRUCIAL STEP: Rebuild the results_by_nelec dictionary from scratch ---
+        new_results_by_nelec = {}
+        
+        # Group surviving states by their Nelec
+        grouped_states = {}
+        for energy, nelec, wf in self._all_states:
+            if nelec not in grouped_states:
+                grouped_states[nelec] = []
+            grouped_states[nelec].append({"energy": energy, "wavefunction": wf})
+
+        # For each group, create a new, minimal NelecLowEnergySubspace object
+        for nelec, states_info in grouped_states.items():
+            states_info.sort(key=lambda x: x["energy"])
+            surviving_wfs = [s["wavefunction"] for s in states_info]
+            surviving_energies = [s["energy"] for s in states_info]
+            
+            # Create a minimal basis just for the surviving wavefunctions in this sector
+            new_basis_set = set()
+            for wf in surviving_wfs:
+                new_basis_set.update(wf.data().keys())
+            pruned_basis = sorted(list(new_basis_set))
+            
+            # Re-express the wavefunctions in this new minimal basis
+            new_wavefunctions = []
+            det_to_idx = {det: i for i, det in enumerate(pruned_basis)}
+            original_M = self.results_by_nelec[nelec].M
+            for wf in surviving_wfs:
+                new_coeffs = np.zeros(len(pruned_basis), dtype=np.complex128)
+                for det, coeff in wf.data().items():
+                    new_coeffs[det_to_idx[det]] = coeff
+                new_wavefunctions.append(cc.Wavefunction(original_M, pruned_basis, new_coeffs))
+            
+            # Get other metadata from the original object (this is the only time we need it)
+            original_transform = self.results_by_nelec[nelec].transformation_matrix
+
+            # Create the new, clean result object for this Nelec sector
+            new_results_by_nelec[nelec] = NelecLowEnergySubspace(
+                M=original_M,
+                Nelec=nelec,
+                energies=np.array(surviving_energies),
+                wavefunctions=new_wavefunctions,
+                basis=pruned_basis,
+                transformation_matrix=original_transform
+            )
+
+        # 4. Replace the old, complete dictionary with the new, pruned one
+        self.results_by_nelec = new_results_by_nelec
+        
+        # 5. Finally, recalculate the Boltzmann weights for the pruned set
         self._recalculate_thermal_properties()
         final_count = len(self._all_states)
         print(f"Pruned {initial_count - final_count} states. {final_count} states remaining.")
@@ -4130,18 +4128,26 @@ class ThermalGroundState:
         return gs_nelec, gs_energy, gs_wf
 
     def save(self, filename: str):
-        """Saves all contained results and the temperature into a single HDF5 file."""
+        """Saves all contained results and model info into a single HDF5 file."""
         print(f"Saving thermal state data to '{filename}'...")
         with h5py.File(filename, 'w') as f:
             f.attrs["file_type"] = "ThermalGroundState"
             f.attrs["temperature"] = self.temperature
             
-            # The saved results_by_nelec might not reflect a pruned state.
-            # We save the original, complete dictionary for data integrity.
+            # --- Save the base model context ---
+            f.attrs["M"] = self.M
+            f.attrs["is_impurity_model"] = self.is_impurity_model
+            if self.is_impurity_model:
+                f.attrs["imp_indices"] = self.imp_indices
+            f.create_dataset("base_h0", data=self.base_h0)
+            f.create_dataset("base_U", data=self.base_U)
+
             for nelec, result in self.results_by_nelec.items():
                 nelec_group = f.create_group(f"nelec_{nelec}")
+                print(f"Saving Nelec={nelec} subspace to HDF5 group '{nelec_group.name}'...")
                 result.save(nelec_group)
         print("Save complete.")
+
 
     @classmethod
     def load(cls, filename: str):
@@ -4153,15 +4159,32 @@ class ThermalGroundState:
                  print(f"Warning: File '{filename}' may not be a valid ThermalGroundState file.")
             
             temp = f.attrs.get("temperature", 300.0)
+            
+            # Import Model locally to avoid circular dependency at module level
+            from .api import Model
+
+            # --- Load the base model context ---
+            M = int(f.attrs["M"])
+            is_imp = bool(f.attrs["is_impurity_model"])
+            imp_indices = list(f.attrs.get("imp_indices", []))
+            base_h0 = f["base_h0"][:]
+            base_U = f["base_U"][:]
+            
+            # Reconstruct the model object. Nelec is just a placeholder here.
+            loaded_model = Model(h0=base_h0, U=base_U, M_spatial=M, Nelec=-1)
+            loaded_model.is_impurity_model = is_imp
+            loaded_model.imp_indices = imp_indices
 
             for key in f.keys():
                 if key.startswith("nelec_"):
                     nelec = int(key.split("_")[1])
                     nelec_group = f[key]
+                    print(f"Loading Nelec={nelec} subspace from HDF5 group '{nelec_group.name}'...")
                     results[nelec] = NelecLowEnergySubspace.load(nelec_group)
         
         print("Load complete.")
-        return cls(results, temperature=temp)# sci.py
+        return cls(results, base_model=loaded_model, temperature=temp)
+# sci.py
 from . import clic_clib as cc
 from itertools import combinations
 import numpy as np
@@ -4281,9 +4304,7 @@ def selective_ci(
         indsort = np.argsort(np.real(evals))
         evals=evals[indsort]
         evecs=evecs[:,indsort]
-                
-        return evals,evecs
-
+        return evals[:nroots], evecs[:, :nroots]
 
 
 
