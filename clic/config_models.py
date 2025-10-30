@@ -1,15 +1,64 @@
-# config_models.py
-from typing import Literal, Union, List, Optional 
-from pydantic import BaseModel, Field, root_validator, ConfigDict
+# clic/config_models.py
+from typing import Literal, Union, List, Optional
+from pydantic import BaseModel, Field, root_validator
 
+# ==============================================================================
+#  1. Low-Level "Component" Models
+#  These models represent specific, reusable blocks of parameters that are
+#  nested inside the main configuration sections.
+# ==============================================================================
 
 class BathConfig(BaseModel):
-    nb: int = Field(..., gt=0)
-    min_e: float
-    max_e: float
-    hybridization_V: float
+    """
+    Represents the [model.parameters.bath] subsection.
+    Used only for the 'anderson_impurity_model' type to define its bath.
+    """
+    nb: int = Field(..., gt=0, description="Number of bath sites.")
+    min_e: float = Field(..., description="Minimum energy of the bath band.")
+    max_e: float = Field(..., description="Maximum energy of the bath band.")
+    hybridization_V: float = Field(..., description="Constant hybridization strength.")
+
+
+class CiMethodConfig(BaseModel):
+    """
+    Represents the [solver.ci_method] subsection.
+    Defines the parameters for the core Configuration Interaction algorithm.
+    """
+    type: Literal["sci", "fci"] = "sci"
+    generator: Literal["hamiltonian_generator"] = "hamiltonian_generator"
+    selector: Literal["cipsi"] = "cipsi"
+    num_roots: int = Field(1, gt=0, description="Number of eigenstates to compute.")
+    max_iter: int = Field(10, gt=-1, description="Maximum number of SCI iterations.")
+    conv_tol: float = Field(1e-6, gt=0, description="Energy convergence tolerance.")
+    prune_thr: float = Field(1e-7, ge=0, description="Threshold for pruning determinants in SCI.")
+    Nmul: Optional[float] = Field(None, description="Factor to expand the basis size at each SCI step.")
+
+
+class LanczosParameters(BaseModel):
+    """
+    Represents the [green_function.lanczos] subsection.
+    Defines parameters for the Lanczos algorithm used in the GF calculation.
+    """
+    L: int = Field(..., gt=0, description="Maximum number of Lanczos steps.")
+    NappH: int = Field(..., ge=0, description="Number of H applications to build Krylov basis.")
+    coeff_thresh: float = Field(..., ge=0, description="Coefficient threshold for wavefunction support.")
+
+
+class HybFitConfig(BaseModel):
+    """Represents the [model.parameters.hybfit] subsection."""
+    n_poles: int = Field(..., gt=0, description="Number of bath sites to fit PER BLOCK.")
+    method: Literal["poles_reconstruction", "cost_minimization"]
+    eta_0: Optional[float] = None
+    # ... other hybfit params ...
+
+# ==============================================================================
+#  2. Discriminated Unions for Polymorphic Model Parameters
+#  These models handle the `type` field in the TOML file to allow for
+#  different kinds of model definitions.
+# ==============================================================================
 
 class AimParameters(BaseModel):
+    """Schema for [model.parameters] when type = 'anderson_impurity_model'."""
     type: Literal['anderson_impurity_model']
     M_spatial: int
     M_imp: int
@@ -26,72 +75,115 @@ class AimParameters(BaseModel):
             raise ValueError("M_imp (impurity orbitals) cannot be larger than M_spatial (total orbitals).")
         return values
 
+
 class FileDataSource(BaseModel):
+    """Schema for [model.parameters] when type = 'from_file'."""
     type: Literal["from_file"]
     filepath: str
     Nelec: int = Field(..., ge=0)
-    spin_structure: Literal["alpha_first", "interleaved"] = "interleaved"
+    spin_structure: Literal["alpha_first", "interleaved", "spatial"] = "interleaved"
+
 
 class FileImpurityModelParameters(BaseModel):
-    """Defines an impurity model where integrals are loaded from a file."""
+    """Schema for [model.parameters] when type = 'impurity_from_file'."""
     type: Literal["impurity_from_file"]
     filepath: str
-    M_imp: int                 # Number of impurity spatial orbitals
-    Nelec_imp: int             # Target number of electrons ON THE IMPURITY
-    Nelec: Optional[int] = None # Optional: TOTAL number of electrons
-    spin_structure: Literal["alpha_first", "interleaved"] = "interleaved"
+    M_imp: int
+    Nelec_imp: int
+    Nelec: Optional[int] = None
+    spin_structure: Literal["alpha_first", "interleaved", "spatial"] = "interleaved"
+
+
+class FileImpurityWithHybParameters(BaseModel):
+    """Schema for [model.parameters] when type = 'impurity_with_hyb'."""
+    type: Literal["impurity_with_hyb"]
+    
+    filepath: str # Path to the single H5 archive
+    
+    # --- Physical Parameters ---
+    M_imp: int
+    Nelec_imp: int
+    Nelec: Optional[int] = None
+    spin_structure: Literal["alpha_first", "interleaved", "spatial"] = "interleaved"
+
+    # --- Fitting Configuration ---
+    hybfit: HybFitConfig
+
+    # --- Output Option ---
+    save_fitted_h0: bool = Field(False, description="If true, save the generated h0 back to the input HDF5 file.")
+
+# ==============================================================================
+#  3. Main Section Models
+#  These models correspond directly to the main sections of the clic.toml file,
+#  like [output], [model], [solver], etc.
+# ==============================================================================
+
+class OutputConfig(BaseModel):
+    """
+    Represents the top-level [output] section.
+    Defines the base name for all output files generated by the workflow.
+    """
+    basename: str = "clic_run"
+    plot_file: Optional[str] = None
 
 
 class ModelConfig(BaseModel):
+    """
+    Represents the top-level [model] section.
+    This is always required and defines the physical system to be solved.
+    """
     model_name: str
     parameters: Union[
-        AimParameters, 
-        FileDataSource, 
-        FileImpurityModelParameters] = Field(..., discriminator='type')
+        AimParameters,
+        FileDataSource,
+        FileImpurityModelParameters,
+        FileImpurityWithHybParameters
+    ] = Field(..., discriminator='type')
 
-class CiMethodConfig(BaseModel):
-    type: Literal["sci", "fci"] = "sci"
-    generator: Literal["hamiltonian_generator"]
-    selector: Literal["cipsi"]
-    num_roots: int = Field(1, gt=0) 
-    max_iter: int = Field(2, gt=-1)
-    conv_tol: float = Field(1e-6, gt=0)
-    prune_thr: float = Field(1e-7, ge=0)
-    Nmul: Union[float, None] = None
 
 class SolverParameters(BaseModel):
-    basis_prep_method: Literal["none", "rhf", "rhf_no", "bath_no","dbl_chain"]
-    use_no: Literal["none","no0","no"] = "none"
+    """
+    Represents the top-level [solver] section.
+    If this section is present, a ground-state calculation is performed.
+    """
+    basis_prep_method: Literal["none", "rhf", "bath_no", "dbl_chain"]
+    use_no: Literal["none", "no0"] = "none"
     ci_method: CiMethodConfig
-    nelec_range: Union[tuple[int, int], Literal["auto"], None] = None
-    initial_temperature: float = 10.0 
+    nelec_range: Optional[Union[tuple[int, int], Literal["auto"]]] = None
+    initial_temperature: float = 300.0
 
-class OutputConfig(BaseModel):
-    ground_state_file: str = "clic_solve_results.h5"
 
-class SolverConfig(BaseModel):
-    model_file: str
-    solver: SolverParameters
-    output: OutputConfig
-
-# --- Green's Function Configuration ---
-
-class GreenFunctionParameters(BaseModel):
+class GreenFunctionConfig(BaseModel):
+    """
+    Represents the top-level [green_function] section.
+    If this section is present, a Green's function calculation is performed.
+    """
     omega_mesh: List[Union[int, float]]
     eta: float = Field(..., gt=0)
     block_indices: Union[Literal["impurity"], List[int]]
-
-class LanczosParameters(BaseModel):
-    L: int = Field(..., gt=0)
-    NappH: int = Field(..., ge=0)
-    coeff_thresh: float = Field(..., ge=0)
-
-class GfOutputConfig(BaseModel):
-    gf_data_file: str
-    plot_file: str | None = None
-
-class GfConfig(BaseModel):
-    ground_state_file: str
-    green_function: GreenFunctionParameters
     lanczos: LanczosParameters
-    output: GfOutputConfig
+
+class HybFitConfig(BaseModel):
+    """Represents the [model.parameters.hybfit] subsection."""
+    n_poles: int = Field(..., gt=0, description="Number of bath sites to fit PER BLOCK.")
+    method: Literal["poles_reconstruction", "cost_minimization"]
+    eta_0: Optional[float] = None
+    # ... other hybfit params ...
+
+
+# ==============================================================================
+#  4. The Top-Level Workflow Model
+#  This is the single, overarching model that validates the entire clic.toml file.
+# ==============================================================================
+
+class CalculationConfig(BaseModel):
+    """
+    The main Pydantic model that validates the entire clic.toml workflow file.
+    It combines all the sections into a single, coherent configuration object.
+    """
+    output: OutputConfig
+    model: ModelConfig
+    solver: Optional[SolverParameters] = None
+    green_function: Optional[GreenFunctionConfig] = None
+    # Add future optional steps here, e.g.:
+    # self_energy: Optional[SelfEnergyConfig] = None

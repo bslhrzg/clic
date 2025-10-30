@@ -68,4 +68,4 @@ from .sci import selective_ci, hamiltonian_generator, cipsi_one_iter
 
 from .symmetries import *
 
-from . import hybfit
+from .hybfit import fit, analyze_fit
