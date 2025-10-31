@@ -44,12 +44,6 @@ class LanczosParameters(BaseModel):
     coeff_thresh: float = Field(..., ge=0, description="Coefficient threshold for wavefunction support.")
 
 
-class HybFitConfig(BaseModel):
-    """Represents the [model.parameters.hybfit] subsection."""
-    n_poles: int = Field(..., gt=0, description="Number of bath sites to fit PER BLOCK.")
-    method: Literal["poles_reconstruction", "cost_minimization"]
-    eta_0: Optional[float] = None
-    # ... other hybfit params ...
 
 # ==============================================================================
 #  2. Discriminated Unions for Polymorphic Model Parameters
@@ -97,7 +91,6 @@ class FileImpurityModelParameters(BaseModel):
 class FileImpurityWithHybParameters(BaseModel):
     """Schema for [model.parameters] when type = 'impurity_with_hyb'."""
     type: Literal["impurity_with_hyb"]
-    
     filepath: str # Path to the single H5 archive
     
     # --- Physical Parameters ---
@@ -107,7 +100,7 @@ class FileImpurityWithHybParameters(BaseModel):
     spin_structure: Literal["alpha_first", "interleaved", "spatial"] = "interleaved"
 
     # --- Fitting Configuration ---
-    hybfit: HybFitConfig
+    #hybfit: HybFitConfig
 
     # --- Output Option ---
     save_fitted_h0: bool = Field(False, description="If true, save the generated h0 back to the input HDF5 file.")
@@ -149,7 +142,7 @@ class SolverParameters(BaseModel):
     basis_prep_method: Literal["none", "rhf", "bath_no", "dbl_chain"]
     use_no: Literal["none", "no0"] = "none"
     ci_method: CiMethodConfig
-    nelec_range: Optional[Union[tuple[int, int], Literal["auto"]]] = None
+    nelec_range: Optional[Union[tuple[int, int], Literal["auto"]]] = "auto"
     initial_temperature: float = 300.0
 
 
@@ -163,13 +156,15 @@ class GreenFunctionConfig(BaseModel):
     block_indices: Union[Literal["impurity"], List[int]]
     lanczos: LanczosParameters
 
+
 class HybFitConfig(BaseModel):
     """Represents the [model.parameters.hybfit] subsection."""
-    n_poles: int = Field(..., gt=0, description="Number of bath sites to fit PER BLOCK.")
+    n_target_poles: int = Field(..., ge=0, description="Number of bath sites to fit PER BLOCK.")
+    eta_in: float = Field(0.01,ge=0, description="Distance to the imaginary axis used to produce the hybridization")
     method: Literal["poles_reconstruction", "cost_minimization"]
-    eta_0: Optional[float] = None
-    # ... other hybfit params ...
-
+    warp_kind: Literal["none","emph0"] = "none"
+    warp_w0: Optional[float] = 0.01 
+    eta_broad: Optional[float] = 0.0
 
 # ==============================================================================
 #  4. The Top-Level Workflow Model
@@ -183,6 +178,7 @@ class CalculationConfig(BaseModel):
     """
     output: OutputConfig
     model: ModelConfig
+    hybfit: Optional[HybFitConfig] = None
     solver: Optional[SolverParameters] = None
     green_function: Optional[GreenFunctionConfig] = None
     # Add future optional steps here, e.g.:

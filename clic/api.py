@@ -10,9 +10,9 @@ from . import bath_transform, clic_clib as cc # Import for Wavefunction, SlaterD
 from . import basis_1p, basis_Np, ops, sci, mf, gfs, plotting
 from . import io_utils
 from . import results # For type hinting
-from .config_models import ModelConfig, SolverParameters, GreenFunctionConfig, OutputConfig
-from . import hamiltonians
-
+from .config_models import CalculationConfig,ModelConfig, SolverParameters, GreenFunctionConfig, OutputConfig
+from . import create_model_from_hyb, hamiltonians
+import h5py
 
 class Model:
     """Represents the physical system via its Hamiltonian integrals."""
@@ -566,13 +566,12 @@ class GreenFunctionCalculator:
  
 # ----------------------------------------------------------------------------------
 
-
-
-def create_model_from_config(model_config: ModelConfig) -> Model:
+def create_model_from_config(config: CalculationConfig) -> Model:
     """
     Builds the API Model object from a validated configuration, handling
     automatic Nelec calculation for impurity models.
     """
+    model_config = config.model
     p = model_config.parameters
     h0, U = None, None
     M = 0
@@ -606,8 +605,8 @@ def create_model_from_config(model_config: ModelConfig) -> Model:
             # First, load the integrals so we have h0 and M
             h0, U, M = hamiltonians.get_integrals_from_file(p.filepath, p.spin_structure)
             print(f"M = {M}")
-            #print("diag h0 = ")
-            #print(np.diag(h0))
+            print("diag h0 = ")
+            print(np.diag(h0))
 
             # Now, use the same logic as the AIM to determine total Nelec
             if p.Nelec is None:
@@ -634,8 +633,75 @@ def create_model_from_config(model_config: ModelConfig) -> Model:
         return Model(h0=h0, U=U, M_spatial=M, Nelec=p.Nelec)
     
 
+    elif p.type == 'impurity_with_hyb':
+        print(f"Building model from hybridization function fit in '{p.filepath}'...")
+        
+        # --- Step 1: Load inputs from HDF5 archive ---
+        with h5py.File(p.filepath, 'r') as f:
+            if 'h_dft' not in f or 'U_mat' not in f or 'hyb' not in f or 'w' not in f:
+                raise KeyError(f"HDF5 file '{p.filepath}' is missing one of required datasets: h_dft, U_mat, hyb, w")
+            h_imp = f['h_dft'][:]
+            U_imp = f['U_mat'][:] 
+            delta = f['hyb'][:]
+            omega = f['w'][:]
+
+        # --- Step 2: Call the builder to get the fitted h0 ---
+        if config.hybfit.n_target_poles > 0 :
+
+            full_h0 = create_model_from_hyb.build_model_from_hyb(h_imp, omega, delta, config.hybfit)
+        
+        else : 
+            print(f"*"*42)
+            print("n_target_poles = 0 --> Hubbard-I Approximation")
+            print(f"NOT IMPLEMENTED YET")
+            sys.exit(1)
+            full_h0 = h_imp
+
+
+        # --- Step 3 (Optional): Save the result back to the HDF5 file ---
+        if p.save_fitted_h0:
+            print(f"Saving the newly generated 'h0' matrix back to '{p.filepath}'...")
+            with h5py.File(p.filepath, 'a') as f: # 'a' mode for read/write/append
+                if 'h0' in f:
+                    print("  WARNING: Overwriting existing 'h0' dataset.")
+                    del f['h0']
+                f.create_dataset('h0', data=full_h0)
+
+        # --- Step 4: Construct the full U matrix and Model object ---
+        M_total_spinfull = full_h0.shape[0]
+        M_total_spatial = M_total_spinfull // 2
+        
+        # Pad the U matrix to the full size of the new hamiltonian
+        # Assumes U_imp is dense (4-index tensor)
+        full_U = np.zeros((M_total_spinfull,)*4, dtype=U_imp.dtype)
+        imp_size = U_imp.shape[0]
+        halfimp = imp_size // 2
+
+        impindex = [i for i in range(halfimp)] + [i for i in range(M_total_spatial, M_total_spatial+halfimp)]
+        full_U[np.ix_(impindex, impindex, impindex, impindex)] = U_imp
+
+        
+        # --- Step 5: Determine Nelec (same logic as before) ---
+        if p.Nelec is None:
+            nelec_bath = hamiltonians.calculate_bath_filling(full_h0, p.M_imp)
+            nelec_total = p.Nelec_imp + nelec_bath
+            print(f"INFO: 'Nelec' not specified. Automatically determined bath filling: {nelec_bath}.")
+            print(f"      Total Nelec set to {p.Nelec_imp} (imp) + {nelec_bath} (bath) = {nelec_total}.")
+        else:
+            # User provided a value, so we use it
+            nelec_total = p.Nelec
+            print(f"INFO: Using user-provided total Nelec = {nelec_total}.")
+        
+        model = Model(h0=full_h0, U=full_U, M_spatial=M_total_spatial, Nelec=nelec_total)
+        model.is_impurity_model = True
+        model.imp_indices = list(range(p.M_imp)) 
+        model.Nelec_imp = p.Nelec_imp
+        return model
 
     else:
         # This case should be unreachable if Pydantic validation is working
         print(f"ERROR: Unknown model parameter type '{p.type}'", file=sys.stderr)
         sys.exit(1)
+
+
+

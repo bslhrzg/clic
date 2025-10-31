@@ -29,6 +29,7 @@ class HybFitPoles:
         self.n_lanczos_blocks = int(n_lanczos_blocks)
         self.n_target_poles = int(n_target_poles)
 
+
         # Final results
         self.eps_merged = None
         self.R_merged = None
@@ -163,7 +164,7 @@ class HybFitPoles:
             self.eps_lanczos, self.R_lanczos, self.n_target_poles,
             cleanup_negative=False, cull_outliers=True,
             bias="fd", w0=E_keep, p=2.0, Tstar=E_keep, gamma=0.0,
-            use_warp_spacing=True, warp_kind='asinh'  # reuse your 'kind' for spacing only
+            use_warp_spacing=True, warp_kind=kind  # reuse your 'kind' for spacing only
     )
         
     
@@ -322,6 +323,29 @@ class HybFitPoles:
                 k = int(interior[np.argmin(S)])
 
             eps, R = eliminate_at(k, eps, R)
+
+        #return eps, R
+        # handle the small-N tail exactly
+        if len(eps) > n_target:
+            # here len(eps) is 2 and n_target is 1
+            assert len(eps) == 2 and n_target == 1, "unexpected small-N case"
+            w = weights(R)
+            if use_warp_spacing:
+                z = phi(eps)
+                z_new = (w[0]*z[0] + w[1]*z[1]) / (w[0] + w[1] + tiny)
+                # need inverse warp corresponding to selection space
+                if warp_kind == "atan":
+                    inv = lambda y: w0 * np.tan(y)
+                elif warp_kind == "asinh":
+                    inv = lambda y: w0 * np.sinh(y)
+                else:
+                    inv = lambda y: y
+                e_new = float(inv(z_new))
+            else:
+                e_new = float((w[0]*eps[0] + w[1]*eps[1]) / (w[0] + w[1] + tiny))
+            R_new = R[0] + R[1]
+            eps = np.array([e_new], dtype=float)
+            R = [R_new]
 
         return eps, R
 

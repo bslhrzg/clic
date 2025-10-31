@@ -27,9 +27,7 @@ classifiers = [
 
 
 [project.scripts]
-clic-run = "clic.scripts.cli:main"
-clic-gf = "clic.scripts.gf_cli:main" 
-clic-thermal-run = "clic.scripts.thermal_cli:main" 
+clic-run = "clic.scripts.run:main"
 
 
 [tool.scikit-build]

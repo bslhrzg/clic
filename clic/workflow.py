@@ -14,7 +14,7 @@ def run_workflow(config: CalculationConfig):
 
     # --- 1. Model Creation (always happens) ---
     print("\n[Step 1/3] Creating model...")
-    model = create_model_from_config(config.model)
+    model = create_model_from_config(config)
     ground_state_result: Optional[results.ThermalGroundState] = None
 
     # The expected filename for the ground state is always derived from the output basename.

@@ -87,6 +87,36 @@ def delta_from_poles(z, eps, residues):
         out += residues[j][None, :, :] / denom
     return out[0] if np.isscalar(z) else out
 
+def residues_to_bath(eps, R_list, tol=1e-12):
+    """From pole energies eps and M×M residues R_list, build diagonal H_b and V (M×Nb)."""
+    eps_out = []
+    Vcols = []
+    for e, R in zip(np.asarray(eps, float), R_list):
+        R = 0.5*(R + R.conj().T)              # Hermitize
+        w, U = npl.eigh(R)
+        w = np.clip(w, 0.0, None)             # clip tiny negatives
+        for lam, u in zip(w, U.T):
+            if lam > tol:
+                Vcols.append(np.sqrt(lam) * u) # coupling vector for this bath state
+                eps_out.append(e)
+    if Vcols:
+        V = np.column_stack(Vcols).astype(np.complex128)
+        H_b = np.diag(np.asarray(eps_out, float))
+    else:
+        M = R_list[0].shape[0]
+        V = np.zeros((M, 0), dtype=np.complex128)
+        H_b = np.zeros((0, 0), dtype=float)
+    return H_b, V
+
+def delta_from_bath(omega, H_b, V, eta=0.0):
+    eps = np.diag(H_b)
+    M = V.shape[0]
+    Delta = np.zeros((len(omega), M, M), dtype=np.complex128)
+    for i, w in enumerate(omega):
+        g = 1.0/(w + 1j*eta - eps)            # bath resolvent in diagonal basis
+        Delta[i] = V @ np.diag(g) @ V.conj().T
+    return Delta
+
 def rel_l2_error(delta_true, delta_model):
     """
     Calculates the relative L2 error between two matrix-valued functions

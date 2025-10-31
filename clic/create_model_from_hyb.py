@@ -1,62 +1,82 @@
 # clic/create_model_from_hyb.py
 import numpy as np
-from . import symmetries, hybfit
-from .config_models import ImpurityWithHybParameters,HybFitConfig
+from .config_models import HybFitConfig
+import sys 
+
+from .hybfit import utils             
+from .hybfit.process_hyb import process_hyb_cost, process_hyb_poles # import the function from its module
+from .hybfit.process_hyb import analyze_block_fits, evaluate_full_fit_and_plots, print_summary
+
 
 def build_model_from_hyb(
     h_imp: np.ndarray, 
     omega: np.ndarray, 
-    delta: np.ndarray, 
+    hyb: np.ndarray, 
     hybfit_config: HybFitConfig
 ) -> np.ndarray:
     """
     Builds the full one-body hamiltonian from impurity data and a fit.
     Returns: The full h0 matrix.
     """
-    # --- Step 1: Symmetry Analysis ---
-    avg_delta = np.mean(np.real(delta), axis=0)
-    h_sym_probe = h_imp + avg_delta 
-    sym_dict = symmetries.analyze_symmetries(h_sym_probe, verbose=True)
 
-    blocks = sym_dict['blocks']
-    identical_groups = sym_dict['identical_groups']
+    n_target_poles = hybfit_config.n_target_poles
+    warp_kind = hybfit_config.warp_kind
+    eta = hybfit_config.eta_in
 
-    # --- Step 2: Fit each unique block ---
-    fit_results = {} # Store results as {leader_idx: (eps, R)}
-    for group in identical_groups:
-        leader_idx = group[0]
-        leader_block_indices = blocks[leader_idx]
-        
-        # Extract the hybridization block for the leader
-        delta_block = delta[:, np.ix_(leader_block_indices, leader_block_indices)]
-        
-        # The hybfit function may expect (N, M, M). If delta_block is (N, 1, 1),
-        # we might need to reshape to (N,).
-        if delta_block.shape[1] == 1:
-            delta_block = delta_block.reshape(-1)
+    if hybfit_config.method == "poles_reconstruction":
 
-        print(f"\nFitting block {leader_idx} (size {len(leader_block_indices)}x{len(leader_block_indices)})...")
-        eps_fit, R_fit = hybfit.fit(
-            omega, delta_block, 
-            n_poles=p.hybfit.n_poles,
-            method=p.hybfit.method,
-            eta_0=p.hybfit.eta_0,
-            # ... pass other args from p.hybfit ...
+        warp_k=None
+        if warp_kind == "none":
+            warp_k = "const"
+        elif warp_kind == "emph0":
+            warp_k = "asinh"
+        else :
+            print(f"ERROR: Unknown model parameter type '{warp_kind}'", file=sys.stderr)
+            sys.exit(1)
+
+        warp_w0 = hybfit_config.warp_w0
+
+        H_full, map = process_hyb_poles(
+        omega, hyb, h_imp, n_target_poles,n_lanczos_blocks=101, 
+        warp_kind=warp_k, warp_w0=warp_w0,
         )
-        fit_results[leader_idx] = (eps_fit, R_fit)
-        
-    # --- Step 4: Construct bath & assemble full h0 ---
-    # full_h0 = assemble_star_hamiltonian(h_imp, sym_dict, fit_results)
-    
-    # --- Step 5: Assemble full U matrix ---
-    # U will be non-zero only in the impurity block.
-    # M_total_spatial = full_h0.shape[0] // 2
-    # full_U = np.zeros(...)
-    # full_U[:2*M_imp, :2*M_imp, ...] = U_imp # Schematic
-    
-    # return full_h0, full_U, M_total_spatial
 
-# Placeholder for the complex assembly logic
-def assemble_star_hamiltonian(h_imp, sym_dict, fit_results):
-    # ... logic described in Phase 3 ...
-    pass
+        block_errs = analyze_block_fits(omega, hyb, map, eta=eta)
+        global_errs = evaluate_full_fit_and_plots(
+            omega, hyb, H_full, map, eta=eta, out_dir="hyb_plots", case_tag=""
+        )
+
+        print_summary("Fit block summary ",H_full, map)
+
+    elif hybfit_config.method == "cost_minimization":
+
+        broadening_Gamma = hybfit_config.eta_broad
+
+        weight_func=None
+        if warp_kind == "none":
+            weight_func = "const"
+        elif warp_kind == "emph0":
+            weight_func = "inv2"
+
+
+
+        print("----- COST -------")
+        H_full, map = process_hyb_cost(
+            omega, hyb, h_imp,
+            n_target_poles=n_target_poles,
+            eta_0=eta,                 # same broadening you used to generate hyb1
+            bounds_e=[omega.min(), omega.max()],   # or a tighter physical window
+            weight_func='const',
+            broadening_Gamma=broadening_Gamma
+            )
+        
+        block_errs = analyze_block_fits(omega, hyb, map, eta=eta)
+        global_errs = evaluate_full_fit_and_plots(
+            omega, hyb, H_full, map, eta=eta, out_dir="hyb_plots", case_tag=""
+        )
+
+        print_summary("Fit block summary ",H_full, map)
+
+        
+
+    return H_full
