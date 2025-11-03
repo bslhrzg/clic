@@ -243,6 +243,127 @@ def perform_natural_orbital_transform(h_spin, u, Nelec):
 
     return final_params
 
+
+def get_double_chain_transform(h_spin, u, Nelec):
+    """
+    Performs the 5-step Natural Orbital transformation, yielding a Hamiltonian
+    with a double-chain structure and the corresponding unitary transformation matrix C.
+
+    Args:
+        h_spin (np.ndarray): The initial single-particle Hamiltonian (M x M).
+        u (float): The on-site interaction strength.
+        Nelec (int): The number of electrons in the spin sector (Nelec_total / 2).
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]:
+            - h_final_matrix (np.ndarray): The final Hamiltonian in the double-chain basis.
+            - C_total (np.ndarray): The total unitary transformation matrix C.
+    """
+    M = h_spin.shape[0]
+
+    # --- (i) Mean-Field ---
+    h_mf = h_spin.copy()
+    h_mf[0, 0] += u * 0.5
+
+    # --- (ii) Natural Orbital Basis for the Bath ---
+    e_mf, C_mf = eigh(h_mf)
+    rho_mf = C_mf[:, :Nelec] @ C_mf[:, :Nelec].T
+    rho_bath = rho_mf[1:, 1:]
+    n_no, W = eigh(rho_bath)
+    
+    occupations_dist_from_integer = np.minimum(n_no, 1 - n_no)
+    b_idx = np.argmax(occupations_dist_from_integer)
+    
+    other_indices = [i for i in range(M - 1) if i != b_idx]
+    # Sorting ensures a deterministic basis ordering
+    filled_indices = sorted([i for i in other_indices if n_no[i] > 0.5])
+    empty_indices = sorted([i for i in other_indices if n_no[i] <= 0.5])
+    
+    ordered_bath_indices = [b_idx] + filled_indices + empty_indices
+    W_ordered = W[:, ordered_bath_indices]
+    C1 = block_diag(1, W_ordered)
+
+    # --- (iii) Bonding/Anti-bonding Transformation ---
+    rho_no_basis = C1.T @ rho_mf @ C1
+    rho_ib = rho_no_basis[:2, :2]
+    _, U_bond = eigh(rho_ib)
+    C2 = np.identity(M)
+    C2[:2, :2] = U_bond
+    
+    C_upto_decoupled = C1 @ C2
+
+    # --- (iv) Lanczos Tridiagonalization (Chain Transformation) ---
+    h_decoupled = C_upto_decoupled.T @ h_mf @ C_upto_decoupled
+
+    num_filled = len(filled_indices)
+    conduction_indices = [0] + list(range(2 + num_filled, M))
+    valence_indices = [1] + list(range(2, 2 + num_filled))
+
+    h_conduction = h_decoupled[np.ix_(conduction_indices, conduction_indices)]
+    v0_c = np.zeros(h_conduction.shape[0]); v0_c[0] = 1.0
+    T_c, Q_c = lanczos_tridiagonalization(h_conduction, v0_c)
+
+    h_valence = h_decoupled[np.ix_(valence_indices, valence_indices)]
+    v0_v = np.zeros(h_valence.shape[0]); v0_v[0] = 1.0
+    T_v, Q_v = lanczos_tridiagonalization(h_valence, v0_v)
+    
+    C_lanczos = np.identity(M)
+    if Q_c.shape[1] > 0:
+      C_lanczos[np.ix_(conduction_indices, conduction_indices)] = Q_c
+    if Q_v.shape[1] > 0:
+      C_lanczos[np.ix_(valence_indices, valence_indices)] = Q_v
+      
+    # C_to_chains transforms from original basis to the basis of Lanczos vectors
+    # (permuted).
+    C_to_chains = C_upto_decoupled @ C_lanczos
+
+    # --- (v) Construct Final Basis and Transformation Matrix C_total ---
+    # The final basis is {|i>, |b>, |c1>, |c2>, ..., |v1>, |v2>, ...}
+    # where |i> and |b> are the impurity and special NO in the C1 basis.
+    # The other vectors are the Lanczos chain vectors (excluding chain heads).
+    
+    # Get the vector representations of the chain states in the original basis
+    # These are the columns of the C_to_chains matrix
+    len_c = Q_c.shape[1]
+    len_v = Q_v.shape[1]
+    
+    # The vector for the head of the conduction chain, |c0> = |A>, in the original basis
+    c0_vec = C_to_chains[:, conduction_indices[0]] if len_c > 0 else np.zeros(M)
+    # The vector for the head of the valence chain, |v0> = |B>, in the original basis
+    v0_vec = C_to_chains[:, valence_indices[0]] if len_v > 0 else np.zeros(M)
+
+    C_total = np.zeros((M, M))
+    
+    # The first two columns of C_total are the impurity |i> and special NO |b>
+    # We recover them by rotating |c0> and |v0> back with U_bond.T
+    # |i> = U_bond[0,0]|c0> + U_bond[0,1]|v0>
+    # |b> = U_bond[1,0]|c0> + U_bond[1,1]|v0>
+    C_total[:, 0] = U_bond[0, 0] * c0_vec + U_bond[0, 1] * v0_vec
+    C_total[:, 1] = U_bond[1, 0] * c0_vec + U_bond[1, 1] * v0_vec
+
+    # The remaining columns are the rest of the Lanczos chain vectors
+    c_chain_start_idx = 2
+    if len_c > 1:
+        c_rest_indices_in_decoupled_basis = [conduction_indices[i] for i in range(1, len_c)]
+        C_total[:, c_chain_start_idx : c_chain_start_idx + len_c - 1] = C_to_chains[:, c_rest_indices_in_decoupled_basis]
+
+    v_chain_start_idx = c_chain_start_idx + (len_c - 1 if len_c > 0 else 0)
+    if len_v > 1:
+        v_rest_indices_in_decoupled_basis = [valence_indices[i] for i in range(1, len_v)]
+        C_total[:, v_chain_start_idx : v_chain_start_idx + len_v - 1] = C_to_chains[:, v_rest_indices_in_decoupled_basis]
+
+    # --- Transform the Hamiltonian and correct for the mean-field shift ---
+    h_mf_final_basis = C_total.T @ h_mf @ C_total
+    
+    mean_field_correction_term = np.zeros_like(h_spin)
+    mean_field_correction_term[0, 0] = u * 0.5
+    transformed_correction = C_total.T @ mean_field_correction_term @ C_total
+    
+    h_final_matrix = h_mf_final_basis - transformed_correction
+    
+    return h_final_matrix, C_total
+
+
 def construct_final_hamiltonian_matrix(params, M):
     """
     Constructs the final M x M Hamiltonian matrix from the parameter dictionary.
@@ -298,7 +419,7 @@ np.set_printoptions(precision=4, suppress=True)
 
 
 # 1. System Parameters
-nb = 3
+nb = 5
 M = 1 + nb
 u = 4.0
 mu = u / 2
@@ -377,7 +498,7 @@ e0 = eigvals[0]
 print(f"Impurity Model Ground State Energy: {e0:.6f}")
 psi0hf = eigvecs[:, 0]
 
-assert 1 == 0
+#assert 1 == 0
 
 print("h0hf(diag) = ")
 print(np.diag(h0hf))
@@ -385,6 +506,55 @@ sb = get_starting_basis(h0hf, M)
 print("hf starting basis : ")
 for d in sb:
     print(d)
+
+# ------------------------------------------------------------------
+print('-'*42)
+print("Bath No ")
+print('-'*42)
+
+def get_natural_orbital_transform(h_spin, u, Nelec):
+    """
+    Performs a simple Natural Orbital transformation
+    This corresponds to steps (i) and (ii) of the more complex procedure.
+    """
+    M = h_spin.shape[0]
+
+    # Step 1: Mean-field Hamiltonian and its density matrix
+    h_mf = h_spin.copy()
+    h_mf[0, 0] += u * 0.5
+    
+    e_mf, C_mf = eigh(h_mf)
+    rho_mf = C_mf[:, :Nelec] @ C_mf[:, :Nelec].T
+
+    # Step 2: Diagonalize the bath part of the density matrix
+    rho_bath = rho_mf[1:, 1:]
+    # W contains the eigenvectors of rho_bath, which define the new bath basis
+    _, W = eigh(rho_bath)
+    
+    # The transformation matrix C_no leaves the impurity alone and transforms the bath
+    C_no = block_diag(1, W)
+    
+    # Apply the transformation to the original non-interacting Hamiltonian
+    h_new_basis = C_no.T @ h_spin @ C_no
+    
+    return h_new_basis, C_no
+
+
+h0_spin = np.real(h0[:M,:M])
+print("h0_spin = ")
+print(h0_spin)
+h0bno,Cbno = get_natural_orbital_transform(h0_spin,u,Nelec_half)
+print("h0bno = ")
+print(h0bno)
+Cbno = block_diag(Cbno,Cbno)
+h0bno,Ubno = basis_change_h0_U(h0,U_mat,Cbno)
+
+
+H_sparse = get_ham(basis, h0bno, Ubno)
+eigvals, eigvecs = eigsh(H_sparse, k=1, which='SA')
+e0 = eigvals[0]
+print(f"Impurity Model Ground State Energy: {e0:.6f}")
+psi0bno = eigvecs[:, 0]
 
 
 # ------------------------------------------------------------------
@@ -451,7 +621,7 @@ psi0dbchain = eigvecs[:, 0]
 
 print(f"Impurity Model Ground State Energy: {e0:.6f}")
 
-for name, v in [("star", psi0star), ("hf", psi0hf), ("dbl chain", psi0dbchain), ("NO", psi0no)]:
+for name, v in [("star", psi0star), ("hf", psi0hf), ("dbl chain", psi0dbchain), ("NO", psi0no), ("BNO", psi0bno)]:
         print(f"\n{name}:")
         print("  IPR =", ipr(v))
         print("  PR  =", pr(v))

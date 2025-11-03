@@ -5,7 +5,7 @@ import numpy as np
 from . import basis_Np,hamiltonians,ops,results,basis_1p
 from scipy.sparse.linalg import eigsh 
 from numpy.linalg import eigh,eig
-
+from time import time
 
 def selective_ci(
     h0, U, C,
@@ -18,7 +18,7 @@ def selective_ci(
     two_bh=None,
     max_iter=5,
     conv_tol=1e-6,
-    prune_thr=1e-7,
+    prune_thr=1e-6,
     Nmul = None,
     min_size=512,
     max_size=5e4,
@@ -80,7 +80,7 @@ def selective_ci(
     """
 
 
-
+    t_start = time()
     basis0=seed
 
     # Initial Hamiltonian and ground state
@@ -126,19 +126,30 @@ def selective_ci(
     for it in range(max_iter):
         # Propose new determinants using the provided generator
 
+        #t0=time()
         inds,blocks = basis_Np.partition_by_Sz(basis0)
-        print(f"blocks = {blocks}")
+        #t1=time()
+        #print(f"blocks = {blocks}, time block = {t1-t0}")
 
         current_size = len(basis0)
 
-        gen_basis,hwf = generator(psi0,one_bh,two_bh,thr=prune_thr,return_hwf=True)
-        selected_basis = selector(hwf,e0,gen_basis,2*M,h0,U)
+        #t2=time()
+        #gen_basis,hwf = generator(psi0,one_bh,two_bh,thr=prune_thr,return_hwf=True)
+        # generate externals and couplings without normalization or pruning
+        ext, Hpsi_amp = hamiltonian_generator_raw(psi0, one_bh, two_bh)
 
-        # If Nmul = 1.0, at each iteration we double the basis size 
-        #if Nmul != None : 
-        #    nkeep = Nmul * lenb 
-        #    nkeep = int(min(nkeep, len(selected_basis)))
-        #    selected_basis = selected_basis[:nkeep]
+       
+        #t3=time()
+        #print(f"gen basis time = {t3-t2}")
+        #selected_basis = selector(hwf,e0,gen_basis,2*M,h0,U)
+         # PT2-guided selection
+        cipsi_thr = 1e-8
+        selected_basis, Ept2, ranked = cipsi_select(ext, Hpsi_amp, e0, 2*M, h0, U,
+                                            select_cutoff=cipsi_thr)
+        #t4=time()
+        #print(f"sel basis time = {t4-t3}")
+
+
         # --- Determine how many new determinants to keep based on size constraints ---
         num_candidates = len(selected_basis)
 
@@ -161,7 +172,6 @@ def selective_ci(
         n_to_add = min(n_to_add, max_size - current_size)
 
         n_to_add = int(max(0, n_to_add)) # Ensure it's not negative
-
         # Truncate the selected basis to the final number of states to add
         final_selected = selected_basis[:n_to_add]
         # Merge and sort the basis
@@ -178,12 +188,25 @@ def selective_ci(
         
 
         # Rebuild H and solve ground state
+        #t5=time()
         H = ops.get_ham(basis0, h0, U)
+        #t6=time()
+        #print(f"ham construction time = {t6-t5}")
         dim = H.shape[0]
-        
+
+        #t7=time()
         evals, evecs = get_roots(H, num_roots, dim)
         e_new = float(evals[0])
+        #t8=time()
+        #print(f"ham diag time = {t8-t7}")
         psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
+        #print(f"length before pruning = {len(psi0.get_basis())}")
+        psi0.prune(prune_thr)
+        #print(f"length after pruning = {len(psi0.get_basis())}")
+        psi0.normalize()
+
+        #t9=time()
+        #print(f"psi0 construction time = {t9-t8}")
 
         dE = abs(e_new - energies[-1])
         energies.append(e_new)
@@ -207,6 +230,8 @@ def selective_ci(
     evals, evecs = get_roots(H, num_roots, len(basis0))
     psis = [cc.Wavefunction(M, basis0, evecs[:, i], keep_zeros=True) for i in range(num_roots)]
 
+    t_final = time()
+    print(f"sci total time : {t_final - t_start}")
 
     sci_res = results.NelecLowEnergySubspace(M=M,Nelec=Nelec,
         energies=evals,
@@ -216,6 +241,7 @@ def selective_ci(
     )
 
     return sci_res
+
 
 
 def do_fci(h0,U,M,Nelec,num_roots=1,Sz=0,verbose=True):
@@ -248,7 +274,7 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=0,verbose=True):
 # Generators
 # -----------
 
-def hamiltonian_generator(wf,one_body_terms,two_body_terms,thr=1e-7,return_hwf=True):
+def hamiltonian_generator(wf,one_body_terms,two_body_terms,thr=1e-6,return_hwf=True):
     r"""
     The basis is expanded by acting on a state with the hamiltonian
 
@@ -270,6 +296,7 @@ def hamiltonian_generator(wf,one_body_terms,two_body_terms,thr=1e-7,return_hwf=T
 
     if return_hwf:
         hwf = cc.apply_one_body_operator(wf,one_body_terms) + cc.apply_two_body_operator(wf,two_body_terms)
+        hwf.normalize()
         hwf.prune(thr)
         basis_hwf = hwf.get_basis()
         diffbasis = list(set(basis_hwf) - set(wf.get_basis()))
@@ -279,6 +306,30 @@ def hamiltonian_generator(wf,one_body_terms,two_body_terms,thr=1e-7,return_hwf=T
     else:
         print("hamiltonian generator with return_hwf not implemented yet")
 
+def hamiltonian_generator_raw(wf, one_body_terms, two_body_terms):
+    """
+    Expand only by determinants directly connected to |psi> through H.
+    Return:
+      ext_dets: list of external determinants D_a not already in wf
+      Hpsi_amp: dict mapping D_a -> <D_a|H|psi>  (unnormalized)
+    """
+    # Build H|psi> WITHOUT normalization or pruning
+    Hpsi = cc.apply_one_body_operator(wf, one_body_terms)
+    Hpsi += cc.apply_two_body_operator(wf, two_body_terms)
+
+    # Extract amplitudes on determinants not in the current wf support
+    cur_basis = set(wf.get_basis())
+    Hpsi_basis = Hpsi.get_basis()
+
+    ext_dets = []
+    Hpsi_amp = {}
+    for d in Hpsi_basis:
+        if d not in cur_basis:
+            amp = Hpsi.amplitude(d)    # this equals <d|H|psi>
+            if amp != 0.0:
+                ext_dets.append(d)
+                Hpsi_amp[d] = amp
+    return ext_dets, Hpsi_amp
 
 # -----------
 # Selectors
@@ -319,10 +370,48 @@ def cipsi_one_iter(hwf,ewf,diffbasis,K, h0,U):
         c_PT2[i] = np.abs(ahwf)**2 / np.real(ewf - aha + 1e-8)
 
     indsort = np.argsort(np.abs(c_PT2))[::-1]
-    diffbasis_sorted = [diffbasis[i] for i in indsort]
+    #diffbasis_sorted = [diffbasis[i] for i in indsort]
+    diffbasis_sorted = [diffbasis[i] for i in indsort if np.abs(c_PT2)[i]>1e-16]
+
 
     return diffbasis_sorted
 
 
+
+def cipsi_select(ext_dets, Hpsi_amp, E_var, K, h0, U, select_cutoff=1e-6,
+                 max_to_add=None, level_shift=0.0):
+    """
+    Rank externals by |ΔE_a^(2)| = |<a|H|ψ>|^2 / (E_var - H_aa + shift).
+    Keep those with |ΔE_a^(2)| above threshold, or the top-N if max_to_add is set.
+    Return the chosen list and the total PT2 estimate for diagnostics.
+    """
+    import numpy as np
+
+    denom_eps = 1e-12
+    contrib = []
+    Ept2_total = 0.0
+
+    for a in ext_dets:
+        occ = a.get_occupied_spin_orbitals()
+        Haa = cc.KL(occ, occ, K, h0, U)           # diagonal Epstein–Nesbet
+        denom = E_var - Haa + level_shift
+        if abs(denom) < denom_eps:
+            continue                              # skip near intruders
+        v = Hpsi_amp[a]
+        de2 = (abs(v)**2) / denom
+        contrib.append((a, de2))
+        Ept2_total += de2
+
+    # sort by absolute PT2 magnitude, largest first
+    contrib.sort(key=lambda t: abs(t[1]), reverse=True)
+    #print((contrib[1:10]))
+    #contrib = np.sort(contrib)[::-1]
+
+    #if max_to_add is not None:
+    #    chosen = [a for a, de2 in contrib[:max_to_add]]
+    #else:
+    chosen = [a for a, de2 in contrib if abs(de2) > select_cutoff]
+
+    return chosen, Ept2_total, contrib
 
 

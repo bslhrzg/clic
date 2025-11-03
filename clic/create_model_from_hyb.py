@@ -23,6 +23,8 @@ def build_model_from_hyb(
     warp_kind = hybfit_config.warp_kind
     eta = hybfit_config.eta_in
 
+    logfile = "hybfit_details.txt"
+
     if hybfit_config.method == "poles_reconstruction":
 
         warp_k=None
@@ -38,7 +40,7 @@ def build_model_from_hyb(
 
         H_full, map = process_hyb_poles(
         omega, hyb, h_imp, n_target_poles,n_lanczos_blocks=101, 
-        warp_kind=warp_k, warp_w0=warp_w0,
+        warp_kind=warp_k, warp_w0=warp_w0,logfile=logfile
         )
 
         block_errs = analyze_block_fits(omega, hyb, map, eta=eta)
@@ -67,10 +69,11 @@ def build_model_from_hyb(
             eta_0=eta,                 # same broadening you used to generate hyb1
             bounds_e=[omega.min(), omega.max()],   # or a tighter physical window
             weight_func='const',
-            broadening_Gamma=broadening_Gamma
+            broadening_Gamma=broadening_Gamma,
+            logfile=logfile
             )
         
-        block_errs = analyze_block_fits(omega, hyb, map, eta=eta)
+        block_errs = analyze_block_fits(omega, hyb, map, eta=eta, logfile=logfile)
         global_errs = evaluate_full_fit_and_plots(
             omega, hyb, H_full, map, eta=eta, out_dir="hyb_plots", case_tag=""
         )

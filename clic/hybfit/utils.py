@@ -2,6 +2,7 @@
 
 import numpy as np
 import numpy.linalg as npl
+from ..io_utils import vprint
 
 def load_delta_from_files(file_re, file_im, col_re=5, col_im=5):
     """
@@ -163,7 +164,7 @@ def cost_l2_integral(delta_true, delta_model, omega, weight='const'):
 
     return np.trapz(W * integrand, omega)
 
-def check_moment_conservation(omega, delta_true, eps_fit, R_fit, n_max=5):
+def check_moment_conservation(omega, delta_true, eps_fit, R_fit, n_max=5, logfile=None):
     """
     Compares the power moments of the spectral function trace for the true
     hybridization vs. the fitted pole model.
@@ -204,10 +205,10 @@ def check_moment_conservation(omega, delta_true, eps_fit, R_fit, n_max=5):
         "abs_err": abs_err, "rel_err": rel_err
     }
     
-    print("\n--- Moment Conservation Check (Tr[-ImΔ/π]) ---")
-    print("n  M_grid        M_fit         Abs_Err   Rel_Err")
-    print("-" * 50)
+    vprint(1,"\n--- Moment Conservation Check (Tr[-ImΔ/π]) ---",filename=logfile)
+    vprint(1,"n  M_grid        M_fit         Abs_Err   Rel_Err",filename=logfile)
+    vprint(1,"-" * 50,filename=logfile)
     for n in range(n_max + 1):
-        print(f"{n:<2d} {M_grid[n]:<+12.6e}  {M_fit[n]:<+12.6e}  {abs_err[n]:.2e}    {rel_err[n]:.2e}")
+        vprint(1,f"{n:<2d} {M_grid[n]:<+12.6e}  {M_fit[n]:<+12.6e}  {abs_err[n]:.2e}    {rel_err[n]:.2e}",filename=logfile)
         
     return results

@@ -142,7 +142,7 @@ class SolverParameters(BaseModel):
     basis_prep_method: Literal["none", "rhf", "bath_no", "dbl_chain"]
     use_no: Literal["none", "no0"] = "none"
     ci_method: CiMethodConfig
-    nelec_range: Optional[Union[tuple[int, int], Literal["auto"]]] = "auto"
+    nelec_range: Optional[Union[tuple[int, int], Literal["auto"], None]] = None
     initial_temperature: float = 300.0
 
 

@@ -20,6 +20,14 @@ def load_spatial_integrals(filename):
     print(f"  Spatial Orbitals (M) = {M}, Nuclear Repulsion (Enuc) = {Enuc:.8f}")
     return hcore, ee, Enuc, M
 
+def save_integrals_to_h5(filename, h0, U, Ne, Enuc):
+    """Save one- and two-body integrals and metadata to an HDF5 file."""
+    with h5py.File(filename, 'w') as f:
+        f.create_dataset('h0', data=np.asarray(h0))
+        f.create_dataset('U', data=np.asarray(U))
+        f.attrs['Ne'] = int(Ne)
+        f.attrs['Enuc'] = float(Enuc)
+    print(f"Saved integrals to {filename}")
 
 # --- Helper to create sparse operator terms from dense Numpy arrays ---
 def get_one_body_terms(h1_matrix, M):
@@ -64,6 +72,8 @@ def test_h2o_iterative_ci():
     
     h0_clean = np.ascontiguousarray(h0, dtype=np.complex128)
     U_clean = np.ascontiguousarray(U_phys, dtype=np.complex128)
+
+
     
     # We still need operator terms for the dynamic part.
     # U_phys is <ij|V|kl>. The C++ expects V[i,j,k,l] to be passed to get_connections
@@ -74,7 +84,8 @@ def test_h2o_iterative_ci():
     # --- 2. Define HF and run calculations at each CI level ---
     Ne = 10
     hf_det = SlaterDeterminant(M, list(range(Ne//2)), list(range(Ne//2)))
-    
+    save_integrals_to_h5("h2o_631g_alphafirst.h5", h0_clean, U_clean, Ne, Enuc)
+
     ref_energies = {
         "HF": -75.98394138177851,
         "CISD": -76.11534669560683,

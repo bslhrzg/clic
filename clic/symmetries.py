@@ -142,6 +142,44 @@ def analyze_symmetries(h0: np.ndarray, tol: float = 1e-6, verbose=False) -> Dict
 
 # ---------------------------------------------------------
 
+def compare_symmetries(symdict1: Dict, symdict2: Dict) -> bool:
+    """
+    Compares two symmetry analysis dictionaries for logical equivalence.
+
+    This is necessary because the order of blocks and groups in the dictionaries
+    is arbitrary. This function compares canonical representations instead.
+
+    Args:
+        symdict1 (Dict): The first symmetry dictionary.
+        symdict2 (Dict): The second symmetry dictionary.
+
+    Returns:
+        bool: True if the Hamiltonians have the same symmetry structure.
+    """
+    # 1. 'is_diagonal' is a simple boolean comparison.
+    if symdict1['is_diagonal'] != symdict2['is_diagonal']:
+        return False
+
+    # 2. Compare block structures. The inner lists are already sorted.
+    #    To make the outer list canonical, we sort it as well.
+    #    This checks if they have the same set of blocks, regardless of order.
+    blocks1_canonical = sorted(symdict1['blocks'])
+    blocks2_canonical = sorted(symdict2['blocks'])
+    if blocks1_canonical != blocks2_canonical:
+        return False
+        
+    # 3. Compare identical groups. What matters is the partitioning, not
+    #    the arbitrary indices. The most important invariant is the multiset
+    #    of the sizes of the degeneracy groups.
+    #    For example, [[0, 2], [1]] and [[0], [1, 2]] both represent one group
+    #    of 2 and one group of 1.
+    group_sizes1 = sorted([len(g) for g in symdict1['identical_groups']])
+    group_sizes2 = sorted([len(g) for g in symdict2['identical_groups']])
+    if group_sizes1 != group_sizes2:
+        return False
+
+    return True
+
 def reconstruct_matrix_from_blocks(
     blocks: List[List[int]], 
     block_matrices: List[np.ndarray],

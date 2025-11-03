@@ -1,6 +1,8 @@
 import os
 import numpy as np
-from typing import Union
+import atexit
+from typing import Dict, TextIO, Union
+
 
 def dump(
     F: Union[np.ndarray, float, int, complex],
@@ -81,3 +83,80 @@ def dump(
             f.write(" ".join(formatted_parts) + "\n")
 
     print(f"Data saved to '{full_path}'")
+
+
+def print_header(str):
+    print("\n")
+    print("*"*62)
+    print(str)
+    print("*"*62)
+
+def print_subheader(str):
+    print("\n")
+    print("-"*62)
+    print(str)
+    print("-"*62)
+
+_VERBOSE_LEVEL = 0 
+
+# 2. Global dictionary to hold open file handles.
+#    Key: filename (str), Value: file object (TextIO)
+_OPEN_FILES: Dict[str, TextIO] = {}
+
+
+def _close_all_files():
+    """A cleanup function to close all managed files."""
+    # This is called automatically when the program exits.
+    for f in _OPEN_FILES.values():
+        f.close()
+    _OPEN_FILES.clear()
+
+# 3. Register the cleanup function to run on program exit.
+#    This is the crucial part for resource safety.
+atexit.register(_close_all_files)
+
+def set_verbosity(level: int):
+    """Sets the global verbosity level for vprint."""
+    global _VERBOSE_LEVEL
+    _VERBOSE_LEVEL = level
+    if _VERBOSE_LEVEL > 0:
+        print(f"[System] Verbosity level set to {_VERBOSE_LEVEL}")
+
+def vprint(required_level: int, *args, filename: str = None, **kwargs):
+    """
+    Prints to console or a file based on verbosity and the 'filename' argument.
+
+    - If filename is None, prints to the console (stdout).
+    - If filename is provided, appends the message to that file.
+    - Manages file handles automatically for performance.
+    """
+    # Early exit if the message is not important enough to be printed
+    if _VERBOSE_LEVEL < required_level:
+        return
+
+    # Prepare the message content
+    prefix = f"[V{required_level}]"
+    full_message = f"{prefix} {' '.join(map(str, args))}"
+
+    if filename is None:
+        # Case 1: Print to console (standard output)
+        print(full_message, **kwargs)
+    else:
+        # Case 2: Print to a file
+        try:
+            if filename not in _OPEN_FILES:
+                # If file is not yet open, open it in append mode ('a')
+                # and store the handle in our global dictionary.
+                _OPEN_FILES[filename] = open(filename, 'a', encoding='utf-8')
+            
+            # Get the file handle and write to it
+            file_handle = _OPEN_FILES[filename]
+            print(full_message, file=file_handle, **kwargs)
+            
+            # Optional: Immediately flush to ensure it's written to disk
+            # Useful for long-running processes or debugging.
+            file_handle.flush()
+
+        except IOError as e:
+            # Handle potential errors like permission denied
+            print(f"[vprint Error] Could not write to file '{filename}': {e}", file=sys.stderr)

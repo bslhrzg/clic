@@ -3,6 +3,7 @@
 import numpy as np
 import numpy.linalg as npl
 from . import utils
+from ..io_utils import vprint 
 
 class HybFitPoles:
     """
@@ -10,7 +11,10 @@ class HybFitPoles:
     a block Lanczos algorithm. Handles scalar hybridizations as a special case.
     """
 
-    def __init__(self, omega_grid, delta_complex, n_lanczos_blocks, n_target_poles):
+    def __init__(self, omega_grid, delta_complex, n_lanczos_blocks, n_target_poles, logfile = None):
+
+        self.logfile = logfile
+
         self.omega = np.asarray(omega_grid, dtype=float)
 
         delta_in = np.asarray(delta_complex, dtype=np.complex128)
@@ -34,36 +38,36 @@ class HybFitPoles:
         self.eps_merged = None
         self.R_merged = None
 
-        print("HybFitPoles initialized:")
-        print(f"  Orbital dimensions M = {self.m_orb}")
-        print(f"  Lanczos blocks = {self.n_lanczos_blocks}")
-        print(f"  Target poles = {self.n_target_poles}")
+        vprint(3,"HybFitPoles initialized:",filename=self.logfile)
+        vprint(3,f"  Orbital dimensions M = {self.m_orb}",filename=self.logfile)
+        vprint(3,f"  Lanczos blocks = {self.n_lanczos_blocks}",filename=self.logfile)
+        vprint(3,f"  Target poles = {self.n_target_poles}",filename=self.logfile)
 
     def run_fit(self, warp_kind="atan", warp_w0=0.1):
         """
         Execute the full fitting pipeline: Lanczos -> Pole Extraction -> Merging.
         """
-        print("\n--- Fitting poles via Lanczos ---")
+        vprint(3,"--- Fitting poles via Lanczos ---",filename=self.logfile)
         self._fit_lanczos()
         self._extract_poles_from_T()
         
-        print("--- Merging poles ---")
+        vprint(3,"--- Merging poles ---",filename=self.logfile)
         self._merge_poles_block(kind=warp_kind, w0=warp_w0)
         
-        print("\n--- Pole Fit Done ---")
-        print("Final merged poles:")
+        vprint(3,"--- Pole Fit Done ---",filename=self.logfile)
+        vprint(3,"Final merged poles:",filename=self.logfile)
         for i in range(len(self.eps_merged)):
             c = np.sqrt(max(np.real(np.trace(self.R_merged[i])), 0.0))
-            print(f"  pole {i}: e = {self.eps_merged[i]:+.6f}, sqrt Tr(R) = {c:.6f}")
+            vprint(3,f"  pole {i}: e = {self.eps_merged[i]:+.6f}, sqrt Tr(R) = {c:.6f}")
         return self
 
     def _fit_lanczos(self):
         """Dispatcher for scalar vs. block Lanczos algorithm."""
         if self.m_orb == 1:
-            print("1) Using scalar Lanczos for M=1 case.")
+            vprint(3,"1) Using scalar Lanczos for M=1 case.",filename=self.logfile)
             self._scalar_lanczos()
         else:
-            print(f"1) Using block Lanczos for M={self.m_orb} case.")
+            vprint(3,f"1) Using block Lanczos for M={self.m_orb} case.",filename=self.logfile)
             self._block_lanczos()
 
     def _scalar_lanczos(self):
@@ -77,7 +81,7 @@ class HybFitPoles:
         mu = rho_meas * w
         
         N = min(self.n_lanczos_blocks, self.n_omega)
-        x = self.omega;
+        x = self.omega
         
         # Lanczos algorithm
         def ip(a,b): return float(np.dot(mu, a*b))
@@ -122,10 +126,10 @@ class HybFitPoles:
 
         self.T_lanczos = self._build_block_tridiagonal(A_blocks, B_blocks)
         self.M0_sqrt_lanczos = self._sym_sqrt_psd(M0)
-        print(f"   T shape = {self.T_lanczos.shape}")
+        vprint(3,f"   T shape = {self.T_lanczos.shape}")
 
     def _extract_poles_from_T(self):
-        print("2) Extracting poles and residues from T")
+        vprint(3,"2) Extracting poles and residues from T",filename=self.logfile)
         if self.T_lanczos is None or self.T_lanczos.size == 0:
             self.eps_lanczos, self.R_lanczos = np.array([]), []
             return
@@ -145,21 +149,21 @@ class HybFitPoles:
             Rj = vj @ vj.conj().T
             R.append(Rj)
         self.R_lanczos = R
-        print(f"   poles extracted = {len(self.eps_lanczos)}")
+        vprint(3,f"   poles extracted = {len(self.eps_lanczos)}",filename=self.logfile)
 
     def _merge_poles_block_(self, kind, w0):
-        print(f"3) Merging to {self.n_target_poles} poles using warp = {kind}, w0 = {w0}")
+        vprint(3,f"3) Merging to {self.n_target_poles} poles using warp = {kind}, w0 = {w0}",filename=self.logfile)
         self.eps_merged, self.R_merged = self._merge_poles_block_warped(
-            self.eps_lanczos, self.R_lanczos, self.n_target_poles, kind, w0
+            self.eps_lanczos, self.R_lanczos, self.n_target_poles, kind, w0, self.logfile
         )
 
     def _merge_poles_block(self, kind, w0):
-        print("merge poles, kind = ",kind)
+        vprint(3,"merge poles, kind = ",kind,filename=self.logfile)
         eps = self.eps_lanczos
         W = eps.max() - eps.min()
         E_keep = 0.005*W
-        print(f"W={W},E_keep = {E_keep}")
-        print(f"3) Merging to {self.n_target_poles} poles with Appendix F + low-E bias")
+        vprint(3,f"W={W},E_keep = {E_keep}",filename=self.logfile)
+        vprint(3,f"3) Merging to {self.n_target_poles} poles with Appendix F + low-E bias",filename=self.logfile)
         self.eps_merged, self.R_merged = self._merge_poles_block_appendixF(
             self.eps_lanczos, self.R_lanczos, self.n_target_poles,
             cleanup_negative=False, cull_outliers=True,
@@ -176,8 +180,8 @@ class HybFitPoles:
         return Q @ np.diag(np.sqrt(w)) @ Q.T.conj()
 
     @classmethod
-    def _merge_poles_block_warped(cls, eps, R_list, n_target, kind, w0):
-        phi, inv = cls._make_warp(kind, w0)
+    def _merge_poles_block_warped(cls, eps, R_list, n_target, kind, w0,filename=None):
+        phi, inv = cls._make_warp(kind, w0,filename=filename)
         eps = np.asarray(eps, float).copy()
         R = list(R_list)
         order = np.argsort(eps)
@@ -198,8 +202,8 @@ class HybFitPoles:
         return eps, R
 
     @staticmethod
-    def _make_warp(kind="atan", w0=0.1):
-        print("make warp : kind = ",kind)
+    def _make_warp(kind="atan", w0=0.1,filename=None):
+        vprint(3,"make warp : kind = ",kind,filename=filename)
         if kind == "atan": return (lambda x: np.arctan(x / w0), lambda y: w0 * np.tan(y))
         if kind == "asinh": return (lambda x: np.arcsinh(x / w0), lambda y: w0 * np.sinh(y))
         if kind == "const": return (lambda x: x, lambda y: y)
@@ -219,7 +223,7 @@ class HybFitPoles:
         use_warp_spacing: if True, compute ℓ_k in z=phi(eps) space
         warp_kind: "asinh" | "atan" | "const" for spacing only
         """
-        print(f"bias = {bias}, w0 = {w0}, p = {p}, gamma = {gamma}, warp_kind = {warp_kind}")
+        vprint(3,f"bias = {bias}, w0 = {w0}, p = {p}, gamma = {gamma}, warp_kind = {warp_kind}",filename=self.logfile)
         tiny = 1e-300
         eps = np.asarray(eps, float).copy()
         R = [np.array(Ri, dtype=np.complex128, copy=True) for Ri in R_list]

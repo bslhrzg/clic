@@ -54,7 +54,7 @@ class GroundStateSolver:
             return
         
         elif method == 'rhf':
-            hmf, es, Vs, rho = mf.mfscf_(self.model.h0,self.model.U,self.model.Nelec)
+            hmf, es, Vs, rho = mf.mfscf(self.model.h0,self.model.U,self.model.Nelec)
             h0,U_mat = basis_1p.basis_change_h0_U(self.model.h0,self.model.U,Vs)
             self.model.h0 = h0
             self.model.U = U_mat
@@ -436,6 +436,8 @@ class FockSpaceSolver:
             base_model=self.base_model, # Pass the entire base model
             temperature=initial_temperature
         )
+
+        self.result.prune()
         
         # Report the absolute ground state found
         gs_nelec, gs_energy, _ = self.result.find_absolute_ground_state()

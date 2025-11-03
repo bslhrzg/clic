@@ -229,12 +229,14 @@ class ThermalGroundState:
         
         print(f"Recalculated thermal properties for T={self.temperature} K.")
 
-    def prune(self, threshold: float = 1e-8):
+    def prune(self, threshold: float = 1e-2):
         """
         Removes states whose Boltzmann weight is below a given threshold.
         This method completely rebuilds the internal state of the object,
         purging all information related to the pruned states.
         """
+        print("*"*42)
+        print(f"DEBUG: PRUNING WITH threshold = {threshold}")
         if self.boltzmann_weights is None:
             self._recalculate_thermal_properties()
 
@@ -300,7 +302,7 @@ class ThermalGroundState:
 
         # 4. Replace the old, complete dictionary with the new, pruned one
         self.results_by_nelec = new_results_by_nelec
-        
+
         # 5. Finally, recalculate the Boltzmann weights for the pruned set
         self._recalculate_thermal_properties()
         final_count = len(self._all_states)

@@ -16,6 +16,7 @@ def load_integrals_from_h5(filename):
         M = K // 2
     return h0, U, Ne, Enuc, M, K
 
+
 def calculate_hf_energy_python(h0, U, Ne, Enuc):
     """Calculates HF energy from raw interleaved integrals, proven to be correct."""
     occupied_indices = range(Ne)
@@ -81,6 +82,7 @@ def test_h2o_fci_energy():
     # 3. CRITICAL: Ensure arrays are C-contiguous and have the correct dtype
     h0_alphafirst = np.ascontiguousarray(h0_alphafirst_raw, dtype=np.complex128)
     U_alphafirst = np.ascontiguousarray(U_alphafirst_raw, dtype=np.complex128)
+
 
     # 4. Generate the FCI basis
     print("\nGenerating FCI basis...")

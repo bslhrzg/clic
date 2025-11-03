@@ -5,6 +5,8 @@ from typing import Optional
 from .api import create_model_from_config,GroundStateSolver, FockSpaceSolver, GreenFunctionCalculator
 from .config_models import CalculationConfig
 from . import results
+from .io_utils import *
+
 
 def run_workflow(config: CalculationConfig):
     """
@@ -13,6 +15,7 @@ def run_workflow(config: CalculationConfig):
     print("--- Starting CLIC Workflow ---")
 
     # --- 1. Model Creation (always happens) ---
+    print_header("MODEL INSTANTIATION")
     print("\n[Step 1/3] Creating model...")
     model = create_model_from_config(config)
     ground_state_result: Optional[results.ThermalGroundState] = None
@@ -22,6 +25,8 @@ def run_workflow(config: CalculationConfig):
     gs_filename = f"{config.output.basename}_gs.h5"
 
     # --- 2. Solver Execution (if configured) ---
+    print_header("SOLVING MODEL")
+
     if config.solver:
         print("\n[Step 2/3] Solver section found. Running ground state calculation...")
         
@@ -53,6 +58,8 @@ def run_workflow(config: CalculationConfig):
         print("\n[Step 2/3] No solver section found. Skipping ground state calculation.")
 
     # --- 3. Green's Function Calculation (if configured) ---
+    print_header("COMPUTING GREEN FUNCTIONS")
+
     if config.green_function:
         print("\n[Step 3/3] Green's function section found. Running GF calculation...")
         

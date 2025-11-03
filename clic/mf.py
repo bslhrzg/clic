@@ -1,6 +1,7 @@
 # mf.py
 import numpy as np
 from . import symmetries
+from .io_utils import *
 
 def mfscf_(h0_0, U_0, Ne, maxiter=100):
     """
@@ -38,16 +39,17 @@ def mfscf_(h0_0, U_0, Ne, maxiter=100):
     M = NF // 2
 
 
+
     # Spin-up block (top-left M×M)
     h0_up = h0_0[:M, :M]
 
-    print("max U :")
-    print(np.max(U_0))
+    vprint(3,"max U :")
+    vprint(3,np.max(U_0))
 
-    print("starting from ρ(h0) in spin-up block")
+    vprint(1,"starting from ρ(h0) in spin-up block")
     es_up, Vs_up = solve_h0(h0_up)
     es, Vs = double_es_Vs_blocked(es_up, Vs_up)  # build (↑,↓) structure with contiguous blocks
-    print(f"iter 0, E = {np.real(es[:Ne]).sum()}")#, es = {es}")
+    vprint(1,f"iter 0, E = {np.real(es[:Ne]).sum()}")#, es = {es}")
     rho = get_rho(es, Vs, Ne)
 
     print(f"Ne = {Ne}")
@@ -254,13 +256,13 @@ def _reorder_to_spin_blocks(es_sorted, Vs_sorted, M):
         
     return es_reordered, Vs_reordered
 
-def _solve_h_symmetric(h0: np.ndarray):
+def _solve_h_symmetric(h0: np.ndarray, sym_dict=None):
     """
-    (This function is correct as it was, the problem is handled after its use)
     Diagonalizes a hermitian matrix by exploiting its block-diagonal symmetry.
     Returns globally sorted eigenvalues and eigenvectors.
     """
-    sym_dict = symmetries.analyze_symmetries(h0)
+    if sym_dict is None :
+        sym_dict = symmetries.analyze_symmetries(h0)
     blocks = sym_dict['blocks']
     identical_groups = sym_dict['identical_groups']
 
@@ -298,40 +300,51 @@ def mfscf(h0_0, U_0, Ne, maxiter=100, alpha=0.2, threshold=1e-8):
     This version now returns eigenvectors and eigenvalues in a spin-blocked
     (AlphaFirst) convention, even when degeneracies are present.
     """
+    
+    print_subheader("Mean-Field Self-Consistent Procedure with block handling")
+
+
     NF = h0_0.shape[0]
     M = NF // 2
 
-    print("--- Initializing SCF from h0 ---")
     es, Vs, sym_dict = _solve_h_symmetric(h0_0)
-    print(f"Symmetry analysis found {len(sym_dict['blocks'])} blocks.")
-    print(f"Found {len(sym_dict['identical_groups'])} unique groups of blocks.")
-    
+    vprint(1,f"Symmetry analysis found {len(sym_dict['blocks'])} blocks.")
+    vprint(1,f"Found {len(sym_dict['identical_groups'])} unique groups of blocks.")
+    vprint(1,f"Blocks: {sym_dict["blocks"]}")
+    vprint(1,f"Identical Groups (by block index): {sym_dict["identical_groups"]}")
+
     rho = get_rho(es, Vs, Ne)
-    # The rest of the initial prints...
-    print(f"iter 0, Tr(rho*h0) = {np.real(np.trace(rho @ h0_0)):.8f}")
-    print(f"Ne = {Ne}, initial tr(rho) = {np.trace(rho):.8f}")
-    print(f"mixing parameter: α = {alpha}")
+    vprint(1,f"iter 0, Tr(rho*h0) = {np.real(np.trace(rho @ h0_0)):.8f}")
+    vprint(1,f"Ne = {Ne}, initial tr(rho) = {np.trace(rho):.8f}")
+    vprint(1,f"mixing parameter: α = {alpha}")
 
     hmf, E0_total = None, 1_000.0
     
     nz_count = int(np.count_nonzero(U_0))
-    print(f"\nNumber of non-zero U elements: {nz_count}")
-    print(f"{'Iter':>4s} {'E_total':>15s} {'E_corr':>15s} {'ΔE_total':>15s}")
+    vprint(2,f"Number of non-zero U elements: {nz_count}")
+    vprint(1,f"{'Iter':>4s} {'E_total':>15s} {'E_corr':>15s} {'ΔE_total':>15s}")
     
     it = 0
     for it in range(1, maxiter + 1):
         Vmf, ec = get_mean_field(U_0, rho)
         hmf = h0_0 + Vmf
-        es, Vs, _ = _solve_h_symmetric(hmf) # es and Vs are globally sorted here
+        if it == 1 : 
+            sym_dict_test = symmetries.analyze_symmetries(hmf)
+            if symmetries.compare_symmetries(sym_dict,sym_dict_test) == False: 
+                vprint(1,"WARNING : Vmf breaks block symmetry, using block of hmf")
+                sym_dict = sym_dict_test
+
+
+        es, Vs, _ = _solve_h_symmetric(hmf,sym_dict) # es and Vs are globally sorted here
 
         E_total = 0.5 * np.real(np.trace(rho @ (h0_0+hmf)))
         DE = abs(E_total - E0_total)
         
         if it % 10 == 0 or it == 1:
-            print(f"{it:4d} {E_total:15.8f} {np.real(ec):15.8f} {DE:15.4e}")
+            vprint(1,f"{it:4d} {E_total:15.8f} {np.real(ec):15.8f} {DE:15.4e}")
 
         if DE < threshold:
-            print(f"\nConverged in {it} iterations.")
+            vprint(1,f"Converged in {it} iterations.")
             break
         
         E0_total = E_total
@@ -340,13 +353,12 @@ def mfscf(h0_0, U_0, Ne, maxiter=100, alpha=0.2, threshold=1e-8):
         rho = alpha * rho_new + (1.0 - alpha) * rho
 
     if it == maxiter:
-        print(f"\nNOT CONVERGED IN {maxiter} ITERATIONS")
+        vprint(1,f"NOT CONVERGED IN {maxiter} ITERATIONS")
 
-    print(f"\nFinal tr(rho) = {np.trace(rho):.8f}")
+    vprint(1,f"Final tr(rho) = {np.trace(rho):.8f}")
     
-    # --- FINAL FIX-UP STEP ---
     # Reorder the final results to conform to the spin-blocked convention
-    print("Reordering final eigenvectors to spin-blocked convention...")
+    vprint(2,"Reordering final eigenvectors to spin-blocked convention...")
     es_final, Vs_final = _reorder_to_spin_blocks(es, Vs, M)
     
     # Return the reordered, user-friendly results

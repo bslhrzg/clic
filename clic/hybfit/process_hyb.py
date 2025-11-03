@@ -8,17 +8,18 @@ import matplotlib.pyplot as plt
 from .hybfit import fit, analyze_fit
 from . import utils
 from .. import symmetries
+from ..io_utils import vprint
 
 
 def print_summary(title, H_full, mapping):
-    print(f"\n=== {title} ===")
-    print(np.round(np.real(H_full),3))
-    print("blocks:", mapping["blocks"])
-    print("identical_groups:", mapping["identical_groups"])
+    vprint(1,f"=== {title} ===")
+    vprint(1,np.round(np.real(H_full),3))
+    vprint(1,"blocks:", mapping["blocks"])
+    vprint(1,"identical_groups:", mapping["identical_groups"])
     Nb = H_full.shape[0] - len(mapping["alpha_imp_idx"]) - len(mapping["beta_imp_idx"])
-    print("H_full shape:", H_full.shape, " Nbath:", Nb)
-    print("alpha bath cols:", mapping["alpha_bath_cols"])
-    print("beta  bath cols:", mapping["beta_bath_cols"])
+    vprint(1,"H_full shape:", H_full.shape, " Nbath:", Nb)
+    vprint(1,"alpha bath cols:", mapping["alpha_bath_cols"])
+    vprint(1,"beta  bath cols:", mapping["beta_bath_cols"])
 
 
 def _unpermute_to_block_form(H_full: np.ndarray, perm: np.ndarray, Nimp: int):
@@ -32,7 +33,8 @@ def _unpermute_to_block_form(H_full: np.ndarray, perm: np.ndarray, Nimp: int):
 def analyze_block_fits(omega: np.ndarray,
                        hyb: np.ndarray,
                        mapping: dict,
-                       eta: float) -> dict:
+                       eta: float,
+                       logfile=None) -> dict:
     """
     Runs your analyze_fit on every non-equivalent leader block.
     Returns a dict keyed by leader block index with the error summaries.
@@ -45,8 +47,8 @@ def analyze_block_fits(omega: np.ndarray,
         eps = info["eps_poles"]
         R_list = info["R_poles"]
         delta_blk_true = hyb[:, idx, :][:, :, idx]
-        print(f"\n[Block leader {leader}] size {len(idx)}")
-        res = analyze_fit(omega, delta_blk_true, eps, R_list, eta=eta)
+        vprint(1,f"\n[Block leader {leader}] size {len(idx)}",filename=logfile)
+        res = analyze_fit(omega, delta_blk_true, eps, R_list, eta=eta, logfile=logfile)
         results[leader] = res
     return results
 
@@ -111,13 +113,14 @@ def evaluate_full_fit_and_plots(omega: np.ndarray,
     chi_const = utils.cost_l2_integral(hyb, Delta_fit, omega, weight='const')
     chi_inv2 = utils.cost_l2_integral(hyb, Delta_fit, omega, weight='inv2')
 
-    print("\n" + "="*50)
-    print(f"GLOBAL FIT ANALYSIS  [{case_tag}]  with eta = {eta:.4f}")
-    print("="*50)
-    print(f"  Relative L2 Error (Re): {err_l2_re:.4e}")
-    print(f"  Relative L2 Error (Im): {err_l2_im:.4e}")
-    print(f"  Cost L2 Integral (const): {chi_const:.4e}")
-    print(f"  Cost L2 Integral (inv2):  {chi_inv2:.4e}")
+    vprint(1,"\n" + "="*50)
+    vprint(1,f"GLOBAL FIT ANALYSIS  [{case_tag}]  with eta = {eta:.4f}")
+    vprint(1,"="*50)
+    vprint(1,f"  Relative L2 Error (Re): {err_l2_re:.4e}")
+    vprint(1,f"  Relative L2 Error (Im): {err_l2_im:.4e}")
+    vprint(1,f"  Cost L2 Integral (const): {chi_const:.4e}")
+    vprint(1,f"  Cost L2 Integral (inv2):  {chi_inv2:.4e}")
+
 
     # plots
     out_prefix = os.path.join(out_dir, case_tag)
@@ -158,6 +161,7 @@ def process_hyb_poles(
     random_state: Optional[int] = None,
     enforce_even_total: bool = True,
     verbose: bool = False,
+    logfile=None
 ):
     """
     Run symmetry-aware pole fitting and assemble the full impurity+bath Hamiltonian.
@@ -215,7 +219,7 @@ def process_hyb_poles(
         hyb_blk = _restrict_hyb(hyb, idx)  # (Nw, k, k)
 
         if verbose:
-            print(f"\nFitting leader block {leader} with size {len(idx)}")
+            vprint(1,f"\nFitting leader block {leader} with size {len(idx)}")
 
         eps, R_list = fit(
             omega=omega,
@@ -225,6 +229,7 @@ def process_hyb_poles(
             n_lanczos_blocks=(n_lanczos_blocks if n_lanczos_blocks is not None else 10*n_target_poles),
             warp_kind=warp_kind,   # or 'atan' if you prefer
             warp_w0=warp_w0,
+            logfile=logfile
         )
 
         H_b, V_blk = utils.residues_to_bath(eps, R_list)
@@ -390,7 +395,7 @@ def process_hyb_poles(
 
     rel_err = utils.rel_l2_error(hyb, Delta_fit)
     chi2 = utils.cost_l2_integral(hyb, Delta_fit, omega, weight='const')
-    print(f"rel L2 error = {rel_err:.3e},  chi2 = {chi2:.3e}")
+    vprint(1,f"rel L2 error = {rel_err:.3e},  chi2 = {chi2:.3e}")
 
     return H_full, mapping
 
@@ -408,6 +413,7 @@ def process_hyb_cost(
     random_state: Optional[int] = None,
     enforce_even_total: bool = True,
     verbose: bool = False,
+    logfile = None,
 ):
     """
     Symmetry-aware fitting pipeline using HybFitCost on scalar blocks only.
@@ -461,7 +467,7 @@ def process_hyb_cost(
         hyb_blk = hyb[:, idx, :][:, :, idx]    # shape (Nw,1,1)
 
         if verbose:
-            print(f"\n[CostFit] Fitting leader block {leader} (orbital {i}) with {n_target_poles} poles.")
+            vprint(1,f"\n[CostFit] Fitting leader block {leader} (orbital {i}) with {n_target_poles} poles.")
 
         eps_poles, R_poles = fit(
             omega=omega,
@@ -472,6 +478,7 @@ def process_hyb_cost(
             broadening_Gamma=broadening_Gamma,
             weight_func=weight_func,
             bounds_e=bounds_e,
+            logfile=logfile,
         )
         # turn residues into bath; for scalar, this yields exactly one column per pole
         H_b, V_blk = utils.residues_to_bath(eps_poles, R_poles)  # V_blk shape (1, Nb)
@@ -604,7 +611,7 @@ def process_hyb_cost(
     rel_err = utils.rel_l2_error(hyb, Delta_fit)
     chi2 = utils.cost_l2_integral(hyb, Delta_fit, omega, weight='const')
     if verbose:
-        print(f"[process_hyb_cost] rel L2 = {rel_err:.3e}, chi2 = {chi2:.3e}")
+        vprint(1,f"[process_hyb_cost] rel L2 = {rel_err:.3e}, chi2 = {chi2:.3e}")
 
     return H_full, mapping
 

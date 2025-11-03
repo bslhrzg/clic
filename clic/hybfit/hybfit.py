@@ -4,6 +4,7 @@ import numpy as np
 from . import utils
 from .hybfit_poles import HybFitPoles
 from .hybfit_cost import HybFitCost
+from ..io_utils import vprint
 
 def fit(omega, delta, n_poles, method, *, 
         eta_0=None, 
@@ -11,6 +12,7 @@ def fit(omega, delta, n_poles, method, *,
         broadening_Gamma=None,
         weight_func=None,
         bounds_e=None,
+        logfile=None,
         **kwargs):    
     """
     High-level function to fit a hybridization function.
@@ -51,7 +53,8 @@ def fit(omega, delta, n_poles, method, *,
             omega_grid=omega,
             delta_complex=delta,
             n_lanczos_blocks=n_lanczos_blocks,
-            n_target_poles=n_poles
+            n_target_poles=n_poles,
+            logfile=logfile
         )
         fitter.run_fit(**pole_args)
 
@@ -74,7 +77,8 @@ def fit(omega, delta, n_poles, method, *,
         fitter = HybFitCost(
             omega_grid=omega,
             delta_complex=delta,
-            n_target_poles=n_poles
+            n_target_poles=n_poles,
+            logfile=logfile
         )
         # Pass the explicit arguments by name, and the rest in kwargs
         fitter.run_fit(
@@ -82,7 +86,7 @@ def fit(omega, delta, n_poles, method, *,
             broadening_Gamma=broadening_Gamma,
             weight_func=weight_func,
             bounds_e=bounds_e,
-            **kwargs  # Pass through advanced optimizer settings
+            #**kwargs  # Pass through advanced optimizer settings
         )
         return fitter.eps_final, fitter.R_final
 
@@ -90,7 +94,7 @@ def fit(omega, delta, n_poles, method, *,
         raise ValueError(f"Unknown fitting method: {method}.")
 
 
-def analyze_fit(omega, delta_true, eps_fit, R_fit, eta):
+def analyze_fit(omega, delta_true, eps_fit, R_fit, eta, logfile = None):
     """
     Performs a standard analysis of a hybridization fit.
 
@@ -107,9 +111,9 @@ def analyze_fit(omega, delta_true, eps_fit, R_fit, eta):
     Returns:
         dict: A dictionary containing the calculated error metrics.
     """
-    print("\n" + "="*50)
-    print(" " * 18 + "FIT ANALYSIS")
-    print("="*50)
+    vprint(1,"\n" + "="*50,filename=logfile)
+    vprint(1," " * 18 + "FIT ANALYSIS",filename=logfile)
+    vprint(1,"="*50,filename=logfile)
 
     # 1. Reconstruct the model
     z = omega + 1j * eta
@@ -122,16 +126,16 @@ def analyze_fit(omega, delta_true, eps_fit, R_fit, eta):
     chi_const = utils.cost_l2_integral(delta_true, delta_model, omega, weight='const')
     chi_inv2 = utils.cost_l2_integral(delta_true, delta_model, omega, weight='inv2')
     
-    print(f"Analysis performed with broadening eta = {eta:.4f}")
-    print("\n--- Error Metrics ---")
-    print(f"  Relative L2 Error (Re): {err_l2_re:.4e}")
-    print(f"  Relative L2 Error (Im): {err_l2_im:.4e}")
-    print(f"  Cost L2 Integral (const): {chi_const:.4e}")
-    print(f"  Cost L2 Integral (inv2):  {chi_inv2:.4e}")
+    vprint(1,f"Analysis performed with broadening eta = {eta:.4f}",filename=logfile)
+    vprint(1,"\n--- Error Metrics ---",filename=logfile)
+    vprint(1,f"  Relative L2 Error (Re): {err_l2_re:.4e}",filename=logfile)
+    vprint(1,f"  Relative L2 Error (Im): {err_l2_im:.4e}",filename=logfile)
+    vprint(1,f"  Cost L2 Integral (const): {chi_const:.4e}",filename=logfile)
+    vprint(1,f"  Cost L2 Integral (inv2):  {chi_inv2:.4e}",filename=logfile)
 
     # 3. Check moments
-    moment_results = utils.check_moment_conservation(omega, delta_true, eps_fit, R_fit)
-    print("="*50)
+    moment_results = utils.check_moment_conservation(omega, delta_true, eps_fit, R_fit, logfile=logfile)
+    vprint(1,"="*50,filename=logfile)
     
     errors = {
         'rel_l2_re': err_l2_re,
