@@ -30,6 +30,7 @@ set(CORE_SOURCES
   cpp_src/slater_condon.cpp
   cpp_src/hamiltonian.cpp
   cpp_src/ed_tools.cpp
+  cpp_src/applyH.cpp 
   cpp_src/bindings.cpp
 )
 

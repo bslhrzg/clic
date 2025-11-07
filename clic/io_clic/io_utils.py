@@ -97,7 +97,7 @@ def print_subheader(str):
     print(str)
     print("-"*62)
 
-_VERBOSE_LEVEL = 0 
+_VERBOSE_LEVEL = 3
 
 # 2. Global dictionary to hold open file handles.
 #    Key: filename (str), Value: file object (TextIO)

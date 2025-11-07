@@ -4,9 +4,9 @@ import tomli
 import argparse
 from pydantic import ValidationError
 
-from clic.config_models import CalculationConfig
+from clic.model.config_models import CalculationConfig
 from clic.workflow import run_workflow
-from clic.io_utils import set_verbosity
+from clic.io_clic.io_utils import set_verbosity
 
 def main():
     

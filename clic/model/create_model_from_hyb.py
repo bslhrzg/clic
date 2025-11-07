@@ -3,9 +3,9 @@ import numpy as np
 from .config_models import HybFitConfig
 import sys 
 
-from .hybfit import utils             
-from .hybfit.process_hyb import process_hyb_cost, process_hyb_poles # import the function from its module
-from .hybfit.process_hyb import analyze_block_fits, evaluate_full_fit_and_plots, print_summary
+from clic.hybfit import utils
+from clic.hybfit.process_hyb import process_hyb_cost, process_hyb_poles # import the function from its module
+from clic.hybfit.process_hyb import analyze_block_fits, evaluate_full_fit_and_plots, print_summary
 
 
 def build_model_from_hyb(
@@ -74,9 +74,9 @@ def build_model_from_hyb(
             )
         
         block_errs = analyze_block_fits(omega, hyb, map, eta=eta, logfile=logfile)
-        global_errs = evaluate_full_fit_and_plots(
-            omega, hyb, H_full, map, eta=eta, out_dir="hyb_plots", case_tag=""
-        )
+        #global_errs = evaluate_full_fit_and_plots(
+        #    omega, hyb, H_full, map, eta=eta, out_dir="hyb_plots", case_tag=""
+        #)
 
         print_summary("Fit block summary ",H_full, map)
 

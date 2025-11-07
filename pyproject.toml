@@ -11,6 +11,10 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Basile Herzog", email = "basile.herzog@gmail.com" }]
 
+[tool.setuptools.packages.find]
+where = ["."]  # Look for packages in the current directory
+include = ["clic*"] # Find the package named 'clic' and its sub-packages
+
 dependencies = [
     "numpy",
     "scipy",

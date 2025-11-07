@@ -175,6 +175,10 @@ public:
     const SpinDeterminant& alpha() const noexcept;
     const SpinDeterminant& beta () const noexcept;
 
+    // NON-CONST OVERLOADS FOR MUTABLE ACCESS
+    SpinDeterminant& alpha() noexcept;
+    SpinDeterminant& beta() noexcept;
+
     std::size_t count_electrons() const noexcept;
     double      Sz()              const noexcept;
 

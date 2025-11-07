@@ -9,6 +9,7 @@
 #include "slater_condon.h"
 #include "hamiltonian.h"
 #include "ed_tools.h"
+#include "applyH.h"
 
 #include <complex>
 #include <vector>
@@ -300,6 +301,39 @@ m.doc() = R"doc(
               return get_connections_two_body(basis, terms);
           },
           py::arg("basis"), py::arg("terms"));
+
+
+    // --- Table-driven Hamiltonian Application (NEW, CORRECTED SECTION) ---
+    py::class_<ScreenedHamiltonian>(m, "ScreenedHamiltonian", "Pre-computed tables for efficient H|psi> application.")
+        .def(py::init<>())
+        .def("__repr__", [](const ScreenedHamiltonian& sh) {
+            return "<ScreenedHamiltonian for K=" + std::to_string(sh.n_spin_orbitals) + " spin-orbitals>";
+        });
+
+    m.def("build_screened_hamiltonian",
+        [](py::array H, py::array V, double tol) {
+            size_t K = H.request().shape[0];
+            return build_screened_hamiltonian(K, make_H1(H), make_ERI(V), tol);
+        },
+        py::arg("H"), py::arg("V"), py::arg("tol"),
+        R"doc(
+        Builds pre-computed screening tables for fast Hamiltonian application based on integral values.
+        This is a direct C++ translation of the proven Python `build_*` functions.
+        )doc");
+
+    m.def("apply_hamiltonian",
+        [](const Wavefunction& psi, const ScreenedHamiltonian& sh, py::array H, py::array V, double tol_element) {
+            return apply_hamiltonian(psi, sh, make_H1(H), make_ERI(V), tol_element);
+        },
+        py::arg("psi"), py::arg("screened_H"), py::arg("H"), py::arg("V"), py::arg("tol_element"),
+        R"doc(
+        Applies the Hamiltonian to a wavefunction using pre-built screening tables.
+        This is a direct C++ translation of the proven Python `apply_H_on_det` logic,
+        applied to each determinant in the input wavefunction.
+        )doc");
+
+
+
 
     // --- ED Tools & Hamiltonian Construction ---
     m.def("get_annihilation_operator", &get_annihilation_operator_py,

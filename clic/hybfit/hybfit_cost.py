@@ -2,7 +2,7 @@
 
 import numpy as np
 from scipy import optimize
-from ..io_utils import vprint
+from clic.io_clic.io_utils import vprint
 
 class HybFitCost:
     """

@@ -3,7 +3,7 @@
 import numpy as np
 import numpy.linalg as npl
 from . import utils
-from ..io_utils import vprint 
+from clic.io_clic.io_utils import vprint
 
 class HybFitPoles:
     """
@@ -223,7 +223,7 @@ class HybFitPoles:
         use_warp_spacing: if True, compute ℓ_k in z=phi(eps) space
         warp_kind: "asinh" | "atan" | "const" for spacing only
         """
-        vprint(3,f"bias = {bias}, w0 = {w0}, p = {p}, gamma = {gamma}, warp_kind = {warp_kind}",filename=self.logfile)
+        vprint(3,f"bias = {bias}, w0 = {w0}, p = {p}, gamma = {gamma}, warp_kind = {warp_kind}")
         tiny = 1e-300
         eps = np.asarray(eps, float).copy()
         R = [np.array(Ri, dtype=np.complex128, copy=True) for Ri in R_list]

@@ -2,7 +2,8 @@
 
 import numpy as np
 from scipy.linalg import eigh, block_diag
-from . import symmetries, mf
+from clic.mf import mf
+from clic.symmetries import symmetries
 # --------------------------------------------------------------------------
 # Double chain for a single impurity
 # --------------------------------------------------------------------------
@@ -174,7 +175,7 @@ def get_double_chain_transform(h_spin, u, Nelec):
 # --------------------------------------------------------------------------
 # Double chain for a multi-orbital case 
 # --------------------------------------------------------------------------
-from .mf import mfscf 
+from clic.mf.mf import mfscf 
 
 
 def perform_multi_orbital_no_transform(h0, U, block_dict, impurity_indices, Ne_per_block):

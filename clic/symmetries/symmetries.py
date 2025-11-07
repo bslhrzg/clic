@@ -130,6 +130,7 @@ def analyze_symmetries(h0: np.ndarray, tol: float = 1e-6, verbose=False) -> Dict
 
     if verbose:
         print("\n--- Analyzed Structure ---")
+        print(f"Found {len(blocks)} blocks")
         print(f"Blocks: {blocks}")
         print(f"Identical Groups (by block index): {identical}")
     
@@ -141,6 +142,18 @@ def analyze_symmetries(h0: np.ndarray, tol: float = 1e-6, verbose=False) -> Dict
 
 
 # ---------------------------------------------------------
+
+def construct_spin_only_symdict(NF):
+
+    M = NF // 2
+    block_a = list(range(M))
+    block_b = list(range(M,NF))
+    blocks = [block_a,block_b]
+    identical = [[0,1]]
+    diag = False
+    return { "blocks": blocks, "identical_groups": identical, "is_diagonal": diag}
+
+
 
 def compare_symmetries(symdict1: Dict, symdict2: Dict) -> bool:
     """
@@ -166,6 +179,8 @@ def compare_symmetries(symdict1: Dict, symdict2: Dict) -> bool:
     blocks1_canonical = sorted(symdict1['blocks'])
     blocks2_canonical = sorted(symdict2['blocks'])
     if blocks1_canonical != blocks2_canonical:
+        print(f"block1_canonical = {blocks1_canonical}")
+        print(f"block2_canonical = {blocks2_canonical}")
         return False
         
     # 3. Compare identical groups. What matters is the partitioning, not
@@ -176,6 +191,8 @@ def compare_symmetries(symdict1: Dict, symdict2: Dict) -> bool:
     group_sizes1 = sorted([len(g) for g in symdict1['identical_groups']])
     group_sizes2 = sorted([len(g) for g in symdict2['identical_groups']])
     if group_sizes1 != group_sizes2:
+        print(f"group_sizes1 = {group_sizes1}")
+        print(f"group_sizes2 = {group_sizes2}")
         return False
 
     return True

@@ -4,68 +4,10 @@
 CLIC: Configuration interaction and Lanczos for Impurity Calculations
 """
 
+from clic.symmetries import symmetries
+from clic.lanczos.block_lanczos import *
+from clic.lanczos.scalar_lanczos import *
 
-# Expose the most important C++ classes to the top level of the package.
-#    This allows users to write `clic.Wavefunction` instead of
-#    `clic.clic_clib.Wavefunction`.
-from .clic_clib import (
-   
-    SlaterDeterminant,
-    Wavefunction,
-    Spin,
-    SpinOrbitalOrder,
+from clic.mf.mf import mfscf, block_electron_counts, group_electron_counts
 
-    apply_creation,
-    apply_annihilation,
-    get_creation_operator,
-    get_annihilation_operator,
-
-    apply_one_body_operator,
-    apply_two_body_operator,
-
-    get_connections_one_body,
-    get_connections_two_body,
-
-
-    build_hamiltonian_openmp,
-)
-
-
-# Expose the most important Python functions to the top level.
-from .hamiltonians import (
-    get_impurity_integrals,
-    create_hubbard_V,
-)
-
-from .basis_1p import (
-    transform_integrals_interleaved_to_alphafirst,
-    umo2so,
-    double_h,
-    basis_change_h0_U
-)
-
-from .bath_transform import *
-
-from .basis_Np import (
-    get_fci_basis,
-    partition_by_Sz,
-    subbasis_by_Sz,
-    get_starting_basis
-)
-
-from .ops import (
-    one_rdm, 
-    get_ham,
-    get_one_body_terms,
-    get_two_body_terms
-)
-from .gfs import *
-
-from .mf import mfscf
-from .bath_transform import *
-
-from .sci import selective_ci, hamiltonian_generator, cipsi_one_iter
-
-from .symmetries import *
-
-from .hybfit import fit, analyze_fit
+from clic.model.double_chains import double_chain_by_blocks,get_double_chain_transform_multi

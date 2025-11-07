@@ -1,6 +1,6 @@
 # gfs.py
 import numpy as np
-from . import clic_clib as cc
+from .. import clic_clib as cc
 import scipy.sparse as sp
 import numpy.linalg as npl
 from numpy.linalg import norm

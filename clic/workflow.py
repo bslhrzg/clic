@@ -3,9 +3,10 @@ from typing import Optional
 
 # High-level logic imports from the API and helpers
 from .api import create_model_from_config,GroundStateSolver, FockSpaceSolver, GreenFunctionCalculator
-from .config_models import CalculationConfig
-from . import results
-from .io_utils import *
+from clic.model.config_models import CalculationConfig
+from clic.results import results
+from clic.io_clic.io_utils import *
+from clic.results.postprocessing import StateAnalyzer
 
 
 def run_workflow(config: CalculationConfig):
@@ -49,7 +50,6 @@ def run_workflow(config: CalculationConfig):
         solver.save_result(gs_filename)
         
         # Optional: Run Analysis
-        from .postprocessing import StateAnalyzer
         print("\n--- Post-Solver Analysis ---")
         analyzer = StateAnalyzer(ground_state_result, model)
         analyzer.print_analysis()

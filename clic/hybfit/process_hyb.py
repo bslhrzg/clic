@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 
 from .hybfit import fit, analyze_fit
 from . import utils
-from .. import symmetries
-from ..io_utils import vprint
+from clic.symmetries import symmetries
+from clic.io_clic.io_utils import vprint
 
 
 def print_summary(title, H_full, mapping):

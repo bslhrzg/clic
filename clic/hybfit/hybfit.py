@@ -4,7 +4,7 @@ import numpy as np
 from . import utils
 from .hybfit_poles import HybFitPoles
 from .hybfit_cost import HybFitCost
-from ..io_utils import vprint
+from clic.io_clic.io_utils import vprint
 
 def fit(omega, delta, n_poles, method, *, 
         eta_0=None, 

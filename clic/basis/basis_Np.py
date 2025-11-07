@@ -1,9 +1,8 @@
 
 # basis_Np.py
-from . import clic_clib as cc
+from .. import clic_clib as cc
 from itertools import combinations, product
 import numpy as np
-from . import mf 
 
 def get_fci_basis(num_spatial, num_electrons):
     """

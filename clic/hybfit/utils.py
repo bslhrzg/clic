@@ -2,7 +2,7 @@
 
 import numpy as np
 import numpy.linalg as npl
-from ..io_utils import vprint
+from clic.io_clic.io_utils import vprint
 
 def load_delta_from_files(file_re, file_im, col_re=5, col_im=5):
     """

@@ -6,12 +6,19 @@ from scipy.linalg import eigh,block_diag
 import copy
 import sys 
 
-from . import bath_transform, clic_clib as cc # Import for Wavefunction, SlaterDeterminant
-from . import basis_1p, basis_Np, ops, sci, mf, gfs, plotting
-from . import io_utils
-from . import results # For type hinting
-from .config_models import CalculationConfig,ModelConfig, SolverParameters, GreenFunctionConfig, OutputConfig
-from . import create_model_from_hyb, hamiltonians
+from clic.model import bath_transform
+from . import clic_clib as cc # Import for Wavefunction, SlaterDeterminant
+from clic.basis import basis_1p, basis_Np
+from clic.ops import ops
+from clic.solve import sci
+from clic.mf import mf
+from clic.green import plotting, gfs
+from clic.io_clic import io_utils
+from clic.results import results # For type hinting
+from clic.model.config_models import CalculationConfig,ModelConfig, SolverParameters, GreenFunctionConfig, OutputConfig
+from clic.model import create_model_from_hyb, hamiltonians, double_chains
+from clic.symmetries import symmetries
+
 import h5py
 
 class Model:
@@ -54,7 +61,7 @@ class GroundStateSolver:
             return
         
         elif method == 'rhf':
-            hmf, es, Vs, rho = mf.mfscf(self.model.h0,self.model.U,self.model.Nelec)
+            hmf, es, Vs, rho = mf.mfscf(self.model.h0,self.model.U,self.model.Nelec,spinsym_only=True)
             h0,U_mat = basis_1p.basis_change_h0_U(self.model.h0,self.model.U,Vs)
             self.model.h0 = h0
             self.model.U = U_mat
@@ -89,21 +96,32 @@ class GroundStateSolver:
             # --- MULTI-ORBITAL IMPURITY CASE ---
             else: 
                 print(f"Applying multi-orbital transformation for {len(self.model.imp_indices)} impurity orbitals...")
-
-                # Create a dummy block dictionary for the spin channels
-                block_dict = {'full_spin_block': list(range(self.model.M))}
                 
                 # Define impurity indices (now expecting global SPATIAL indices)
                 imp_indices_spatial = self.model.imp_indices 
                 
-                # Create the Ne_per_block dictionary
-                Ne_per_block = {'full_spin_block': self.model.Nelec // 2}
-                
                 # Choose which transformation to run based on the method
                 if method == "dbl_chain":
-                    print("Multi-orbital double chain not yet implemented. Stopping.")
-                    # Or call the previous `perform_multi_orbital_no_transform` here if you fix it
-                    return # Stop for now
+                    
+                    # Get the mean field h to get impurity occupation not crazy
+                    hmf,_,_,rho_mf = mf.mfscf(self.model.h0,self.model.U,self.model.Nelec)
+
+                    # Double chain expects a interleaved convention
+                    hmf_ab = basis_1p.transform_h0_alphafirst_to_interleaved(hmf)
+                    rhomf_ab = basis_1p.transform_h0_alphafirst_to_interleaved(rho_mf)
+
+                    Nimp = len(self.model.imp_indices) * 2
+                    print(f"DEBUG, Nimp = {Nimp}")
+                    hdc_ab, C_ab, meta = double_chains.double_chain_by_blocks(hmf_ab,rhomf_ab,
+                                                                        Nimp,self.model.Nelec,
+                                        symmetries.analyze_symmetries, double_chains.get_double_chain_transform_multi)
+
+                    hdc = basis_1p.transform_integrals_interleaved_to_alphafirst(hdc_ab)
+                    C = basis_1p.transform_integrals_interleaved_to_alphafirst(C_ab)
+                    
+                    self.model.h0 = C.conj().T @ self.model.h0 @ C 
+                    self.transformation_matrix = C
+
                 
                 elif method == "bath_no":
                     # Call the new, simpler function
@@ -114,13 +132,13 @@ class GroundStateSolver:
                         imp_indices_spatial, # Pass the SPATIAL indices
                     )
                 
-                # Transform the U tensor using the final transformation matrix
-                _ , U_final = basis_1p.basis_change_h0_U(self.model.h0, self.model.U, C_total)
-                
-                # Update the model
-                self.model.h0 = h_final
-                self.model.U = U_final
-                self.transformation_matrix = C_total
+                    # Transform the U tensor using the final transformation matrix
+                    _ , U_final = basis_1p.basis_change_h0_U(self.model.h0, self.model.U, C_total)
+                    
+                    # Update the model
+                    self.model.h0 = h_final
+                    self.model.U = U_final
+                    self.transformation_matrix = C_total
                 
         else:
             raise NotImplementedError(f"Basis prep method '{method}' not implemented.")
@@ -651,7 +669,7 @@ def create_model_from_config(config: CalculationConfig) -> Model:
         if config.hybfit.n_target_poles > 0 :
 
             full_h0 = create_model_from_hyb.build_model_from_hyb(h_imp, omega, delta, config.hybfit)
-        
+
         else : 
             print(f"*"*42)
             print("n_target_poles = 0 --> Hubbard-I Approximation")
@@ -682,6 +700,9 @@ def create_model_from_config(config: CalculationConfig) -> Model:
         impindex = [i for i in range(halfimp)] + [i for i in range(M_total_spatial, M_total_spatial+halfimp)]
         full_U[np.ix_(impindex, impindex, impindex, impindex)] = U_imp
 
+        print("DEBUG: SAVING h0/U in api.py")
+        np.save("h0fitted.npy",full_h0)
+        np.save("U.npy",U_imp) 
         
         # --- Step 5: Determine Nelec (same logic as before) ---
         if p.Nelec is None:

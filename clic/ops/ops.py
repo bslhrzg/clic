@@ -1,5 +1,5 @@
 # ops.py
-from . import clic_clib as cc
+from .. import clic_clib as cc
 import numpy as np
 
 def one_rdm(wf,M,block=None):

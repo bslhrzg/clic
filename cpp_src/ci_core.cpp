@@ -240,6 +240,8 @@ SlaterDeterminant::SlaterDeterminant(std::size_t n_spatial,
 std::size_t            SlaterDeterminant::num_spatial_orbitals() const noexcept { return n_spatial_; }
 const SpinDeterminant& SlaterDeterminant::alpha() const noexcept { return alpha_; }
 const SpinDeterminant& SlaterDeterminant::beta () const noexcept { return beta_;  }
+SpinDeterminant& SlaterDeterminant::alpha() noexcept { return alpha_; }
+SpinDeterminant& SlaterDeterminant::beta()  noexcept { return beta_;  }
 
 std::size_t SlaterDeterminant::count_electrons() const noexcept {
     return alpha_.count_electrons() + beta_.count_electrons();
@@ -1362,3 +1364,6 @@ std::size_t std::hash<ci::SlaterDeterminant>::operator()(const ci::SlaterDetermi
     // Combine them. The way you do it is a standard technique.
     return h_alpha ^ (h_beta + 0x9e3779b97f4a7c15ULL + (h_alpha << 6) + (h_alpha >> 2));
 }
+
+
+// ---------------------------------------------------------
