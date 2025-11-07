@@ -127,10 +127,6 @@ def build_D(U: np.ndarray, threshold: float) -> Dict[Tuple[int, int], List[Tuple
     return D
 
 
-# Types
-SUType = Dict[int, Union[Iterable[int], Dict[int, Set[int]]]]
-DType  = Dict[Tuple[int, int], Iterable[Tuple[int, int]]]
-
 # Helpers for the occupied-list representation
 def _as_key(occ_list: List[int]) -> Tuple[int, ...]:
     # determinants are keyed by the sorted tuple of occupied orbitals

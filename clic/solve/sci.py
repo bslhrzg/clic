@@ -5,7 +5,9 @@ import numpy as np
 from clic.basis import basis_Np
 from clic.ops import ops
 from clic.results import results
-from scipy.sparse.linalg import eigsh 
+from scipy.sparse.linalg import eigsh
+from scipy.sparse import csr_matrix
+
 from numpy.linalg import eigh,eig
 from time import time
 from clic.io_clic.io_utils import vprint 
@@ -114,15 +116,30 @@ def selective_ci(
             # MEGA CAREFUL: THE WAY IT IS CONSTRUCTED YOU NEED 1/2 U HERE
             two_bh = ops.get_two_body_terms(0.5 * U, M, 1e-12)
 
-    def get_roots(H,nroots,dim):
-        if dim <= 64:
+    def get_roots(basis0,h0,U,nroots,method='buildH'):
+
+        if len(basis0) <= 64:
+            H = ops.get_ham(basis0, h0, U)
             evals, evecs = eigh(H.toarray())
         else:
-            evals, evecs = eigsh(H, k=nroots, which='SA')
+
+            if method == 'buildH':
+                H = ops.get_ham(basis0, h0, U)
+                #H_native = cc.build_fixed_basis_csr_full(basis0, M, h0, U,
+                #                         tol_tables=1e-12, drop_tol=0)
+
+                #H = csr_matrix((np.asarray(H_native.data),
+                #                np.asarray(H_native.indices, dtype=np.int64),
+                #                np.asarray(H_native.indptr, dtype=np.int64)),
+                #            shape=(H_native.N, H_native.N))
+                evals, evecs = eigsh(H, k=nroots, which='SA')
+            elif method == 'applyH':
+                evals,evecs = ops.diagH(basis0,h0,U,M,num_roots,vguess = 'hf', option='matvec',sh_full=None)
         indsort = np.argsort(np.real(evals))
         evals=evals[indsort]
         evecs=evecs[:,indsort]
         return evals[:nroots], evecs[:, :nroots]
+    
 
 
     thrscr = 1e-12
@@ -150,7 +167,7 @@ def selective_ci(
         #print(f"gen basis time = {t3-t2}")
         #selected_basis = selector(hwf,e0,gen_basis,2*M,h0,U)
          # PT2-guided selection
-        cipsi_thr = 0
+        cipsi_thr = 1e-8
         print(f"DEBUG, using cipsi with threshold {cipsi_thr}")
         selected_basis, Ept2, ranked = cipsi_select(ext, Hpsi_amp, e0, 2*M, h0, U,
                                             select_cutoff=cipsi_thr)
@@ -191,22 +208,19 @@ def selective_ci(
             break
 
         basis0 = sorted(list(new_basis))
+        dim = len(basis0)
 
+        applyH=False
+        t5=time()
+        if applyH :
+            evals,evecs = get_roots(basis0,h0,U,1,method='applyH')
+        else:
+            evals, evecs = get_roots(basis0,h0,U,1,method='buildH')
 
-        
-
-        # Rebuild H and solve ground state
-        #t5=time()
-        H = ops.get_ham(basis0, h0, U)
-        #t6=time()
-        #print(f"ham construction time = {t6-t5}")
-        dim = H.shape[0]
-
-        t7=time()
-        evals, evecs = get_roots(H, num_roots, dim)
         e_new = float(evals[0])
         t8=time()
-        print(f"ham diag time = {t8-t7}")
+        print(f"DEBUG: for basis size {dim}, ham diag time = {t8-t5}")
+
         psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
         #print(f"length before pruning = {len(psi0.get_basis())}")
         psi0.prune(prune_thr)
@@ -235,7 +249,7 @@ def selective_ci(
         print("num_roots > length(basis)")
         num_roots = len(basis0)
 
-    evals, evecs = get_roots(H, num_roots, len(basis0))
+    evals, evecs = get_roots(basis0,h0,U,num_roots)
     psis = [cc.Wavefunction(M, basis0, evecs[:, i], keep_zeros=True) for i in range(num_roots)]
 
     t_final = time()

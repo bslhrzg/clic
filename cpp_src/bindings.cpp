@@ -332,7 +332,137 @@ m.doc() = R"doc(
         applied to each determinant in the input wavefunction.
         )doc");
 
+    // --- fixed-basis: build fixed-basis tables ---
+    m.def("build_fixed_basis_tables",
+        [](const ScreenedHamiltonian& sh_full,
+           const std::vector<SlaterDeterminant>& basis,
+           size_t M)
+        {
+            return build_fixed_basis_tables(sh_full, basis, M);
+        },
+        py::arg("screened_full"),
+        py::arg("basis"),
+        py::arg("M"),
+        R"doc(
+        Build screening tables restricted to a fixed determinant basis.
 
+        This function takes:
+          * `screened_full`: the full screening tables (from build_screened_hamiltonian)
+          * `basis`: a list of SlaterDeterminant objects defining the fixed CI basis
+          * `M`: number of spatial orbitals
+
+        It removes all excitations involving spin-orbitals that never appear
+        in the union of occupied orbitals across the basis.
+
+        The resulting ScreenedHamiltonian is typically much smaller and allows
+        very fast application of H restricted to the fixed basis.
+        )doc"
+    );
+
+    // --- fixed-basis H application ---
+    m.def("apply_hamiltonian_fixed_basis",
+        [](const Wavefunction& psi,
+           const ScreenedHamiltonian& sh_fb,
+           const std::vector<SlaterDeterminant>& basis,
+           py::array H,
+           py::array V,
+           double tol_element)
+        {
+            return apply_hamiltonian_fixed_basis(
+                psi,
+                sh_fb,
+                basis,
+                make_H1(H),
+                make_ERI(V),
+                tol_element
+            );
+        },
+        py::arg("psi"),
+        py::arg("screened_H_fixed_basis"),
+        py::arg("basis"),
+        py::arg("H"),
+        py::arg("V"),
+        py::arg("tol_element"),
+        R"doc(
+        Apply the Hamiltonian to a wavefunction restricted to a fixed determinant basis.
+
+        Only determinants present in `basis` are ever produced, and only excitations
+        allowed by the filtered screening tables are considered.
+
+        This is the fixed-basis analogue of `apply_hamiltonian`, and should be used
+        together with `build_fixed_basis_tables`.
+        )doc"
+    );
+
+
+    // Expose FixedBasisCSR and builders
+    py::class_<ci::FixedBasisCSR>(m, "FixedBasisCSR")
+        .def_property_readonly("N", [](const ci::FixedBasisCSR& A){ return A.N; })
+        .def_property_readonly("nnz", [](const ci::FixedBasisCSR& A){ return (int64_t)A.data.size(); })
+        .def_property_readonly("indptr", [](const ci::FixedBasisCSR& A){
+            return py::array_t<int64_t>(A.indptr.size(), A.indptr.data());
+        })
+        .def_property_readonly("indices", [](const ci::FixedBasisCSR& A){
+            return py::array_t<int32_t>(A.indices.size(), A.indices.data());
+        })
+        .def_property_readonly("data", [](const ci::FixedBasisCSR& A){
+            return py::array_t<std::complex<double>>(A.data.size(), reinterpret_cast<const std::complex<double>*>(A.data.data()));
+        });
+
+    m.def("build_fixed_basis_csr",
+        [](const ci::ScreenedHamiltonian& sh_fb,
+        const std::vector<ci::SlaterDeterminant>& basis,
+        py::array H, py::array V)
+        {
+            return ci::build_fixed_basis_csr(sh_fb, basis, make_H1(H), make_ERI(V));
+        },
+        py::arg("screened_H_fixed_basis"),
+        py::arg("basis"),
+        py::arg("H"), py::arg("V"));
+
+    m.def("csr_matvec",
+        [](const ci::FixedBasisCSR& A,
+        py::array_t<std::complex<double>, py::array::c_style | py::array::forcecast> x)
+        {
+            if ((size_t)x.size() != A.N) throw std::runtime_error("x has wrong length");
+            py::array_t<std::complex<double>> y(A.N);
+            ci::csr_matvec(A,
+                reinterpret_cast<const cx*>(x.data()),
+                reinterpret_cast<cx*>(y.mutable_data()));
+            return y;
+        },
+        py::arg("A"), py::arg("x"));
+
+
+    m.def("build_fixed_basis_csr_full",
+    [](const std::vector<ci::SlaterDeterminant>& basis,
+       size_t M,
+       py::array H,
+       py::array V,
+       double tol_tables,
+       double drop_tol)
+    {
+        return ci::build_fixed_basis_csr_full(
+            basis, M, make_H1(H), make_ERI(V), tol_tables, drop_tol
+        );
+    },
+    py::arg("basis"),
+    py::arg("M"),
+    py::arg("H"),
+    py::arg("V"),
+    py::arg("tol_tables") = 1e-12,
+    py::arg("drop_tol")   = 0.0,
+    R"doc(
+    Build the projected Hamiltonian on a fixed determinant basis as a CSR matrix.
+
+    Steps:
+      1) build_screened_hamiltonian(2*M, H, V, tol_tables)
+      2) build_fixed_basis_tables(...)
+      3) build_fixed_basis_csr(...)
+
+    Returns a FixedBasisCSR with (indptr, indices, data).
+    Optionally prunes |Hij| <= drop_tol after compression.
+    )doc");
 
 
     // --- ED Tools & Hamiltonian Construction ---

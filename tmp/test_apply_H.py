@@ -1,8 +1,10 @@
 import numpy as np
 import h5py
 from itertools import combinations
-from scipy.sparse.linalg import eigsh
-from scipy.linalg import eigh
+from scipy.sparse.linalg import LinearOperator, eigsh  # or eigs if complex non-Hermitian
+from scipy.sparse import csr_matrix
+
+import time 
 
 import clic_clib as qc
 
@@ -80,7 +82,7 @@ def test_h2o_fci_energy():
     )
     
     # 3. CRITICAL: Ensure arrays are C-contiguous and have the correct dtype
-    h0_alphafirst = 0.0* np.ascontiguousarray(h0_alphafirst_raw, dtype=np.complex128)
+    h0_alphafirst = np.ascontiguousarray(h0_alphafirst_raw, dtype=np.complex128)
     U_alphafirst =  np.ascontiguousarray(U_alphafirst_raw, dtype=np.complex128)
 
 
@@ -108,7 +110,8 @@ def test_h2o_fci_energy():
 
     # Apply your new function
     # Using tol=0 ensures we don't miss any connections
-    Hhf_new = qc.apply_hamiltonian(wfhf, h0_alphafirst, U_alphafirst, 0, 0)
+    screened_H = qc.build_screened_hamiltonian(h0_alphafirst, U_alphafirst, 1e-12)
+    Hhf_new = qc.apply_hamiltonian(wfhf, screened_H, h0_alphafirst, U_alphafirst, 1e-12) # tol_element=0
     # Find the index of the HF determinant in the FCI basis
     try:
         hf_index = fci_basis.index(hf_det)
@@ -176,118 +179,56 @@ def test_h2o_fci_energy():
             print(f"  - {d}")
     
     #============================================================================
-
-    #============================================================================
-    #============================================================================
-    # Now using existing routines
-    #============================================================================
-    def get_one_body_terms(h1_matrix):
-        """Converts a dense (K,K) numpy array to a sparse list of tuples for C++."""
-        terms = []
-        M = h1_matrix.shape[0] // 2
-        for i in range(2 * M):
-            for j in range(2 * M):
-                if abs(h1_matrix[i, j]) > 0:
-                    spin_i = qc.Spin.Alpha if i < M else qc.Spin.Beta
-                    spin_j = qc.Spin.Alpha if j < M else qc.Spin.Beta
-                    orb_i = i if i < M else i - M
-                    orb_j = j if j < M else j - M
-                    terms.append((orb_i, orb_j, spin_i, spin_j, complex(h1_matrix[i, j])))
-        return terms
-
-    def get_two_body_terms(v2_tensor):
-        """Converts a dense (K,K,K,K) numpy array to a sparse list of tuples for C++."""
-        terms = []
-        M = v2_tensor.shape[0] // 2
-        for i in range(2 * M):
-            for j in range(2 * M):
-                for k in range(2 * M):
-                    for l in range(2 * M):
-                        if abs(v2_tensor[i, j, k, l]) > 0:
-                            spins = [qc.Spin.Alpha if idx < M else qc.Spin.Beta for idx in [i, j, k, l]]
-                            orbs = [idx if idx < M else idx - M for idx in [i, j, k, l]]
-                            terms.append((orbs[0], orbs[1], orbs[2], orbs[3],
-                spins[0], spins[1], spins[2], spins[3],
-                complex(v2_tensor[i, j, k, l])))
-        return terms
+    # TESTING IN FIXED BASIS 
     
-    one_body_terms = get_one_body_terms(h0_alphafirst)
-    two_body_terms = get_two_body_terms(0.5 * U_alphafirst)
+    print(f"len(fci basis) = {len(fci_basis)}")
+    randint = np.random.choice(len(fci_basis),200,replace=False)
+    #basis = [fci_basis[i] for i in randint]
+    basis = fci_basis
 
+    # 1) Build tables once
+    sh_full = qc.build_screened_hamiltonian(h0_alphafirst, U_alphafirst, 1e-12)
+    sh_fb   = qc.build_fixed_basis_tables(sh_full, basis, M)
 
-    # The HF state is | up, up, down, down > = | a0, a1, b0, b1 >
-    hf_det = qc.SlaterDeterminant(M, list(range(Ne//2)), list(range(Ne//2)))
-    wfhf = qc.Wavefunction(M, [hf_det], [1.0])
-
-    # Apply your new function
-    # Using tol=0 ensures we don't miss any connections
-    Hhf_new = qc.apply_one_body_operator(wfhf,one_body_terms) + qc.apply_two_body_operator(wfhf,two_body_terms)
-    print(f"len gen = {len(Hhf_new.get_basis())}")
-
-    # Find the index of the HF determinant in the FCI basis
-    try:
-        hf_index = fci_basis.index(hf_det)
-    except ValueError:
-        print("Error: HF determinant not found in FCI basis.")
-        exit()
-
-    # The reference vector is the column of H corresponding to the HF state
-    hf_column_ref = Hfci[:, hf_index]
-
-    print("\n--- Comparing H|HF> results ---")
-    print(f"{'Determinant':<45s} {'Reference':>15s} {'Calculated':>15s} {'abs. diff':>15s} {'Status'}")
-    print("-" * 85)
-
-    n_mismatch = 0
-    tol = 1e-9
-
-    # Iterate through the entire FCI space to check all possible connections
-    for i, det_i in enumerate(fci_basis):
-        cref = hf_column_ref[i]
-        if np.abs(cref) > 1e-12:
+    def diagH(basis,h0,U,M,num_roots,vguess = 'hf', option='matvec',sh_full=None):
         
-            # Get the calculated amplitude using your bound function
-            amp_new = Hhf_new.amplitude(det_i)
+        if sh_full is None:
+            sh_full = qc.build_screened_hamiltonian(h0, U, 1e-12)
+        
+        sh_fb   = qc.build_fixed_basis_tables(sh_full, basis, M)
 
-            # Check for discrepancies
-            is_zero_ref = abs(cref) < tol
-            is_zero_new = abs(amp_new) < tol
-            
-            status = ""
-            # Only print entries that should be non-zero or where there's a mismatch
-            if not is_zero_ref or not is_zero_new:
-                if is_zero_ref and not is_zero_new:
-                    status = "!! SPURIOUS !!" # New function created a connection that shouldn't exist
-                    n_mismatch += 1
-                elif not is_zero_ref and is_zero_new:
-                    status = "!! MISSING !!"  # New function missed a connection
-                    n_mismatch += 1
-                elif abs(cref - amp_new) > tol:
-                    status = "!! WRONG VALUE !!" # Value/sign mismatch
-                    n_mismatch += 1
-                else:
-                    status = "OK"
+        
+        A_csr_native = qc.build_fixed_basis_csr(sh_fb, basis, h0, U)
 
-                print(f"{str(det_i):<45s} {cref:15.8f} {amp_new:15.8f} {np.abs(cref-amp_new)} {status}")
+        if option == 'native':
+            A = csr_matrix((np.asarray(A_csr_native.data),
+                            np.asarray(A_csr_native.indices, dtype=np.int64),
+                            np.asarray(A_csr_native.indptr, dtype=np.int64)),
+                        shape=(A_csr_native.N, A_csr_native.N))
 
-    print("-" * 85)
-    if n_mismatch == 0:
-        print("SUCCESS: All calculated matrix elements match the reference.")
-    else:
-        print(f"FAILURE: Found {n_mismatch} mismatched matrix elements.")
+        if option == 'matvec':
+            def matvec(x):
+                return qc.csr_matvec(A_csr_native, np.asarray(x, dtype=np.complex128))
+            A = LinearOperator((A_csr_native.N, A_csr_native.N), matvec=matvec, dtype=np.complex128)
 
-    # Additionally, let's check for any determinants generated that are NOT in the FCI space (should be none)
-    fci_basis_set = set(fci_basis)
-    spurious_dets_outside_fci = []
-    for det_new in Hhf_new.get_basis():
-        if det_new not in fci_basis_set:
-            spurious_dets_outside_fci.append(det_new)
+        if vguess is not None:
+            if vguess == 'hf':
+                idx_hf = basis.index(hf_det)  # ensure hf_det is exactly the same object/value as in basis
+                v0 = np.zeros(len(basis), dtype=A.dtype)
+                v0[idx_hf] = 1.0
 
-    if spurious_dets_outside_fci:
-        print("\n!! CRITICAL ERROR: Generated determinants outside the FCI space:")
-        for d in spurious_dets_outside_fci:
-            print(f"  - {d}")
+                evals, evecs = eigsh(A, k=num_roots, which="SA", v0=v0, ncv=min(2*num_roots+1, len(basis)))
+        else:
+            evals, evecs = eigsh(A, k=num_roots, which="SA", ncv=min(2*num_roots+1, len(basis)))
+
+        return evals,evecs
     
+    evals,evecs = diagH(basis,h0_alphafirst,U_alphafirst,M,2,option ='matvec')
+    print(evals)
+    #Hbasis = (H_sparse.toarray())#[np.ix_(randint,randint)]
+    #eb,vb = np.linalg.eigh(Hbasis)
+    #print(eb[:6])
+
     #============================================================================
 
 
