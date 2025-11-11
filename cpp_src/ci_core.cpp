@@ -376,7 +376,6 @@ SlaterDeterminant deinterleave(const Determinant& d, SpinOrbitalOrder order)
 }
 
 // ======================= SlaterDeterminant Fast Operators =======================
-// This section implements suggestion (B)
 
 // Helper to calculate sign for a single creation or annihilation on a SpinDeterminant
 // Returns false if Pauli-blocked.
@@ -1227,7 +1226,6 @@ get_connections_one_body(const std::vector<SlaterDeterminant>& basis,
     return connected_dets;
 }
 
-// Requires: #include <omp.h>
 
 std::vector<SlaterDeterminant>
 get_connections_two_body(const std::vector<SlaterDeterminant>& basis,
@@ -1330,6 +1328,7 @@ get_connections_two_body(const std::vector<SlaterDeterminant>& basis,
 namespace {
 inline std::size_t hash_mix_u64(std::size_t seed, ci::u64 v) noexcept {
     // splitmix64-ish mix, then combine
+    // avalanche effet
     v ^= v >> 30; v *= 0xbf58476d1ce4e5b9ULL;
     v ^= v >> 27; v *= 0x94d049bb133111ebULL;
     v ^= v >> 31;

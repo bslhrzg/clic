@@ -1,8 +1,7 @@
 # ops.py
 from .. import clic_clib as cc
 import numpy as np
-from scipy.sparse.linalg import LinearOperator, eigsh  # or eigs if complex non-Hermitian
-from scipy.sparse import csr_matrix
+
 
 def one_rdm(wf,M,block=None):
     """ 
@@ -58,31 +57,7 @@ def get_ham(basis,h0,U,method="openmp"):
         assert 1==2
     return H 
 
-def diagH(basis,h0,U,M,num_roots,vguess = 'hf', option='matvec',sh_full=None):
-    
-    if sh_full is None:
-        sh_full = cc.build_screened_hamiltonian(h0, U, 1e-10)
-    
-    sh_fb   = cc.build_fixed_basis_tables(sh_full, basis, M)
 
-    
-    A_csr_native = cc.build_fixed_basis_csr(sh_fb, basis, h0, U)
-
-    if option == 'native':
-        A = csr_matrix((np.asarray(A_csr_native.data),
-                        np.asarray(A_csr_native.indices, dtype=np.int64),
-                        np.asarray(A_csr_native.indptr, dtype=np.int64)),
-                    shape=(A_csr_native.N, A_csr_native.N))
-
-    if option == 'matvec':
-        def matvec(x):
-            return cc.csr_matvec(A_csr_native, np.asarray(x, dtype=np.complex128))
-        A = LinearOperator((A_csr_native.N, A_csr_native.N), matvec=matvec, dtype=np.complex128)
-
-   
-    evals, evecs = eigsh(A, k=num_roots, which="SA", ncv=min(2*num_roots+1, len(basis)))
-
-    return evals,evecs
 
 def get_one_body_terms(h0, M, thr=1e-12):
     """

@@ -95,5 +95,6 @@ FixedBasisCSR build_fixed_basis_csr_full(
     const ERIView& V,
     double tol_tables,
     double drop_tol = 0.0);
+    
 
 } // namespace ci

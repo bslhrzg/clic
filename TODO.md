@@ -5,6 +5,8 @@
 - ~~apply_H must be refactored~~
 - sci build basis from gs, instead of from num_roots, so for Ne odd, i miss a doublet
 - revoir gfs module, trop lent
+- revoir TGS analysis, trop lent 
+
 
 # Organization 
 

@@ -57,4 +57,33 @@ CSR build_hamiltonian_mpi(const std::vector<SlaterDeterminant>& basis,
                           double tol = 1e-16);
 #endif
 
+
+// y = H @ x over a fixed CI basis, with all structure cached once
+class FixedBasisMatvec {
+public:
+    using cx = std::complex<double>;
+
+    FixedBasisMatvec(const std::vector<SlaterDeterminant>& basis,
+                     const H1View& H, const ERIView& V,
+                     bool enable_magnetic, double tol);
+
+    // y and x must have length size()
+    void apply(const cx* x, cx* y) const;
+
+    std::size_t size() const { return N_; }
+
+private:
+    // sizes and views
+    std::size_t N_{0};
+    std::size_t M_{0};
+    H1View H_;
+    ERIView V_;
+
+    // cached per row
+    std::vector<Determinant> D_;                // combined determinants Di for all rows
+    std::vector<cx>          Hii_;              // diagonal elements
+    std::vector<std::vector<int32_t>> cols_;    // neighbor column indices, deduped, no diagonal
+};
+
+
 } // namespace ci

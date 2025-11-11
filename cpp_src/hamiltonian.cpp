@@ -650,4 +650,143 @@ CSR build_hamiltonian_naive(const std::vector<SlaterDeterminant>& basis,
     return coo_to_csr(N, N, std::move(all));
 }
 
+// 
+namespace {
+template<class Vec>
+inline void dedup_sorted(Vec& v) {
+    std::sort(v.begin(), v.end());
+    v.erase(std::unique(v.begin(), v.end()), v.end());
+}
+} // namespace
+
+FixedBasisMatvec::FixedBasisMatvec(const std::vector<SlaterDeterminant>& basis,
+                                   const H1View& H, const ERIView& V,
+                                   bool enable_magnetic, double tol)
+: H_(H), V_(V)
+{
+    N_ = basis.size();
+    if (N_ == 0) return;
+    M_ = basis[0].num_spatial_orbitals();
+
+    // build connection structures once
+    auto [Ia, Ib] = unique_alpha_beta(basis);
+    Connections Ca = Caa(Ia, enable_magnetic);
+    Connections Cb = Caa(Ib, enable_magnetic);
+    BasisIndex BI  = make_basis_index(basis);
+
+    D_.resize(N_);
+    Hii_.resize(N_);
+    cols_.resize(N_);
+
+    // cache combined determinants and diagonals
+    #pragma omp parallel for schedule(static)
+    for (ptrdiff_t i = 0; i < (ptrdiff_t)N_; ++i) {
+        D_[i] = combined_from(basis[(std::size_t)i]);
+        std::vector<int> occK;
+        occ_list_alpha_beta(basis[(std::size_t)i], occK);
+        Hii_[i] = OO(H_, V_, occK);
+    }
+
+    // helper to push neighbors produced by swapping alpha or beta part
+    auto push_from_parts = [&](const SpinDeterminant& A,
+                               const SpinDeterminant& B,
+                               const std::vector<SpinDeterminant>& setA,
+                               std::vector<int32_t>& nbrs)
+    {
+        for (const auto& dA : setA) {
+            Determinant ND(2 * M_);
+            for (auto it = dA.begin_occ(); it != dA.end_occ(); ++it) ND.set((std::size_t)(*it));
+            for (auto it = B.begin_occ();  it != B.end_occ();  ++it) ND.set((std::size_t)(M_ + *it));
+            auto jt = BI.map.find(ND);
+            if (jt != BI.map.end()) nbrs.push_back((int32_t)jt->second);
+        }
+    };
+
+    // build per-row neighbor lists, deduped, without diagonal
+    #pragma omp parallel for schedule(dynamic)
+    for (ptrdiff_t irow = 0; irow < (ptrdiff_t)N_; ++irow) {
+        const SlaterDeterminant& S = basis[(std::size_t)irow];
+        const SpinDeterminant& Sa = S.alpha();
+        const SpinDeterminant& Sb = S.beta();
+
+        std::vector<int32_t> nbrs;
+        nbrs.reserve(64);
+
+        if (auto it = Ca.Cs.find(Sa); it != Ca.Cs.end()) push_from_parts(Sa, Sb, it->second, nbrs);
+        if (auto it = Ca.Cd.find(Sa); it != Ca.Cd.end()) push_from_parts(Sa, Sb, it->second, nbrs);
+        if (auto it = Cb.Cs.find(Sb); it != Cb.Cs.end()) push_from_parts(Sb, Sa, it->second, nbrs);
+        if (auto it = Cb.Cd.find(Sb); it != Cb.Cd.end()) push_from_parts(Sb, Sa, it->second, nbrs);
+
+        // double = single alpha + single beta
+        if (auto ita = Ca.Cs.find(Sa); ita != Ca.Cs.end()) {
+            if (auto itb = Cb.Cs.find(Sb); itb != Cb.Cs.end()) {
+                for (const auto& dA : ita->second) {
+                    for (const auto& dB : itb->second) {
+                        Determinant ND(2 * M_);
+                        for (auto it = dA.begin_occ(); it != dA.end_occ(); ++it) ND.set((std::size_t)(*it));
+                        for (auto it = dB.begin_occ(); it != dB.end_occ(); ++it) ND.set((std::size_t)(M_ + *it));
+                        auto jt = BI.map.find(ND);
+                        if (jt != BI.map.end()) nbrs.push_back((int32_t)jt->second);
+                    }
+                }
+            }
+        }
+
+        // magnetic interactions if any
+        if (enable_magnetic) {
+            if (auto itMa = Ca.Cmag.find(Sa); itMa != Ca.Cmag.end()) {
+                if (auto itMb = Cb.Cmag.find(Sb); itMb != Cb.Cmag.end()) {
+                    for (const auto& dA : itMa->second) {
+                        for (const auto& dB : itMb->second) {
+                            Determinant ND(2 * M_);
+                            for (auto it = dA.begin_occ(); it != dA.end_occ(); ++it) ND.set((std::size_t)(*it));
+                            for (auto it = dB.begin_occ(); it != dB.end_occ(); ++it) ND.set((std::size_t)(M_ + *it));
+                            auto jt = BI.map.find(ND);
+                            if (jt != BI.map.end()) {
+                                // optional Hamming distance guard is already ensured by builder,
+                                // add here if your Cmag can produce singles
+                                nbrs.push_back((int32_t)jt->second);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // drop diagonal, then dedup
+        nbrs.push_back((int32_t)irow);
+        dedup_sorted(nbrs);
+        if (!nbrs.empty() && nbrs.front() == (int32_t)irow) nbrs.erase(nbrs.begin());
+
+        cols_[(std::size_t)irow] = std::move(nbrs);
+    }
+}
+
+void FixedBasisMatvec::apply(const cx* x, cx* y) const
+{
+    if (N_ == 0) return;
+
+    #pragma omp parallel for schedule(static)
+    for (ptrdiff_t i = 0; i < (ptrdiff_t)N_; ++i) y[(std::size_t)i] = cx(0.0, 0.0);
+
+    const auto& H = H_;
+    const auto& V = V_;
+
+    #pragma omp parallel for schedule(static)
+    for (ptrdiff_t irow = 0; irow < (ptrdiff_t)N_; ++irow) {
+        cx acc = Hii_[(std::size_t)irow] * x[(std::size_t)irow];
+
+        const Determinant& Di = D_[(std::size_t)irow];
+        const auto& nbrs = cols_[(std::size_t)irow];
+
+        for (int32_t jj : nbrs) {
+            // Dj is just the combined det of the neighbor basis det, which we cached
+            const Determinant& Dj = D_[(std::size_t)jj];
+            cx hij = KL(Di, Dj, H, V);
+            if (std::abs(hij) != 0.0) acc += hij * x[(std::size_t)jj];
+        }
+        y[(std::size_t)irow] = acc;
+    }
+}
+
 } // namespace ci

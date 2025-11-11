@@ -1,11 +1,22 @@
 # sci.py
-from . import clic_clib as cc
+from .. import clic_clib as cc
 from itertools import combinations
 import numpy as np
-from . import basis_Np,hamiltonians,ops,results,basis_1p
-from scipy.sparse.linalg import eigsh 
+from clic.basis import basis_Np
+from clic.ops import ops
+from clic.results import results
+from scipy.sparse.linalg import eigsh
+from scipy.sparse import csr_matrix
+
 from numpy.linalg import eigh,eig
 from time import time
+from clic.io_clic.io_utils import vprint 
+from .davidson import davidson 
+from .diagh import diagH
+
+applyH=False
+dodavidson=False
+
 
 def selective_ci(
     h0, U, C,
@@ -16,12 +27,12 @@ def selective_ci(
     num_roots=1,
     one_bh=None,
     two_bh=None,
-    max_iter=5,
+    max_iter=0,
     conv_tol=1e-6,
     prune_thr=1e-6,
     Nmul = None,
-    min_size=512,
-    max_size=5e4,
+    min_size=513,
+    max_size=1e5,
     verbose=True,
 ):
     """
@@ -106,20 +117,53 @@ def selective_ci(
     if generator == hamiltonian_generator:
         # Precompute operator terms once
         if one_bh == None:
-            one_bh = ops.get_one_body_terms(h0, M)
+            one_bh = ops.get_one_body_terms(h0, M, 1e-12)
         if two_bh == None:
-            two_bh = ops.get_two_body_terms(U, M)
+            # MEGA CAREFUL: THE WAY IT IS CONSTRUCTED YOU NEED 1/2 U HERE
+            two_bh = ops.get_two_body_terms(0.5 * U, M, 1e-12)
 
-    def get_roots(H,nroots,dim):
-        if dim <= 64:
+    def get_roots(basis0,h0,U,nroots,method='buildH'):
+
+        print(f"DEBUG: Entering get_roots with method = {method}")
+
+        if len(basis0) <= 64:
+            H = ops.get_ham(basis0, h0, U)
             evals, evecs = eigh(H.toarray())
         else:
-            evals, evecs = eigsh(H, k=nroots, which='SA')
+
+            if method == 'buildH':
+                H = ops.get_ham(basis0, h0, U)
+                #H_native = cc.build_fixed_basis_csr_full(basis0, M, h0, U,
+                #                         tol_tables=1e-12, drop_tol=0)
+
+                #H = csr_matrix((np.asarray(H_native.data),
+                #                np.asarray(H_native.indices, dtype=np.int64),
+                #                np.asarray(H_native.indptr, dtype=np.int64)),
+                #            shape=(H_native.N, H_native.N))
+                evals, evecs = eigsh(H, k=nroots, which='SA')
+            elif method == 'davidson_memory':
+                H = ops.get_ham(basis0, h0, U)
+                evals,evecs = davidson(
+                                    H,
+                                    num_roots=nroots,
+                                    max_subspace=128,
+                                    tol=1e-10,
+                                    diag=None,
+                                    block_size=16,
+                                    verbose=False
+                                )
+            elif method == 'applyH':
+                print("DEBUG here in get_roots")
+                evals,evecs = diagH(basis0,h0,U,M,num_roots,vguess = 'hf', option='csr',sh_full=None)
         indsort = np.argsort(np.real(evals))
         evals=evals[indsort]
         evecs=evecs[:,indsort]
         return evals[:nroots], evecs[:, :nroots]
+    
 
+
+    thrscr = 1e-17
+    screened_H = cc.build_screened_hamiltonian(h0, U, thrscr)
 
 
     # Main selection loop
@@ -133,21 +177,20 @@ def selective_ci(
 
         current_size = len(basis0)
 
-        #t2=time()
+        t2=time()
         #gen_basis,hwf = generator(psi0,one_bh,two_bh,thr=prune_thr,return_hwf=True)
         # generate externals and couplings without normalization or pruning
-        ext, Hpsi_amp = hamiltonian_generator_raw(psi0, one_bh, two_bh)
-
-       
-        #t3=time()
-        #print(f"gen basis time = {t3-t2}")
+        ext, Hpsi_amp = hamiltonian_generator_raw(psi0, one_bh, two_bh, screened_H, h0, U)
+        t3=time()
+        print(f"gen basis time = {t3-t2}")
         #selected_basis = selector(hwf,e0,gen_basis,2*M,h0,U)
          # PT2-guided selection
-        cipsi_thr = 1e-8
+        cipsi_thr = 1e-12
+        print(f"DEBUG, using cipsi with threshold {cipsi_thr}")
         selected_basis, Ept2, ranked = cipsi_select(ext, Hpsi_amp, e0, 2*M, h0, U,
                                             select_cutoff=cipsi_thr)
-        #t4=time()
-        #print(f"sel basis time = {t4-t3}")
+        t4=time()
+        print(f"sel basis time = {t4-t3}")
 
 
         # --- Determine how many new determinants to keep based on size constraints ---
@@ -183,22 +226,22 @@ def selective_ci(
             break
 
         basis0 = sorted(list(new_basis))
-
+        dim = len(basis0)
 
         
+        t5=time()
+        if applyH :
+            evals,evecs = get_roots(basis0,h0,U,1,method='applyH')
+        else:
+            if dodavidson:
+                evals, evecs = get_roots(basis0,h0,U,1,method='davidson_memory')
+            else:
+                evals, evecs = get_roots(basis0,h0,U,1,method='buildH')
 
-        # Rebuild H and solve ground state
-        #t5=time()
-        H = ops.get_ham(basis0, h0, U)
-        #t6=time()
-        #print(f"ham construction time = {t6-t5}")
-        dim = H.shape[0]
-
-        #t7=time()
-        evals, evecs = get_roots(H, num_roots, dim)
         e_new = float(evals[0])
-        #t8=time()
-        #print(f"ham diag time = {t8-t7}")
+        t8=time()
+        print(f"DEBUG: for basis size {dim}, ham diag time = {t8-t5}")
+
         psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
         #print(f"length before pruning = {len(psi0.get_basis())}")
         psi0.prune(prune_thr)
@@ -227,7 +270,7 @@ def selective_ci(
         print("num_roots > length(basis)")
         num_roots = len(basis0)
 
-    evals, evecs = get_roots(H, num_roots, len(basis0))
+    evals, evecs = get_roots(basis0,h0,U,num_roots)
     psis = [cc.Wavefunction(M, basis0, evecs[:, i], keep_zeros=True) for i in range(num_roots)]
 
     t_final = time()
@@ -251,8 +294,15 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=0,verbose=True):
     basis, idxs0 = basis_Np.subbasis_by_Sz(basis, Sz)  # S_z = 0 sector
     print(f"fci basis size = {len(basis)}")
 
+    t0 = time()
     H_sparse = ops.get_ham(basis,h0,U,method="openmp")
+    t1 = time()
+    vprint(1,f"time to construct H : {t1-t0}")
+    
     eigvals, eigvecs = eigsh(H_sparse, k=num_roots, which='SA')
+    t2 = time()
+    vprint(1,f"time to diagonalize H : {t2-t1}")
+    
     indsort = np.argsort(np.real(eigvals))
     eigvals=eigvals[indsort]
     eigvecs=eigvecs[:,indsort]
@@ -306,20 +356,31 @@ def hamiltonian_generator(wf,one_body_terms,two_body_terms,thr=1e-6,return_hwf=T
     else:
         print("hamiltonian generator with return_hwf not implemented yet")
 
-def hamiltonian_generator_raw(wf, one_body_terms, two_body_terms):
+def hamiltonian_generator_raw(wf, one_body_terms, two_body_terms, screened_H = None, h0=None,U=None):
     """
     Expand only by determinants directly connected to |psi> through H.
     Return:
       ext_dets: list of external determinants D_a not already in wf
       Hpsi_amp: dict mapping D_a -> <D_a|H|psi>  (unnormalized)
     """
+    t0 = time()
+
     # Build H|psi> WITHOUT normalization or pruning
-    Hpsi = cc.apply_one_body_operator(wf, one_body_terms)
-    Hpsi += cc.apply_two_body_operator(wf, two_body_terms)
+    #Hpsi = cc.apply_one_body_operator(wf, one_body_terms)
+    #Hpsi += cc.apply_two_body_operator(wf, two_body_terms)
+
+    thr = 1e-12  # Use a small threshold for screening
+
+    # Apply the Hamiltonian using the new C++ function
+    #print("Applying Hamiltonian to HF state with new C++ kernel...")
+    Hpsi = cc.apply_hamiltonian(wf, screened_H, h0, U, thr) # tol_element=0
+    t1 = time()
+    print(f"apply_ham time = {t1-t0}")
 
     # Extract amplitudes on determinants not in the current wf support
     cur_basis = set(wf.get_basis())
     Hpsi_basis = Hpsi.get_basis()
+    print(f"DEBUG: len new basis = {len(Hpsi_basis)}")
 
     ext_dets = []
     Hpsi_amp = {}
@@ -407,10 +468,10 @@ def cipsi_select(ext_dets, Hpsi_amp, E_var, K, h0, U, select_cutoff=1e-6,
     #print((contrib[1:10]))
     #contrib = np.sort(contrib)[::-1]
 
-    #if max_to_add is not None:
-    #    chosen = [a for a, de2 in contrib[:max_to_add]]
-    #else:
-    chosen = [a for a, de2 in contrib if abs(de2) > select_cutoff]
+    if max_to_add is not None:
+        chosen = [a for a, de2 in contrib[:max_to_add]]
+    else:
+        chosen = [a for a, de2 in contrib if abs(de2) > select_cutoff]
 
     return chosen, Ept2_total, contrib
 

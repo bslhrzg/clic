@@ -199,7 +199,7 @@ def test_h2o_fci_energy():
 
         
         A_csr_native = qc.build_fixed_basis_csr(sh_fb, basis, h0, U)
-
+ 
         if option == 'native':
             A = csr_matrix((np.asarray(A_csr_native.data),
                             np.asarray(A_csr_native.indices, dtype=np.int64),

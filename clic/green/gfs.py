@@ -668,6 +668,7 @@ def green_function_from_time_propagation(
     wf_rem_i = cc.apply_annihilation(psi0_wf, oi, si)
 
     # Build determinant bases for N+1 and N-1 sectors by H-expansion
+    print(f"DEBUG: coeff_thress in green : {coeff_thresh} NappH = {NappH}")
     basis_add = build_sector_basis_from_seeds(
         [wf_add_j] if have_add else [], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
     )
@@ -675,9 +676,13 @@ def green_function_from_time_propagation(
         [wf_rem_j] if have_rem else [], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
     )
 
+    print(f"DEBUG: rem size : {len(basis_rem)}, add size : {len(basis_add)}")
+
     # Build restricted Hamiltonians
     H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if have_add and len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
     H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if have_rem and len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
+
+    print(f"DEBUG: Hamiltonian computed")
 
     # Shift by ground state energy e0 so the ground state is stationary
     if H_add.shape[0] > 0:

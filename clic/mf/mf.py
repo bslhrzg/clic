@@ -480,6 +480,9 @@ def mfscf(h0_0, U_0, Ne, maxiter=100, alpha=0.2, threshold=1e-7, spinsym_only=Fa
     Symmetry-aware mean-field self-consistent field (MF-SCF) loop.
     This version now returns eigenvectors and eigenvalues in a spin-blocked
     (AlphaFirst) convention, even when degeneracies are present.
+
+    spinsym_only: Bool
+        If True, use a spin only symmetry block structure (this is regular Restricted Hartree-Fock)
     """
     
     print_subheader("Mean-Field Self-Consistent Procedure with block handling")

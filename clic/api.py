@@ -62,6 +62,7 @@ class GroundStateSolver:
         
         elif method == 'rhf':
             hmf, es, Vs, rho = mf.mfscf(self.model.h0,self.model.U,self.model.Nelec,spinsym_only=True)
+            #hmf, es, Vs, rho = mf.mfscf_(self.model.h0,self.model.U,self.model.Nelec)
             h0,U_mat = basis_1p.basis_change_h0_U(self.model.h0,self.model.U,Vs)
             self.model.h0 = h0
             self.model.U = U_mat
@@ -159,7 +160,7 @@ class GroundStateSolver:
             Nelec=self.model.Nelec,
             seed=seed,  # Use the provided seed
             generator=sci.hamiltonian_generator, 
-            selector=sci.cipsi_one_iter,
+            selector=sci.cipsi_select,
             num_roots=num_roots,
             max_iter=max_iter, 
             conv_tol=ci_settings.conv_tol,

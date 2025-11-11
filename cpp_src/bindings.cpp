@@ -465,6 +465,36 @@ m.doc() = R"doc(
     )doc");
 
 
+    // Matvec build openmp:
+    py::class_<ci::FixedBasisMatvec>(m, "FixedBasisMatvec")
+        .def(py::init([](const std::vector<ci::SlaterDeterminant>& basis,
+                      py::array H, py::array V,
+                      bool enable_magnetic, double tol) {
+                auto H1  = make_H1(H);
+                auto ERI = make_ERI(V);
+                return ci::FixedBasisMatvec(basis, H1, ERI, enable_magnetic, tol);
+            }),
+            py::arg("basis"), py::arg("H"), py::arg("V"),
+            py::arg("enable_magnetic") = false, py::arg("tol") = 0.0,
+            py::keep_alive<1, 2>(),   // Hop keeps H alive
+            py::keep_alive<1, 3>())   // keep V alive
+        .def("size", &ci::FixedBasisMatvec::size)
+        .def("apply",
+             [](const ci::FixedBasisMatvec& op,
+                py::array_t<std::complex<double>,
+                            py::array::c_style | py::array::forcecast> x) {
+                 if ((std::size_t)x.size() != op.size())
+                     throw std::runtime_error("x has wrong length");
+                 py::array_t<std::complex<double>> y(op.size());
+                 {
+                     py::gil_scoped_release nogil;
+                     op.apply(reinterpret_cast<const std::complex<double>*>(x.data()),
+                              reinterpret_cast<std::complex<double>*>(y.mutable_data()));
+                 }
+                 return y;
+             });
+
+
     // --- ED Tools & Hamiltonian Construction ---
     m.def("get_annihilation_operator", &get_annihilation_operator_py,
           py::arg("num_spin_orbitals"), py::arg("orbital_index_1based"));
