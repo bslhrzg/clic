@@ -7,7 +7,7 @@ import copy
 import sys 
 
 from clic.model import bath_transform
-from . import clic_clib as cc # Import for Wavefunction, SlaterDeterminant
+import clic_clib as cc # Import for Wavefunction, SlaterDeterminant
 from clic.basis import basis_1p, basis_Np
 from clic.ops import ops
 from clic.solve import sci
@@ -429,7 +429,7 @@ class FockSpaceSolver:
         return final_subspaces
 
 
-    def solve(self, initial_temperature: float = 300.0) -> results.ThermalGroundState:
+    def solve(self, initial_temperature: float = 5.0) -> results.ThermalGroundState:
         """
         Runs the full workflow for each Nelec and returns a combined result.
         If nelec_setting is 'auto', it finds the optimal Nelec first.

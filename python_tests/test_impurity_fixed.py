@@ -3,7 +3,7 @@ from scipy.sparse.linalg import eigsh
 import time
 import matplotlib.pyplot as plt
 from clic import * 
-
+from clic_clib import *
 
 
 def get_scalar_lanczos_wf(H_op, v_init, L):

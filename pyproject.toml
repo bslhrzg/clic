@@ -1,6 +1,6 @@
 [build-system]
-requires = ["scikit-build-core>=0.7.0", "pybind11"]
-build-backend = "scikit_build_core.build"
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "clic"
@@ -11,32 +11,27 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Basile Herzog", email = "basile.herzog@gmail.com" }]
 
-[tool.setuptools.packages.find]
-where = ["."]  # Look for packages in the current directory
-include = ["clic*"] # Find the package named 'clic' and its sub-packages
-
+# MOVED THIS SECTION UP
 dependencies = [
     "numpy",
     "scipy",
     "pydantic",
     "tomli; python_version < '3.11'",
+    "clic-clib",
 ]
 
+# MOVED THIS SECTION UP
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: C++",
+    "Programming Language :: C++", # You can probably remove this line now
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 
-
 [project.scripts]
 clic-run = "clic.scripts.run:main"
 
-
-[tool.scikit-build]
-# This tells scikit-build where your CMakeLists.txt is relative to this file.
-cmake.source-dir = "."
-# This tells scikit-build where to put the compiled .so file.
-# It will place clic_clib.so inside the clic/ directory.
-wheel.packages = ["clic"]
+# This table now comes AFTER all the [project] keys are defined.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["clic*"]

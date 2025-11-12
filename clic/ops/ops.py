@@ -1,6 +1,8 @@
 # ops.py
-from .. import clic_clib as cc
+import clic_clib as cc
 import numpy as np
+from time import time
+from scipy.sparse import csr_matrix
 
 
 def one_rdm(wf,M,block=None):
@@ -51,7 +53,10 @@ def get_ham(basis,h0,U,method="openmp"):
     U = np.ascontiguousarray(U, dtype=np.complex128)
 
     if method == "openmp":
+        t0 = time()
         H = cc.build_hamiltonian_openmp(basis, h0, U)
+        t1 = time()
+        print(f"DEBUG: build ham time = {t1-t0}")
     else : 
         print("method not implemented yet")
         assert 1==2
@@ -176,13 +181,13 @@ def expect_S2(wf, M, block=None):
     if block is None:
         block = list(range(2*M))
     Sz = expect_Sz(wf, M, block)
-    phi = apply_Sz(wf, M, block)
-    Sz2 = np.real(phi.dot(phi))
+    #phi = apply_Sz(wf, M, block)
+    #Sz2 = np.real(phi.dot(phi))
     # ladder pieces
-    SpSm = expect_Splus_Sminus(wf, M)
-    SmSp = expect_Sminus_Splus(wf, M)
-    S2 = Sz2 + 0.5*(SpSm + SmSp)
-    return S2, Sz
+    #SpSm = expect_Splus_Sminus(wf, M)
+    #SmSp = expect_Sminus_Splus(wf, M)
+    #S2 = Sz2 + 0.5*(SpSm + SmSp)
+    return None, Sz
 
 
 

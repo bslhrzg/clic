@@ -1,5 +1,5 @@
 # sci.py
-from .. import clic_clib as cc
+import clic_clib as cc
 from itertools import combinations
 import numpy as np
 from clic.basis import basis_Np
@@ -94,22 +94,22 @@ def selective_ci(
     Note: called with generator=cipsi_one_iter, max_iter=5, Nmul=None, this is CISD
     """
 
-    hfdet10 = basis_Np.get_rhf_determinant(10, M)[0]
-    occhf10 = hfdet10.get_occupied_spin_orbitals()
-    Ehf10 = cc.KL(occhf10, occhf10, 2*M, h0, U)     
-    S__ = basis_Np.get_rhf_determinant(10, M)[0]
-    print("S__ = ",S__)
-    S_ = cc.SlaterDeterminant.annihilate(S__, i0=0, spin=cc.Spin.Beta).det
-    print("S_ = ",S_)
-    S = cc.SlaterDeterminant.create(S_, i0=12, spin=cc.Spin.Beta).det
-    occS = S.get_occupied_spin_orbitals()
-    SHHf = cc.KL(occhf10, occS, 2*M, h0, U)     
-    print("DEBUG: ")
-    print(f"hfdet10 = {hfdet10}")
-    print(f"occhf10 = {occhf10}")
-    print(f"Ehf10 = {Ehf10} ")
-    print(f"S = {S} ")
-    print(f"SHhf = {SHHf}")
+    #hfdet10 = basis_Np.get_rhf_determinant(10, M)[0]
+    #occhf10 = hfdet10.get_occupied_spin_orbitals()
+    #Ehf10 = cc.KL(occhf10, occhf10, 2*M, h0, U)     
+    #S__ = basis_Np.get_rhf_determinant(10, M)[0]
+    #print("S__ = ",S__)
+    #S_ = cc.SlaterDeterminant.annihilate(S__, i0=0, spin=cc.Spin.Beta).det
+    #print("S_ = ",S_)
+    #S = cc.SlaterDeterminant.create(S_, i0=12, spin=cc.Spin.Beta).det
+    #occS = S.get_occupied_spin_orbitals()
+    #SHHf = cc.KL(occhf10, occS, 2*M, h0, U)     
+    #print("DEBUG: ")
+    #print(f"hfdet10 = {hfdet10}")
+    #print(f"occhf10 = {occhf10}")
+    #print(f"Ehf10 = {Ehf10} ")
+    #print(f"S = {S} ")
+    #print(f"SHhf = {SHHf}")
 
 
 
@@ -153,7 +153,7 @@ def selective_ci(
 
 
     thrscr = 1e-12
-    screened_H = cc.build_screened_hamiltonian(h0, 0 * U, thrscr)
+    screened_H = cc.build_screened_hamiltonian(h0, 1 * U, thrscr)
 
 
     # Main selection loop

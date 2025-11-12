@@ -1,7 +1,7 @@
 # clic/results.py
 import numpy as np
 import h5py
-from .. import clic_clib as cc # for Wavefunction type hint
+import clic_clib as cc # for Wavefunction type hint
 
 # Use TYPE_CHECKING block to import for type hints only, preventing circular imports
 from typing import TYPE_CHECKING

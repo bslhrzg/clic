@@ -3,11 +3,11 @@ from scipy.sparse.linalg import LinearOperator, eigsh  # or eigs if complex non-
 from scipy.sparse import csr_matrix
 from scipy.linalg import eigh
 from ..ops.ops import get_ham
-from .. import clic_clib as cc
+import clic_clib as cc
 from .davidson import davidson_linearop
 from clic.basis.basis_Np import partition_by_Sz
 from clic.ops import ops
-
+from time import time
 
 def diagH_(basis,h0,U,M,num_roots,vguess = 'hf', option='matvec',sh_full=None):
     
@@ -82,6 +82,7 @@ def diagH(basis, h0, U, M, num_roots, vguess='hf', option='csr', sh_full=None):
 
 def get_roots_(basis0,h0,U,nroots,method='buildH'):
     if len(basis0) <= 64:
+
         H = ops.get_ham(basis0, h0, U)
         evals, evecs = eigh(H.toarray())
     else:

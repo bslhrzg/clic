@@ -1,6 +1,6 @@
 # gfs.py
 import numpy as np
-from .. import clic_clib as cc
+import clic_clib as cc
 import scipy.sparse as sp
 import numpy.linalg as npl
 from numpy.linalg import norm
@@ -9,25 +9,26 @@ from numpy.linalg import norm
 # Helpers: wavefunction <-> basis
 # -----------------------------
 
-def wavefunction_support(wf, coeff_thresh=1e-14):
+def wavefunction_support(wf, coeff_thresh=1e-7):
     """
     Return the set of determinants in a Wavefunction with |coeff|>coeff_thresh.
     Assumes wf.data() is a mapping {SlaterDeterminant: complex}.
     """
-    data = wf.data()
-    return {det for det, c in data.items() if abs(c) > coeff_thresh}
+    #data = wf.data()
+    #return {det for det, c in data.items() if abs(c) > coeff_thresh}
+    # 1. Make an independent copy in C++
+    wf_copy = cc.Wavefunction(wf) 
+    # 2. Prune the copy in C++
+    wf_copy.prune(threshold=coeff_thresh)
+    # 3. Get the remaining keys
+    return set(wf_copy.data().keys())
 
 def wf_to_vec(wf, basis_list):
-    """
-    Project wavefunction onto a given determinant basis ordering -> dense vector.
-    """
-    data = wf.data()
-    idx = {det: k for k, det in enumerate(basis_list)}
+    # Let's refine the idea:
     v = np.zeros(len(basis_list), dtype=np.complex128)
-    for det, c in data.items():
-        k = idx.get(det, None)
-        if k is not None:
-            v[k] += c
+    for i, det in enumerate(basis_list):
+        # wf.amplitude(det) is <det|wf>
+        v[i] = wf.amplitude(det) 
     return v
 
 # -----------------------------
@@ -167,7 +168,7 @@ def block_lanczos_fixed_basis(H, seed_vecs, L, reorth=False):
     return As, Bs, Qblocks, R0
 
 # -----------------------------
-# Continued fraction for top-left block (unchanged)
+# Continued fraction for top-left block
 # -----------------------------
 
 def block_cf_top_left(As, Bs, z):
@@ -751,3 +752,4 @@ def green_function_from_time_propagation(
     g = -1j * dt * (phase @ (S_add + S_rem))  # -i factor for retarded GF
 
     return g
+

@@ -3,7 +3,7 @@ import scipy.sparse
 from scipy.linalg import eigh
 from itertools import combinations
 from clic import * 
-
+from clic_clib import *
 
 def get_hubbard_dimer_ed_ref(t, U, M):
     K = 2 * M

@@ -1,6 +1,6 @@
 
 # basis_Np.py
-from .. import clic_clib as cc
+import clic_clib as cc
 from itertools import combinations, product
 import numpy as np
 

@@ -4,6 +4,7 @@ from scipy.sparse.linalg import eigsh
 from scipy.sparse import csr_matrix
 from scipy.linalg import eig,eigh
 from clic import * 
+from clic_clib import *
 
 import time
 import matplotlib.pyplot as plt

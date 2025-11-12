@@ -1,6 +1,6 @@
 # hamiltonians.py
 import numpy as np 
-from .. import clic_clib as cc
+import clic_clib as cc
 import scipy.sparse
 import h5py
 from clic.basis.basis_1p import double_h,umo2so,transform_integrals_interleaved_to_alphafirst

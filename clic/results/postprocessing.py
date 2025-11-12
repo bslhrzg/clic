@@ -34,12 +34,12 @@ class StateAnalyzer:
         stats = {}
 
         # many body expectations without building operators
-        S2, Sz_full = ops.expect_S2(wf, self.model.M)
+        _, Sz_full = ops.expect_S2(wf, self.model.M)
 
         # S is only meaningful if eigenstate; still report the derived value
-        S = 0.5 * (np.sqrt(1.0 + 4.0 * np.real(S2)) - 1.0)
-        stats["S2"] = np.real(S2)
-        stats["S"]  = np.real(S)
+        #S = 0.5 * (np.sqrt(1.0 + 4.0 * np.real(S2)) - 1.0)
+        #stats["S2"] = np.real(S2)
+        #stats["S"]  = np.real(S)
 
         if self.model.is_impurity_model:
             imp_spinfull = self.model.imp_indices + [i + self.model.M for i in self.model.imp_indices]
@@ -84,8 +84,8 @@ class StateAnalyzer:
                   f"ne: {nelec}, "
                   f"weight: {weights[i]:10.4f}, "
                   f"occ: {stats['occ']:10.4f}, "
-                  f"S2: {stats['S2']:10.4f}, "
-                  f"S: {stats['S']:10.4f}, "
+                  #f"S2: {stats['S2']:10.4f}, "
+                  #f"S: {stats['S']:10.4f}, "
                   f"Sz: {stats['Sz']:10.4f}")
 
         if self.model.is_impurity_model:
@@ -97,12 +97,12 @@ class StateAnalyzer:
 
         if len(all_states) > 1:
             avg_occ = float(np.sum(weights * [s["occ"] for s in all_stats]))
-            avg_S2  = float(np.sum(weights * [s["S2"] for s in all_stats]))
-            avg_S   = float(np.sum(weights * [s["S"]  for s in all_stats]))
+            #avg_S2  = float(np.sum(weights * [s["S2"] for s in all_stats]))
+            #avg_S   = float(np.sum(weights * [s["S"]  for s in all_stats]))
             avg_Sz  = float(np.sum(weights * [s["Sz"] for s in all_stats]))
             print("thermal averages:")
             print(f"<occ> = {avg_occ:.8f}")
-            print(f"<S2>  = {avg_S2:.8f}")
-            print(f"<S>   = {avg_S:.8f}")
+            #print(f"<S2>  = {avg_S2:.8f}")
+            #print(f"<S>   = {avg_S:.8f}")
             print(f"<Sz>  = {avg_Sz:.8f}")
         print("-"*50)

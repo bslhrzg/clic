@@ -143,7 +143,7 @@ class SolverParameters(BaseModel):
     use_no: Literal["none", "no0"] = "none"
     ci_method: CiMethodConfig
     nelec_range: Optional[Union[tuple[int, int], Literal["auto"], None]] = None
-    initial_temperature: float = 300.0
+    initial_temperature: float = 5.0
 
 
 class GreenFunctionConfig(BaseModel):
