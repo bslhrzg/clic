@@ -1,3 +1,5 @@
+# lanczos/bloc_lanczos.py
+
 import numpy as np
 import numpy.linalg as npl
 
@@ -220,9 +222,9 @@ def block_lanczos_matrix(H, r, max_steps=None, seed=None, reorth=True, tol=1e-12
     def gram(A, B):
         return A.conj().T @ B
 
-    A, B, Qblocks, _ = block_lanczos(apply_op, gram, Q0, K=max_steps, reorth=reorth, tol=tol, cap_dim=n)
+    A, B, Qblocks, R = block_lanczos(apply_op, gram, Q0, K=max_steps, reorth=reorth, tol=tol, cap_dim=n)
     Q = np.concatenate(Qblocks, axis=1) if Qblocks else np.zeros((n, 0), dtype=np.complex128)
-    return A, B, Q
+    return A, B, Q, R
 
 def block_lanczos_grid(x_vals, weight_mats, K, b, reorth=True, tol=1e-12):
     """

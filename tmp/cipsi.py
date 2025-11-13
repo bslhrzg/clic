@@ -1,10 +1,11 @@
 import numpy as np
 from scipy.linalg import eigh, block_diag, eig
 from scipy.sparse.linalg import eigsh
-from clic import * 
 import numpy as np
 from typing import Tuple, Literal
 import matplotlib.pyplot as plt
+
+from clic import * 
 
 
 # --- Main script ---

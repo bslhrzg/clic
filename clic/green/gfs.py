@@ -5,167 +5,9 @@ import scipy.sparse as sp
 import numpy.linalg as npl
 from numpy.linalg import norm
 
-# -----------------------------
-# Helpers: wavefunction <-> basis
-# -----------------------------
-
-def wavefunction_support(wf, coeff_thresh=1e-7):
-    """
-    Return the set of determinants in a Wavefunction with |coeff|>coeff_thresh.
-    Assumes wf.data() is a mapping {SlaterDeterminant: complex}.
-    """
-    #data = wf.data()
-    #return {det for det, c in data.items() if abs(c) > coeff_thresh}
-    # 1. Make an independent copy in C++
-    wf_copy = cc.Wavefunction(wf) 
-    # 2. Prune the copy in C++
-    wf_copy.prune(threshold=coeff_thresh)
-    # 3. Get the remaining keys
-    return set(wf_copy.data().keys())
-
-def wf_to_vec(wf, basis_list):
-    # Let's refine the idea:
-    v = np.zeros(len(basis_list), dtype=np.complex128)
-    for i, det in enumerate(basis_list):
-        # wf.amplitude(det) is <det|wf>
-        v[i] = wf.amplitude(det) 
-    return v
-
-# -----------------------------
-# Build fixed Krylov basis by repeated H-applications at determinant level
-# -----------------------------
-
-def expand_basis_by_H(seed_dets, one_body_terms, two_body_terms, NappH):
-    """
-    Determinant-level expansion:
-    B_0 = seed_dets
-    B_{t+1} = B_t ∪ H*B_t connections (via one- and two-body graph expansion)
-    Stop after NappH expansions.
-    """
-    current = set(seed_dets)
-    for _ in range(NappH):
-        conn1 = cc.get_connections_one_body(list(current), one_body_terms)
-        conn2 = cc.get_connections_two_body(list(current), two_body_terms)
-        current |= set(conn1)
-        current |= set(conn2)
-    return sorted(list(current))
-
-def build_sector_basis_from_seeds(seeds_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=1e-14):
-    """
-    seeds_wf: list of seed Wavefunctions for a given particle sector.
-    1) collect support determinants from all seeds
-    2) expand that set by NappH applications of H
-    """
-    if not seeds_wf:
-        return []
-    seed_support = set()
-    for wf in seeds_wf:
-        seed_support |= wavefunction_support(wf, coeff_thresh=coeff_thresh)
-    return expand_basis_by_H(seed_support, one_body_terms, two_body_terms, NappH)
-
-# -----------------------------
-# Hamiltonian restricted to a fixed determinant basis
-# -----------------------------
-
-def build_H_in_basis(basis_dets, h0_clean, U_clean):
-    """
-    Use your fast OpenMP builder on the restricted basis.
-    Returns a scipy.spmatrix (CSR).
-    """
-    if len(basis_dets) == 0:
-        return sp.csr_matrix((0,0), dtype=np.complex128)
-    H = cc.build_hamiltonian_openmp(basis_dets, h0_clean, U_clean)
-    return H
-
-# -----------------------------
-# Block Lanczos on a fixed basis with dense/sparse @
-# -----------------------------
-
-def gram_schmidt_qr_dense(block_V, reorth=False, eps=1e-20):
-    """
-    Gram-Schmidt QR on a list of dense vectors (numpy arrays), returns (Q_list, R).
-    Q_list contains orthonormal dense vectors (same length as v).
-    R has shape (len(Q_list), n). If columns are dependent, len(Q_list) < n.
-    """
-    n = len(block_V)
-    if n == 0:
-        return [], np.array([[]], dtype=np.complex128)
-    # Copy inputs
-    V = [v.astype(np.complex128, copy=True) for v in block_V]
-    Q = []
-    R = np.zeros((n, n), dtype=np.complex128)
-    for j in range(n):
-        vj = V[j]
-        for i, qi in enumerate(Q):
-            hij = np.vdot(qi, vj)
-            R[i, j] = hij
-            vj -= hij * qi
-        if reorth and len(Q):
-            # one extra pass
-            for i, qi in enumerate(Q):
-                hij = np.vdot(qi, vj)
-                R[i, j] += hij
-                vj -= hij * qi
-        nrm2 = np.vdot(vj, vj).real
-        if nrm2 > eps:
-            nrm = np.sqrt(nrm2)
-            R[j, j] = nrm
-            Q.append(vj / nrm)
-        else:
-            break
-    r = len(Q)
-    return Q, R[:r, :n]
-
-def block_lanczos_fixed_basis(H, seed_vecs, L, reorth=False):
-    """
-    Standard block-Lanczos where H is a matrix in the fixed basis (dense or sparse),
-    and seed_vecs is a list of dense vectors (already in that basis).
-    Returns As, Bs, Qblocks, R0, where:
-      - Qblocks[k] is a list of orthonormal vectors (columns) at block k
-      - As[k], Bs[k] are the small block matrices like in your previous routine
-    """
-    Q0, R0 = gram_schmidt_qr_dense(seed_vecs, reorth=reorth)
-    if len(Q0) == 0:
-        return [], [], [], R0
-
-    # Convert block list to column-block matrix helpers
-    def block_to_mat(Qblock):
-        return np.column_stack(Qblock) if len(Qblock) else np.zeros((H.shape[0], 0), dtype=np.complex128)
-
-    Qblocks = [Q0]
-    As, Bs = [], []
-
-    Qk = block_to_mat(Q0)
-    HQk = H @ Qk
-    Ak = Qk.conj().T @ HQk
-    As.append(Ak)
-
-    Qkm1 = np.zeros((H.shape[0], 0), dtype=np.complex128)  # empty previous block
-
-    for _ in range(L):
-        # W = H Qk - Qk Ak - Q_{k-1} B_{k-1}^H
-        W = HQk - Qk @ Ak
-        if len(Bs) > 0:
-            W -= Qkm1 @ Bs[-1].conj().T
-
-        # Orthonormalize W
-        W_cols = [W[:, j].copy() for j in range(W.shape[1])]
-        Qnext_list, Bk = gram_schmidt_qr_dense(W_cols, reorth=reorth)
-        if len(Qnext_list) == 0:
-            break
-
-        Bs.append(Bk)
-        Qkm1 = Qk
-        Qk = np.column_stack(Qnext_list)
-
-        # Update Ak+1
-        HQk = H @ Qk
-        Ak = Qk.conj().T @ HQk
-        As.append(Ak)
-
-        Qblocks.append(Qnext_list)
-
-    return As, Bs, Qblocks, R0
+from .green_utils import *
+from ..lanczos.block_lanczos import * 
+from ..lanczos.scalar_lanczos import *
 
 # -----------------------------
 # Continued fraction for top-left block
@@ -195,11 +37,28 @@ def block_cf_top_left(As, Bs, z):
     except npl.LinAlgError:
         return np.full_like(Id0, np.nan)
 
+
+def scalar_cf_from_T(T, z):
+    """
+    Evaluate the (0,0) element of the resolvent (zI - T)^{-1}
+    for a tridiagonal matrix T using a scalar continued fraction.
+    """
+    alphas = np.diag(T).real
+    betas_sq = np.diag(T, 1).real**2
+    
+    # Backward recurrence for g_k = z - alpha_k - beta_k^2 / g_{k+1}
+    g = np.complex128(z - alphas[-1])
+    for k in range(len(alphas) - 2, -1, -1):
+        # Add a small epsilon to avoid division by zero if g is pathologically small
+        g = z - alphas[k] - betas_sq[k] / (g + 1e-100j)
+    return 1.0 / (g + 1e-100j)
+
+
 # -----------------------------
 # Top-level: fixed-basis block-Lanczos Green's function
 # -----------------------------
 
-def green_function_block_lanczos_fixed_basis(
+def green_function_block_lanczos_fixed_basis_(
     M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
     h0_clean, U_clean, one_body_terms, two_body_terms, coeff_thresh=1e-12, L=100, reorth=False
 ):
@@ -254,10 +113,18 @@ def green_function_block_lanczos_fixed_basis(
 
     if len(seed_vecs_add):
         # convert CSR to linear operator by dense/sparse @ in the iteration
-        As_g, Bs_g, Qs_g, R0_g = block_lanczos_fixed_basis(H_add, seed_vecs_add, L=L, reorth=reorth)
+        Q0_add = np.column_stack(seed_vecs_add)
+        #s_g, Bs_g, Qs_g, R0_g = block_lanczos_fixed_basis(H_add, seed_vecs_add, L=L, reorth=reorth)
+        As_g, Bs_g, _, R0_g = block_lanczos_matrix(
+            H_add, r=Q0_add.shape[1], seed=Q0_add, max_steps=L, reorth=reorth
+        )
 
     if len(seed_vecs_rem):
-        As_l, Bs_l, Qs_l, R0_l = block_lanczos_fixed_basis(H_rem, seed_vecs_rem, L=L, reorth=reorth)
+        #As_l, Bs_l, Qs_l, R0_l = block_lanczos_fixed_basis(H_rem, seed_vecs_rem, L=L, reorth=reorth)
+        Q0_rem = np.column_stack(seed_vecs_rem)
+        As_l, Bs_l, _, R0_l = block_lanczos_matrix(
+            H_rem, r=Q0_rem.shape[1], seed=Q0_rem, max_steps=L, reorth=reorth
+        )
 
     have_g = (R0_g.size != 0 and len(As_g) > 0)
     have_l = (R0_l.size != 0 and len(As_l) > 0)
@@ -305,21 +172,102 @@ def green_function_block_lanczos_fixed_basis(
     )
 
 
+def green_function_block_lanczos_fixed_basis(
+    M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
+    h0_clean, U_clean, one_body_terms, two_body_terms, coeff_thresh=1e-12, L=100, reorth=False
+):
+    """
+    Calculates the Green's function block corresponding ONLY to the provided
+    impurity_indices. Returns a dense matrix in the basis of those indices.
+    """
+    Nw = len(ws)
+    num_imp = len(impurity_indices)
+
+    seed_add_wf, add_src_idx = [], []
+    seed_rem_wf, rem_src_idx = [], []
+    for i in impurity_indices:
+        si = cc.Spin.Alpha if i < M else cc.Spin.Beta
+        oi = i % M
+        wa = cc.apply_creation(psi0_wf, oi, si)
+        if wa.data():
+            seed_add_wf.append(wa)
+            add_src_idx.append(i)
+        wr = cc.apply_annihilation(psi0_wf, oi, si)
+        if wr.data():
+            seed_rem_wf.append(wr)
+            rem_src_idx.append(i)
+
+    basis_add = build_sector_basis_from_seeds(seed_add_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+    basis_rem = build_sector_basis_from_seeds(seed_rem_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+
+    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
+    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
+
+    seed_vecs_add = [wf_to_vec(wf, basis_add) for wf in seed_add_wf] if len(basis_add) else []
+    seed_vecs_rem = [wf_to_vec(wf, basis_rem) for wf in seed_rem_wf] if len(basis_rem) else []
+    
+    As_g, Bs_g, Qs_g, R0_g = ([], [], [], np.array([]))
+    As_l, Bs_l, Qs_l, R0_l = ([], [], [], np.array([]))
+    if seed_vecs_add and not all(norm(v) < 1e-30 for v in seed_vecs_add):
+        Q0_add = np.column_stack(seed_vecs_add)
+        As_g, Bs_g, _, R0_g = block_lanczos_matrix(H_add, r=Q0_add.shape[1], seed=Q0_add, max_steps=L, reorth=reorth)
+    if seed_vecs_rem and not all(norm(v) < 1e-30 for v in seed_vecs_rem):
+        Q0_rem = np.column_stack(seed_vecs_rem)
+        As_l, Bs_l, _, R0_l = block_lanczos_matrix(H_rem, r=Q0_rem.shape[1], seed=Q0_rem, max_steps=L, reorth=reorth)
+
+    have_g = (R0_g.size != 0 and len(As_g) > 0)
+    have_l = (R0_l.size != 0 and len(As_l) > 0)
+    
+    G_imp = np.zeros((Nw, num_imp, num_imp), dtype=np.complex128)
+    
+    # Create a map from the global spin-orbital index to its position (0, 1, 2...) 
+    # within the impurity_indices list.
+    impurity_map = {idx: i for i, idx in enumerate(impurity_indices)}
+
+    for iw, w in enumerate(ws):
+        z_g, z_l = (w + e0) + 1j*eta, (-w + e0) - 1j*eta
+        
+        # Calculate G_eff in the basis of SURVIVING seeds (this part is correct)
+        Gg_eff = None
+        if have_g:
+            G00_g = block_cf_top_left(As_g, Bs_g, z_g)
+            if G00_g.size != 0 and not np.isnan(G00_g).any():
+                Gg_eff = R0_g.conj().T @ G00_g @ R0_g
+
+        Gl_eff = None
+        if have_l:
+            G00_l = block_cf_top_left(As_l, Bs_l, z_l)
+            if G00_l.size != 0 and not np.isnan(G00_l).any():
+                Gl_eff = R0_l.conj().T @ G00_l @ R0_l
+        
+        # Place the results from the surviving seed basis into the impurity basis
+        if Gg_eff is not None:
+            for a, ia in enumerate(add_src_idx):      # 'a' is index in Gg_eff, 'ia' is global index
+                for b, ib in enumerate(add_src_idx):  # 'b' is index in Gg_eff, 'ib' is global index
+                    out_i = impurity_map[ia]          # Find where 'ia' lives in the output matrix
+                    out_j = impurity_map[ib]          # Find where 'ib' lives in the output matrix
+                    G_imp[iw, out_i, out_j] += Gg_eff[a, b]
+
+        if Gl_eff is not None:
+            for a, ia in enumerate(rem_src_idx):
+                for b, ib in enumerate(rem_src_idx):
+                    out_i = impurity_map[ia]
+                    out_j = impurity_map[ib]
+                    G_imp[iw, out_i, out_j] -= Gl_eff[a, b]
+
+    return G_imp, dict(
+        basis_add_size=len(basis_add), basis_rem_size=len(basis_rem)
+    )
+
+
 def green_function_scalar_fixed_basis(
     M, psi0_wf, e0, ws, eta, i, NappH,
     h0_clean, U_clean, one_body_terms, two_body_terms,
     coeff_thresh=1e-12, L=100, reorth=False
 ):
     """
-    Compute the single-diagonal element G_ii(ω) for a given spin-orbital index i (0..2M-1)
-    using the fixed-basis block-Lanczos approach specialized to a scalar seed subspace.
-
-    Returns
-    -------
-    Gii : np.ndarray of shape (Nw,), complex128
-        The diagonal Green's function element G_ii(ω) for each ω in `ws`.
-    info : dict
-        Diagnostics: sizes of addition/removal bases, flags for having each sector, etc.
+    Compute the single-diagonal element G_ii(ω) using a specialized fixed-basis
+    scalar Lanczos approach.
     """
     Norb = 2*M
     assert 0 <= i < Norb, "i must be in [0, 2M)"
@@ -327,271 +275,59 @@ def green_function_scalar_fixed_basis(
     Nw = len(ws)
     Gii = np.zeros(Nw, dtype=np.complex128)
 
-    # --- Build the two sector seeds only for index i
     si = cc.Spin.Alpha if i < M else cc.Spin.Beta
     oi = i % M
-
     wf_add = cc.apply_creation(psi0_wf, oi, si)
     wf_rem = cc.apply_annihilation(psi0_wf, oi, si)
 
-    have_add_seed = bool(wf_add.data())
-    have_rem_seed = bool(wf_rem.data())
+    # --- Addition (Particle) Sector ---
+    have_g = False
+    if wf_add.data():
+        basis_add = build_sector_basis_from_seeds([wf_add], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+        if len(basis_add) > 0:
+            H_add = build_H_in_basis(basis_add, h0_clean, U_clean)
+            seed_vec_add = wf_to_vec(wf_add, basis_add)
+            
+            # Use scalar Lanczos
+            _, T_g, v0_norm_g = scalar_lanczos(H_add, seed_vec_add, L=L, reorth=reorth)
 
-    # Early exit if both seeds vanish (matrix element zero)
-    if not have_add_seed and not have_rem_seed:
-        return Gii, dict(
-            basis_add_size=0, basis_rem_size=0,
-            have_g=False, have_l=False,
-            seed_nonzero=False
-        )
+            if T_g.size > 0:
+                have_g = True
+                norm_sq_g = v0_norm_g**2
+                for iw, w in enumerate(ws):
+                    z_g = (w + e0) + 1j*eta
+                    Gii[iw] += norm_sq_g * scalar_cf_from_T(T_g, z_g)
 
-    # --- Determinant bases by H-expansion from the single seeds
-    basis_add = build_sector_basis_from_seeds(
-        [wf_add] if have_add_seed else [],
-        one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
+    # --- Removal (Hole) Sector ---
+    have_l = False
+    if wf_rem.data():
+        basis_rem = build_sector_basis_from_seeds([wf_rem], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+        if len(basis_rem) > 0:
+            H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean)
+            seed_vec_rem = wf_to_vec(wf_rem, basis_rem)
+            
+            # Use scalar Lanczos
+            _, T_l, v0_norm_l = scalar_lanczos(H_rem, seed_vec_rem, L=L, reorth=reorth)
+
+            if T_l.size > 0:
+                have_l = True
+                norm_sq_l = v0_norm_l**2
+                for iw, w in enumerate(ws):
+                    z_l = (e0 - w) - 1j*eta
+                    Gii[iw] -= norm_sq_l * scalar_cf_from_T(T_l, z_l)
+
+    info = dict(
+        basis_add_size=len(basis_add) if 'basis_add' in locals() else 0,
+        basis_rem_size=len(basis_rem) if 'basis_rem' in locals() else 0,
+        have_g=have_g, have_l=have_l,
+        seed_nonzero=(have_g or have_l)
     )
-    basis_rem = build_sector_basis_from_seeds(
-        [wf_rem] if have_rem_seed else [],
-        one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
-    )
-
-    # --- Restrict H
-    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
-    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
-
-    # --- Project seeds into their bases (each is a single dense vector)
-    seed_vecs_add = [wf_to_vec(wf_add, basis_add)] if have_add_seed and len(basis_add) else []
-    seed_vecs_rem = [wf_to_vec(wf_rem, basis_rem)] if have_rem_seed and len(basis_rem) else []
-
-    # Drop sector if the projected seed is numerically zero after expansion
-    if seed_vecs_add and norm(seed_vecs_add[0]) < 1e-30:
-        seed_vecs_add = []
-    if seed_vecs_rem and norm(seed_vecs_rem[0]) < 1e-30:
-        seed_vecs_rem = []
-
-    # --- Block Lanczos in each sector (block size will be 1 if present)
-    As_g, Bs_g, R0_g = [], [], np.array([])
-    As_l, Bs_l, R0_l = [], [], np.array([])
-
-    if seed_vecs_add:
-        As_g, Bs_g, _, R0_g = block_lanczos_fixed_basis(H_add, seed_vecs_add, L=L, reorth=reorth)
-
-    if seed_vecs_rem:
-        As_l, Bs_l, _, R0_l = block_lanczos_fixed_basis(H_rem, seed_vecs_rem, L=L, reorth=reorth)
-
-    have_g = (R0_g.size != 0 and len(As_g) > 0)
-    have_l = (R0_l.size != 0 and len(As_l) > 0)
-
-    # --- Evaluate scalar CFs and assemble G_ii(ω) = (R* G00 R)_{00}^add - (R* G00 R)_{00}^rem
-    # For 1x1 blocks: G_eff = |R0|^2 * G00
-    for iw, w in enumerate(ws):
-        # particle sector: z_g = w + e0 + iη
-        if have_g:
-            z_g = (w + e0) + 1j*eta
-            G00_g = block_cf_top_left(As_g, Bs_g, z_g)  # shape (1,1)
-            if G00_g.size and not np.isnan(G00_g).any():
-                r = R0_g[0, 0] if R0_g.ndim == 2 else R0_g
-                Gii[iw] += (abs(r)**2) * G00_g[0, 0]
-
-        # hole sector: z_l = -w + e0 - iη
-        if have_l:
-            z_l = (-w + e0) - 1j*eta
-            G00_l = block_cf_top_left(As_l, Bs_l, z_l)  # shape (1,1)
-            if G00_l.size and not np.isnan(G00_l).any():
-                r = R0_l[0, 0] if R0_l.ndim == 2 else R0_l
-                Gii[iw] -= (abs(r)**2) * G00_l[0, 0]
-
-    return Gii, dict(
-        basis_add_size=len(basis_add), basis_rem_size=len(basis_rem),
-        have_g=have_g, have_l=have_l, seed_nonzero=True
-    )
+    return Gii, info
 
 
 # ---------------------------------------------------------------------------
 # TIME PROPAGATION 
 # ---------------------------------------------------------------------------
-
-def _lanczos_tridiagonal(H, v0, L=200, reorth=False):
-    """
-    Perform Hermitian Lanczos iteration starting from vector v0.
-    Constructs an orthonormal Krylov basis Q and the tridiagonal matrix T.
-
-    Parameters
-    ----------
-    H : (N×N) linear operator (csr_matrix or LinearOperator)
-        Hermitian Hamiltonian, must support `@` for matrix-vector product.
-    v0 : ndarray (N,)
-        Initial vector to start the Krylov subspace.
-    L : int
-        Maximum number of Lanczos steps.
-    reorth : bool
-        If True, apply a (single-pass) reorthogonalization against all previous vectors
-        to improve numerical stability.
-
-    Returns
-    -------
-    Q : ndarray (N×m)
-        Orthonormal Lanczos basis vectors.
-    T : ndarray (m×m)
-        Tridiagonal Lanczos matrix.
-    v0_norm : float
-        Norm of the initial vector v0.
-    """
-
-    # Ensure v0 is a complex128 array
-    v0 = np.asarray(v0, dtype=np.complex128)
-    N = v0.size
-
-    # Normalize the initial vector
-    v0_norm = np.linalg.norm(v0)
-    if v0_norm == 0:
-        # If v0 is zero, return empty basis and matrix
-        return np.zeros((N,0), dtype=np.complex128), np.zeros((0,0), dtype=np.complex128), 0.0
-
-    # Initialize first basis vector q = v0 / ||v0||
-    q_prev = np.zeros_like(v0)   # "ghost" previous vector, initially zero
-    q = v0 / v0_norm
-    Qcols = [q.copy()]           # list to store basis vectors
-    alphas, betas = [], []       # diagonals and off-diagonals of T
-
-    beta = 0.0
-    for _ in range(L):
-        # Apply Hamiltonian
-        w = H @ q
-        # Rayleigh quotient α = <q|H|q>
-        alpha = np.vdot(q, w)
-        # Remove components along current and previous q (three-term recurrence)
-        w = w - alpha * q - beta * q_prev
-
-        # Optional reorthogonalization against all previous Q vectors
-        if reorth and Qcols:
-            Qmat = np.column_stack(Qcols)
-            w -= Qmat @ (Qmat.conj().T @ w)
-
-        # Next off-diagonal β = ||w||
-        beta = np.linalg.norm(w)
-        alphas.append(alpha)
-
-        # If β ≈ 0, Krylov subspace has closed (breakdown)
-        if beta < 1e-14:
-            break
-
-        # Store β and normalize new q
-        betas.append(beta)
-        q_prev, q = q, w / beta
-        Qcols.append(q.copy())
-
-    # Number of steps actually performed
-    m = len(alphas)
-    if m == 0:
-        # Should not normally happen, but guard against empty Krylov space
-        return np.zeros((N,0), dtype=np.complex128), np.zeros((0,0), dtype=np.complex128), v0_norm
-
-    # Construct Q matrix (columns are q0, q1, …, q_{m-1})
-    Q = np.column_stack(Qcols[:m])
-
-    # Construct tridiagonal T from α and β coefficients
-    T = np.zeros((m, m), dtype=np.complex128)
-    for k in range(m):
-        T[k, k] = alphas[k]      # diagonal entries
-        if k+1 < m:
-            T[k, k+1] = betas[k] # upper diagonal
-            T[k+1, k] = betas[k] # lower diagonal
-
-    return Q, T, v0_norm
-
-def lanczos_tridiagonal_stable(H, v0, L=200, reorth=True, symmetrize=True, scale=True,
-                               reorth_tol=1e-10, breakdown_tol=1e-14, powerit=20):
-    """
-    Hermitian Lanczos with optional symmetrization, spectral scaling, and two-pass MGS reorth.
-    Returns Q (N×m), T (m×m), ||v0||.
-    """
-
-    # optional symmetrization
-    if symmetrize:
-        if sp.issparse(H):
-            H = 0.5*(H + H.conj().T)
-            H.setdiag(H.diagonal().real)
-        else:
-            H = 0.5*(H + H.conj().T)
-            np.fill_diagonal(H, np.real(np.diag(H)))
-
-    # estimate spectral radius for scaling
-    rho = 1.0
-    if scale:
-        # power iteration on a random unit vector
-        rng = np.random.default_rng(12345)
-        x = rng.standard_normal(H.shape[0]) + 1j*rng.standard_normal(H.shape[0])
-        x /= norm(x)
-        n = 1.0
-        for _ in range(powerit):
-            x = H @ x
-            n = norm(x)
-            if not np.isfinite(n) or n < 1e-300:
-                break
-            x /= n
-        rho = max(n, 1.0, 1e-12)
-    Hdot = (lambda x: (H @ x) / rho) if scale else (lambda x: H @ x)
-
-    v0 = np.asarray(v0, dtype=np.complex128)
-    N = v0.size
-    v0_norm = norm(v0)
-    if v0_norm == 0.0:
-        return np.zeros((N,0), np.complex128), np.zeros((0,0), np.complex128), 0.0
-
-    q_prev = np.zeros_like(v0)
-    q = v0 / v0_norm
-
-    # preallocate Q with an upper bound of L+1 columns
-    Q = np.empty((N, L+1), dtype=np.complex128)
-    Q[:, 0] = q
-    k = 0
-    alphas = np.empty(L, dtype=np.float64)
-    betas  = np.empty(L, dtype=np.float64)
-
-    beta = 0.0
-    while k < L:
-        w = Hdot(q)
-        alpha = np.vdot(q, w)
-        # Hermitian guard: take the real part
-        alpha = float(np.real(alpha))
-        # three term recurrence
-        w = w - alpha*q - beta*q_prev
-
-        # selective reorth trigger
-        if reorth:
-            # test loss of orthogonality: max|Q[:,:k+1]^H w|
-            hk = Q[:, :k+1].conj().T @ w
-            maxlost = np.max(np.abs(hk))
-            if maxlost > reorth_tol*norm(w):
-                # two-pass MGS
-                w -= Q[:, :k+1] @ hk
-                hk2 = Q[:, :k+1].conj().T @ w
-                w -= Q[:, :k+1] @ hk2
-
-        beta = norm(w)
-        alphas[k] = alpha
-
-        if not np.isfinite(beta) or beta < breakdown_tol:
-            # happy breakdown or numerical failure
-            break
-
-        q_prev, q = q, w / beta
-        k += 1
-        Q[:, k] = q
-        betas[k-1] = beta
-
-    m = max(1, k)  # at least one alpha
-    Q = Q[:, :m]
-    T = np.zeros((m, m), dtype=np.complex128)
-    for i in range(m):
-        # scale back the spectrum if we scaled H
-        T[i, i] = alphas[i]*rho
-        if i+1 < m:
-            T[i, i+1] = betas[i]*rho
-            T[i+1, i] = betas[i]*rho
-
-    return Q, T, v0_norm
 
 def green_function_from_time_propagation(
     i, j,
@@ -701,9 +437,9 @@ def green_function_from_time_propagation(
     Qp=Tp=n0p=None; Qm=Tm=n0m=None
     if have_add and a_j_vec.size:
         # stable variant with symmetrization and spectral scaling
-        Qp, Tp, n0p = lanczos_tridiagonal_stable(H_add, a_j_vec, L=L, reorth=True, symmetrize=True, scale=True)
+        Qp, Tp, n0p = scalar_lanczos(H_add, a_j_vec, L=L, reorth=True, symmetrize=True, scale=True)
     if have_rem and r_j_vec.size:
-        Qm, Tm, n0m = lanczos_tridiagonal_stable(H_rem, r_j_vec, L=L, reorth=True, symmetrize=True, scale=True)
+        Qm, Tm, n0m = scalar_lanczos(H_rem, r_j_vec, L=L, reorth=True, symmetrize=True, scale=True)
 
     # Helper: pick time grid from ws and η
     def _compute_time_grid(ws, eta):
@@ -725,6 +461,7 @@ def green_function_from_time_propagation(
         return ts, dt
 
     ts, dt = _compute_time_grid(ws, eta)
+    print(f"DEBUG: in timeprop lanczos: dt = {dt}, len(ts) = {len(ts)}")
 
     # Helper: compute time overlaps S(t) = <bra| exp(i sign T t) e1 > * v0_norm
     def _time_overlaps_from_lanczos(T, Q, bra_vec, v0_norm, ts, sign):
@@ -752,4 +489,3 @@ def green_function_from_time_propagation(
     g = -1j * dt * (phase @ (S_add + S_rem))  # -i factor for retarded GF
 
     return g
-

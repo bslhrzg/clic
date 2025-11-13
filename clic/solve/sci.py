@@ -233,7 +233,10 @@ def selective_ci(
 
 
         # ADDING THE TWO LOWEST STATES TOGETHER
-        psi0 = cc.Wavefunction(M, basis0, 1/np.sqrt(2) * (evecs[:, 0] + evecs[:, 1]))
+        if num_roots > 1 :
+            psi0 = cc.Wavefunction(M, basis0, 1/np.sqrt(2) * (evecs[:, 0] + evecs[:, 1]))
+        else :
+            psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
         #print(f"length before pruning = {len(psi0.get_basis())}")
         psi0.prune(prune_thr)
         #print(f"length after pruning = {len(psi0.get_basis())}")

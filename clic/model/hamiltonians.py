@@ -45,6 +45,26 @@ def get_impurity_integrals(M, u, e_bath, V_bath, mu):
     U = np.ascontiguousarray(U, dtype=np.complex128)
     return h0, U
 
+def get_linear_h0(L,t, pbc=True):
+
+    NF = L
+    h = np.zeros((NF,NF))
+
+    if L == 1 :
+        h[0,0] = 0 
+        return h 
+
+    for i in range(NF):
+        print(f"i = {i}")
+        if i < NF-1:
+            h[i,i+1] = -t 
+            h[i+1,i] = -t
+        else:
+            if pbc:
+                h[i,0] = -t
+                h[0,i] = -t        
+    return h
+       
 
 def create_hubbard_V(M, U_val):
     """Builds the hubbard two-electron integrals in the spin-orbital basis,

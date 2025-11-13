@@ -336,8 +336,8 @@ def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-8):
     Hc = h3[np.ix_(cond_indices, cond_indices)]                  # project h to conduction half
 
     # block Lanczos: returns block-tridiagonal factors (A,B) and the basis Q (orthonormal columns)
-    _, _, Qv = clic.block_lanczos_matrix(Hv, r_v)                # Qv: valence chain basis (tall)
-    _, _, Qc = clic.block_lanczos_matrix(Hc, r_c)                # Qc: conduction chain basis (tall)
+    _, _, Qv, _ = clic.block_lanczos_matrix(Hv, r_v)                # Qv: valence chain basis (tall)
+    _, _, Qc, _ = clic.block_lanczos_matrix(Hc, r_c)                # Qc: conduction chain basis (tall)
 
     Qv_embed = pad_with_identity(Qv, len(val_indices))           # embed each Q as a square unitary on its subspace
     Qc_embed = pad_with_identity(Qc, len(cond_indices))

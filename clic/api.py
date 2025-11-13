@@ -12,13 +12,15 @@ from clic.basis import basis_1p, basis_Np
 from clic.ops import ops
 from clic.solve import sci
 from clic.mf import mf
-from clic.green import plotting, gfs
+from clic.green import plotting, gfs, green_sym
 from clic.io_clic import io_utils
 from clic.results import results # For type hinting
 from clic.model.config_models import CalculationConfig,ModelConfig, SolverParameters, GreenFunctionConfig, OutputConfig
 from clic.model import create_model_from_hyb, hamiltonians, double_chains
 from clic.symmetries import symmetries
 
+
+from time import time
 import h5py
 
 class Model:
@@ -552,16 +554,28 @@ class GreenFunctionCalculator:
                 hamiltonian_cache[nelec_n] = (h0_n, U_n, one_bh_n, two_bh_n)
             
             h0_n, U_n, one_bh_n, two_bh_n = hamiltonian_cache[nelec_n]
-            
-            # Calculate the GF contribution from this single state
-            for i, orb_idx in enumerate(target_indices):
-                g_ii_n = gfs.green_function_from_time_propagation(
-                    orb_idx, orb_idx, M, psi_n, e_n, ws, p_gf.eta,
-                    target_indices, p_lanczos.NappH, h0_n, U_n,
-                    one_bh_n, two_bh_n, p_lanczos.coeff_thresh, p_lanczos.L
-                )
-                G_total_diag[:, i] += weight * g_ii_n
 
+
+            tgf0 = time()
+
+
+            #gfmeth = "block"
+            gfmeth = "scalar_continued_fraction"
+            #gfmeth = "time_prop"
+
+            G_sub_block_n = green_sym.get_green_block(M, psi_n, e_n, p_lanczos.NappH, p_gf.eta, 
+                                                      h0_n, U_n, ws,target_indices, gfmeth, 
+                                                      one_bh_n,two_bh_n, p_lanczos.coeff_thresh, p_lanczos.L
+                                                      )
+ 
+            # For now we only look at the diagonal one
+            # Add the diagonal of the fully constructed sub-block to the thermal average.
+            for i in range(num_target):
+                G_total_diag[:, i] += weight * G_sub_block_n[:, i, i]
+
+            tgf1 = time()
+            print(f"DEBUG: gf time: {tgf1 - tgf0:.4f}s for method {gfmeth} with symmetry")
+            
         print("\nThermally-averaged calculation finished.")
         A_w_total = -(1 / np.pi) * np.imag(G_total_diag)
         

@@ -11,21 +11,46 @@ import matplotlib.pyplot as plt
 
 
 
-def get_hubbard_dimer_ed_ref(t, U, M):
+def get_random_model_and_ED(U, M):
     K = 2 * M
     c_dag = [get_creation_operator(K, i + 1) for i in range(K)]
     c = [get_annihilation_operator(K, i + 1) for i in range(K)]
+
     mu = U / 2
+
     H = csr_matrix((2**K, 2**K), dtype=np.complex128)
-    if M == 2:
-        H += -t * (c_dag[0] @ c[1] + c_dag[1] @ c[0])
-        H += -t * (c_dag[0+M] @ c[1+M] + c_dag[1+M] @ c[0+M])
+
+
+    h0 = get_linear_h0(M,1,True)
+    h0 = double_h(h0,M) * (1 + 0.0 *1j)
+
+    diag_scale = 1e-1
+    offdiag_scale = 1e-1
+    imag_scale = 1e-1
+
+    h0 += diag_scale * (1+0.0j)* np.diag(np.random.random(K))
+    h0 += offdiag_scale * np.random.random((K,K)) 
+    h0 += offdiag_scale * imag_scale * 1j * np.random.random((K,K))
+    h0 = h0 + h0.conj().T 
+
+    for i in range(K):
+        h0[i,i] -= mu
+
+    for i in range(K):
+        for j in range(K):
+            H += h0[i,j] * c_dag[i] @ c[j]
+
+    print("h0 = ")
+    print(np.round(h0,4))
+   
     for i in range(M):
         n_up = c_dag[i] @ c[i]
         n_down = c_dag[i+M] @ c[i+M]
         H += U * (n_up @ n_down)
-        H += - mu * (n_up + n_down)
-    return H,c,c_dag
+
+
+
+    return H,h0,c,c_dag
 
 def get_exact_green(H_, c, c_dag, ws, eta, beta=None):
     """
@@ -297,32 +322,35 @@ if __name__ == "__main__":
     K = 2 * M
     Nelec = 2
     t = 1.0
-    U = 1.0
-    mu = U/2.0
+    U = 2.0
 
     # --- Part 1: ED Tools Reference ---
-    H_ed_full,c,c_dag = get_hubbard_dimer_ed_ref(t, U, M)
+    H_ed_full,h0,c,c_dag = get_random_model_and_ED(U, M)
+    efull ,_= eigh(H_ed_full.toarray())
+    print(len(efull))
+    print(f"\nED tools (full, U={U}) eigenvalues:\n{np.round(np.sort(efull), 4)}")
+
     states_2e_indices = [i for i in range(2**K) if bin(i).count('1') == Nelec]
     H_ed_2e = H_ed_full[np.ix_(states_2e_indices, states_2e_indices)]
     eigvals_ed, _ = eigh(H_ed_2e.toarray())
-    print(f"\nED tools (N=2, U={U}) eigenvalues:\n{np.round(np.sort(eigvals_ed), 8)}")
+    print(f"\nED tools (N=2, U={U}) eigenvalues:\n{np.round(np.sort(eigvals_ed), 4)}")
 
     # --- Part 2: Slater-Condon Builder ---
     basis = get_fci_basis(M, Nelec)
     
-    h0 = np.zeros((K, K), dtype=np.complex128)
-    h0[0, 1] = h0[1, 0] = -t
-    h0[2, 3] = h0[3, 2] = -t
-    for i in range(K):
-        h0[i,i] = -mu
+    #h0 = np.zeros((K, K), dtype=np.complex128)
+    #h0[0, 1] = h0[1, 0] = -t
+    #h0[2, 3] = h0[3, 2] = -t
+    #for i in range(K):
+    #    h0[i,i] = -mu
 
 
     V = create_hubbard_V(M, U) # This gives 2U
 
     print("\nBuilding Hamiltonian with Slater-Condon rules...")
-    H_openmp = build_hamiltonian_openmp(basis, h0, V)
+    H_openmp = build_hamiltonian_openmp(basis, h0, V, True)
     eigvals, eigvecs = eigh(H_openmp.toarray())
-    print(f"OpenMP builder (U={U}) eigenvalues:\n{np.round(np.sort(eigvals), 8)}")
+    print(f"OpenMP builder (U={U}) eigenvalues:\n{np.round(np.sort(eigvals), 4)}")
     
     # Final check
     #np.testing.assert_allclose(np.sort(eigvals_ed), np.sort(eigvals), atol=1e-12)
@@ -341,15 +369,24 @@ if __name__ == "__main__":
     
     ws = np.linspace(-6, 6, 1001)
     eta = 0.02
-    L = 50
+    L = 150
     
     print("\nRunning matrix-free block Lanczos for the impurity Green's function...")
     t_start = time.time()
-    G_mat_lanc_wf = green_function_block_lanczos_wf(H_op, M, psi0_wf, e0, L, ws, eta)
-    G_mat_lanc_wf,_ =  green_function_block_lanczos_fixed_basis(
-                    M, psi0_wf, e0, ws, eta, [i for i in range(2*M)], 2,
-                    h0, V, one_body_terms, two_body_terms, coeff_thresh=1e-12, L=100, reorth=False
-                )
+    #G_mat_lanc_wf = green_function_block_lanczos_wf(H_op, M, psi0_wf, e0, L, ws, eta)
+    #G_mat_lanc_wf,_ =  green_function_block_lanczos_fixed_basis(
+    #                M, psi0_wf, e0, ws, eta, [i for i in range(2*M)], 2,
+    #                h0, V, one_body_terms, two_body_terms, coeff_thresh=1e-12, L=100, reorth=False
+    #            )
+    
+    target_indices = [i for i in range(2*M)]
+    gfmeth = "scalar_continued_fraction"
+    gfmeth = "block"
+    gfmeth = "time_prop"
+    coeff_thresh=1e-12
+    nappH = 2
+    G_mat_lanc_wf = get_green_block(M, psi0_wf, e0, nappH, eta, h0, V, ws,target_indices, gfmeth, 
+                    one_body_terms,two_body_terms,coeff_thresh ,L) 
     t_end = time.time()
     print(f"  Calculation finished in {t_end-t_start:.2f}s")
 
@@ -369,7 +406,7 @@ if __name__ == "__main__":
             if i==j:
                 print(f"i,j = {i,j}")
                 print(f"exact first freq: {G_mat_exact[:10,i,i]}")
-                print(f"exalanczosct first freq: {G_mat_lanc_wf[:10,i,i]}")
+                print(f"lanczos first freq: {G_mat_lanc_wf[:10,i,i]}")
 
                 #plt.plot(ws, A_mat_lanc_wf[:, i, j], label="A_"+str(i)+"(ω)")
                 #plt.plot(ws, A_mat_exact[:, i, j], label="A_ex"+str(i)+"(ω)")
