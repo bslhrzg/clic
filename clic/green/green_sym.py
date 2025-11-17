@@ -18,6 +18,8 @@ def get_green_block(
         L   # number of lanczos iterations
     ): 
     
+
+
     # --- Symmetry Analysis (done once per thermal state) ---
     sub_h0 = h0_n[np.ix_(target_indices, target_indices)]
     symdict = symmetries.analyze_symmetries(sub_h0)
@@ -26,6 +28,7 @@ def get_green_block(
     identical_groups = symdict["identical_groups"]
     is_diagonal = symdict["is_diagonal"]
     
+    print(f" Founds blocks : {blocks}")
     print(f"  Symmetry: is_diagonal={is_diagonal}. Found {len(identical_groups)} unique group(s) of blocks.")
 
     # This will store the full computed block for the current thermal state, using LOCAL indices.

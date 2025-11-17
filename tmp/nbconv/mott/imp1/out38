@@ -1,0 +1,303 @@
+******************************************
+******************************************
+NF = 78, M = 39, Nimp = 1
+******************************************
+[[-0.25   0.     0.033 ...  0.     0.033  0.   ]
+ [ 0.    -0.25   0.    ...  0.043  0.     0.033]
+ [ 0.033  0.    -2.197 ...  0.     0.     0.   ]
+ ...
+ [ 0.     0.043  0.    ...  2.092  0.     0.   ]
+ [ 0.033  0.     0.    ...  0.     2.197  0.   ]
+ [ 0.     0.033  0.    ...  0.     0.     2.197]]
+************
+[[-0.25   0.033  0.043 ...  0.048  0.043  0.033]
+ [ 0.033 -2.197  0.    ...  0.     0.     0.   ]
+ [ 0.043  0.    -2.092 ...  0.     0.     0.   ]
+ ...
+ [ 0.048  0.     0.    ...  1.987  0.     0.   ]
+ [ 0.043  0.     0.    ...  0.     2.092  0.   ]
+ [ 0.033  0.     0.    ...  0.     0.     2.197]]
+U((0, 0, 0, 0)) = (0.5+0j)
+setting to 0
+U((0, 39, 0, 39)) = (0.5+0j)
+U((39, 0, 39, 0)) = (0.5+0j)
+U((39, 39, 39, 39)) = (0.5+0j)
+setting to 0
+h0_0 size:  (78, 78)
+U_0 size:  (78, 78, 78, 78)
+Going with Nelec_imp = 1, nbath = 38, Nelec = 39
+imp_indices_full = [0, 39]
+h0_0 = 
+[[-0.25   0.033  0.043 ...  0.     0.     0.   ]
+ [ 0.033 -2.197  0.    ...  0.     0.     0.   ]
+ [ 0.043  0.    -2.092 ...  0.     0.     0.   ]
+ ...
+ [ 0.     0.     0.    ...  1.987  0.     0.   ]
+ [ 0.     0.     0.    ...  0.     2.092  0.   ]
+ [ 0.     0.     0.    ...  0.     0.     2.197]]
+
+
+--------------------------------------------------------------
+Mean-Field Self-Consistent Procedure with block handling
+--------------------------------------------------------------
+[V1] mfscf proc with Ne=39, maxiter=100, alpha=0.2, threshold=1e-07, spinsym_only = False
+[V1] Symmetry analysis found 2 blocks.
+[V1] Found 1 unique groups of blocks.
+[V1] Blocks: [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38], [39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77]]
+[V1] Identical Groups (by block index): [[0, 1]]
+[V1] iter 0, Tr(rho*h0) = -47.86323664
+[V1] Ne = 39, initial tr(rho) = 39.00000000+0.00000000j
+[V1] mixing parameter: α = 0.2
+[V2] Number of non-zero U elements: 2
+[V1] Iter         E_total          E_corr        ΔE_total
+[V2] U is sparse, using nzU
+[V1]    1    -47.69230406     -0.17093258      1.0477e+03
+[V1]   10    -47.71923806     -0.12966195      9.4436e-04
+[V1]   20    -47.72256062     -0.12539458      9.8945e-05
+[V1]   30    -47.72291355     -0.12503366      1.0606e-05
+[V1]   40    -47.72295142     -0.12500287      1.1387e-06
+[V1]   50    -47.72295548     -0.12500025      1.2227e-07
+[V1] Converged in 51 iterations.
+[V1] Final tr(rho) = 39.00000000+0.00000000j
+[V2] Reordering final eigenvectors to spin-blocked convention...
+hmf = 
+[[ 0.     0.033  0.043 ...  0.     0.     0.   ]
+ [ 0.033 -2.197  0.    ...  0.     0.     0.   ]
+ [ 0.043  0.    -2.092 ...  0.     0.     0.   ]
+ ...
+ [ 0.     0.     0.    ...  1.987  0.     0.   ]
+ [ 0.     0.     0.    ...  0.     2.092  0.   ]
+ [ 0.     0.     0.    ...  0.     0.     2.197]]
+DEBUG, Nimp_sf = 2
+hmf_ab = 
+[[ 0.   +0.j  0.   +0.j  0.033+0.j ...  0.   +0.j  0.033+0.j  0.   +0.j]
+ [ 0.   +0.j  0.   +0.j  0.   +0.j ...  0.043+0.j  0.   +0.j  0.033+0.j]
+ [ 0.033+0.j  0.   +0.j -2.197+0.j ...  0.   +0.j  0.   +0.j  0.   +0.j]
+ ...
+ [ 0.   +0.j  0.043+0.j  0.   +0.j ...  2.092+0.j  0.   +0.j  0.   +0.j]
+ [ 0.033+0.j  0.   +0.j  0.   +0.j ...  0.   +0.j  2.197+0.j  0.   +0.j]
+ [ 0.   +0.j  0.033+0.j  0.   +0.j ...  0.   +0.j  0.   +0.j  2.197+0.j]]
+
+--- Analyzed Structure ---
+Found 2 blocks
+Blocks: [[0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62, 64, 66, 68, 70, 72, 74, 76], [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77]]
+Identical Groups (by block index): [[0, 1]]
+[blocks] 2 blocks; identical groups: [[0, 1]]
+[check] Tr rho = 39.000000000035, sum blocks = 40.000000000000, Nelec = 39
+[leader block 0] size=39 Nimp_b=1 Nelec_b=20
+DEBUG: C1 = 
+[[ 1.     0.     0.    ...  0.     0.     0.   ]
+ [ 0.     0.003  0.04  ... -0.     0.    -0.   ]
+ [ 0.     0.004  0.053 ...  0.    -0.    -0.   ]
+ ...
+ [ 0.     0.093  0.    ...  0.304 -0.105 -0.203]
+ [ 0.     0.079  0.    ...  0.683 -0.208 -0.18 ]
+ [ 0.     0.058  0.    ...  0.186  0.217  0.045]]
+DEBUG: C2 = 
+[[ 1.  0.  0. ...  0.  0.  0.]
+ [ 0. -1.  0. ...  0.  0.  0.]
+ [ 0.  0.  1. ...  0.  0.  0.]
+ ...
+ [ 0.  0.  0. ...  1.  0.  0.]
+ [ 0.  0.  0. ...  0.  1.  0.]
+ [ 0.  0.  0. ...  0.  0.  1.]]
+DEBUG: C3 = 
+[[-0.97   0.244  0.    ...  0.     0.     0.   ]
+ [-0.244 -0.97   0.    ...  0.     0.     0.   ]
+ [ 0.     0.     1.    ...  0.     0.     0.   ]
+ ...
+ [ 0.     0.     0.    ...  1.     0.     0.   ]
+ [ 0.     0.     0.    ...  0.     1.     0.   ]
+ [ 0.     0.     0.    ...  0.     0.     1.   ]]
+DEBUG: C4 = 
+[[ 1.     0.     0.    ...  0.     0.     0.   ]
+ [ 0.     1.     0.    ...  0.     0.     0.   ]
+ [ 0.     0.     0.042 ...  0.     0.     0.   ]
+ ...
+ [ 0.     0.     0.    ...  0.062  0.361 -0.214]
+ [ 0.     0.     0.    ...  0.048  0.404 -0.08 ]
+ [ 0.     0.     0.    ... -0.058  0.078 -0.345]]
+DEBUG: C_total = 
+[[-0.97   0.244  0.    ...  0.     0.     0.   ]
+ [ 0.001  0.003 -0.147 ... -0.    -0.    -0.   ]
+ [ 0.001  0.004 -0.191 ... -0.    -0.    -0.   ]
+ ...
+ [ 0.023  0.091  0.002 ...  0.039  0.013  0.003]
+ [ 0.019  0.077  0.001 ... -0.007 -0.002 -0.   ]
+ [ 0.014  0.056  0.001 ...  0.001  0.     0.   ]]
+DEBUG: C_total_restored = 
+[[ 1.     0.     0.    ...  0.     0.     0.   ]
+ [-0.    -0.003 -0.147 ... -0.    -0.    -0.   ]
+ [ 0.    -0.004 -0.191 ... -0.    -0.    -0.   ]
+ ...
+ [-0.    -0.093  0.002 ...  0.039  0.013  0.003]
+ [ 0.    -0.079  0.001 ... -0.007 -0.002 -0.   ]
+ [-0.    -0.058  0.001 ...  0.001  0.     0.   ]]
+h_block_final:
+[[ 0.    -0.201 -0.219 ... -0.    -0.    -0.   ]
+ [-0.201  0.748 -0.055 ... -0.    -0.     0.   ]
+ [-0.219 -0.055 -1.255 ... -0.    -0.     0.   ]
+ ...
+ [-0.    -0.    -0.    ...  1.289  0.223 -0.   ]
+ [-0.    -0.    -0.    ...  0.223  1.29   0.16 ]
+ [-0.     0.     0.    ... -0.     0.16   1.291]]
+C_block:
+[[ 1.     0.     0.    ...  0.     0.     0.   ]
+ [-0.    -0.003 -0.147 ... -0.    -0.    -0.   ]
+ [ 0.    -0.004 -0.191 ... -0.    -0.    -0.   ]
+ ...
+ [-0.    -0.093  0.002 ...  0.039  0.013  0.003]
+ [ 0.    -0.079  0.001 ... -0.007 -0.002 -0.   ]
+ [-0.    -0.058  0.001 ...  0.001  0.     0.   ]]
+[sanity] ||h_final - C^† h C|| / ||h|| = 0.000e+00
+hdc_ab = 
+[[ 0.     0.    -0.201 ...  0.    -0.     0.   ]
+ [ 0.     0.     0.    ... -0.     0.    -0.   ]
+ [-0.201  0.     0.748 ...  0.     0.     0.   ]
+ ...
+ [ 0.    -0.     0.    ...  1.29   0.     0.16 ]
+ [-0.     0.     0.    ...  0.     1.291  0.   ]
+ [ 0.    -0.     0.    ...  0.16   0.     1.291]]
+C_ab = 
+[[ 1.     0.     0.    ...  0.     0.     0.   ]
+ [ 0.     1.     0.    ...  0.     0.     0.   ]
+ [-0.     0.    -0.003 ...  0.    -0.     0.   ]
+ ...
+ [ 0.     0.     0.    ... -0.002  0.    -0.   ]
+ [-0.     0.    -0.058 ...  0.     0.     0.   ]
+ [ 0.    -0.     0.    ...  0.     0.     0.   ]]
+C = 
+[[ 1.     0.     0.    ...  0.     0.     0.   ]
+ [-0.    -0.003 -0.147 ...  0.     0.     0.   ]
+ [ 0.    -0.004 -0.191 ...  0.     0.     0.   ]
+ ...
+ [ 0.     0.     0.    ...  0.039  0.013  0.003]
+ [ 0.     0.     0.    ... -0.007 -0.002 -0.   ]
+ [ 0.     0.     0.    ...  0.001  0.     0.   ]]
+******************************************
+h0_0 = 
+[[-0.25  -0.201 -0.219 ...  0.     0.     0.   ]
+ [-0.201  0.748 -0.055 ...  0.     0.     0.   ]
+ [-0.219 -0.055 -1.255 ...  0.     0.     0.   ]
+ ...
+ [ 0.     0.     0.    ...  1.289  0.223 -0.   ]
+ [ 0.     0.     0.    ...  0.223  1.29   0.16 ]
+ [ 0.     0.     0.    ... -0.     0.16   1.291]]
+h0_legacy = 
+[[-0.25   0.033  0.043 ...  0.     0.     0.   ]
+ [ 0.033 -2.197  0.    ...  0.     0.     0.   ]
+ [ 0.043  0.    -2.092 ...  0.     0.     0.   ]
+ ...
+ [ 0.     0.     0.    ...  1.987  0.     0.   ]
+ [ 0.     0.     0.    ...  0.     2.092  0.   ]
+ [ 0.     0.     0.    ...  0.     0.     2.197]]
+Partitioning system: 1 impurity orbitals, 38 bath orbitals.
+Generating basis for 1 electrons on impurity and 38 on bath.
+Found 2 impurity configurations and 1 bath configurations.
+Generated a total of 2 unique starting determinants.
+sb = [<SlaterDeterminant α=[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] β=[0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]>, <SlaterDeterminant α=[0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] β=[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]>]
+DEBUG: build ham time = 0.3942999839782715
+[init] dim=2  E0=-47.746563462561
+blocks = [-0.5, 0.5], time block = 2.4080276489257812e-05
+apply_ham time = 6.985664367675781e-05
+gen basis time = 0.0001049041748046875
+sel basis time = 0.00011277198791503906
+Found 2 S_z blocks: [-0.5, 0.5]
+  Processing Sz=-0.5 block of size 6x6
+DEBUG: build ham time = 0.402393102645874
+  Processing Sz=0.5 block of size 6x6
+DEBUG: build ham time = 0.4035489559173584
+DEBUG: finished rearranging vectors
+DEBUG: for basis size 12, ham diag time = 0.8063650131225586
+[iter 0] dim=    12  Es=[-47.818730119912 -47.818730119912]  |dE0|=7.217e-02
+blocks = [-0.5, 0.5], time block = 2.193450927734375e-05
+apply_ham time = 0.0001957416534423828
+gen basis time = 0.0002589225769042969
+sel basis time = 0.0002257823944091797
+Found 2 S_z blocks: [-0.5, 0.5]
+  Processing Sz=-0.5 block of size 19x19
+DEBUG: build ham time = 0.4008603096008301
+  Processing Sz=0.5 block of size 19x19
+DEBUG: build ham time = 0.3997812271118164
+DEBUG: finished rearranging vectors
+DEBUG: for basis size 38, ham diag time = 0.8011031150817871
+[iter 1] dim=    38  Es=[-47.825388912826 -47.825388912826]  |dE0|=6.659e-03
+blocks = [-0.5, 0.5], time block = 4.887580871582031e-05
+apply_ham time = 0.0005671977996826172
+gen basis time = 0.000701904296875
+sel basis time = 0.0004591941833496094
+Found 2 S_z blocks: [-0.5, 0.5]
+  Processing Sz=-0.5 block of size 47x47
+DEBUG: build ham time = 0.4008619785308838
+  Processing Sz=0.5 block of size 47x47
+DEBUG: build ham time = 0.3974292278289795
+DEBUG: finished rearranging vectors
+DEBUG: for basis size 94, ham diag time = 0.7996408939361572
+[iter 2] dim=    94  Es=[-47.826503670263 -47.826503670263]  |dE0|=1.115e-03
+blocks = [-0.5, 0.5], time block = 0.00011205673217773438
+apply_ham time = 0.0014400482177734375
+gen basis time = 0.0017201900482177734
+sel basis time = 0.0009300708770751953
+Found 2 S_z blocks: [-0.5, 0.5]
+  Processing Sz=-0.5 block of size 104x104
+DEBUG: build ham time = 0.39780402183532715
+  Processing Sz=0.5 block of size 104x104
+DEBUG: build ham time = 0.39826083183288574
+DEBUG: finished rearranging vectors
+DEBUG: for basis size 208, ham diag time = 0.8754880428314209
+[iter 3] dim=   208  Es=[-47.826698140685 -47.826698140684]  |dE0|=1.945e-04
+blocks = [-0.5, 0.5], time block = 0.0002620220184326172
+apply_ham time = 0.0033693313598632812
+gen basis time = 0.003977298736572266
+sel basis time = 0.001809835433959961
+Found 2 S_z blocks: [-0.5, 0.5]
+  Processing Sz=-0.5 block of size 202x202
+DEBUG: build ham time = 0.39925479888916016
+  Processing Sz=0.5 block of size 202x202
+DEBUG: build ham time = 0.3992180824279785
+DEBUG: finished rearranging vectors
+DEBUG: for basis size 404, ham diag time = 0.9620916843414307
+[iter 4] dim=   404  Es=[-47.826731890391 -47.826731890391]  |dE0|=3.375e-05
+blocks = [-0.5, 0.5], time block = 0.00049591064453125
+apply_ham time = 0.006864786148071289
+gen basis time = 0.008018016815185547
+sel basis time = 0.003454923629760742
+Found 2 S_z blocks: [-0.5, 0.5]
+  Processing Sz=-0.5 block of size 348x348
+DEBUG: build ham time = 0.39989399909973145
+  Processing Sz=0.5 block of size 348x348
+DEBUG: build ham time = 0.4011881351470947
+DEBUG: finished rearranging vectors
+DEBUG: for basis size 696, ham diag time = 0.9800689220428467
+[iter 5] dim=   696  Es=[-47.826737644422 -47.826737644422]  |dE0|=5.754e-06
+[conv] reached |dE| < 1e-05
+Found 2 S_z blocks: [-0.5, 0.5]
+  Processing Sz=-0.5 block of size 348x348
+DEBUG: build ham time = 0.40151023864746094
+  Processing Sz=0.5 block of size 348x348
+DEBUG: build ham time = 0.4011039733886719
+DEBUG: finished rearranging vectors
+sci total time : 12.033963918685913
+energies = [-47.827 -47.827], e0 = -47.826737644422145
+len basis = 696
+len(basis(psis0)) = 696
+target_indices = [0, 39]
+ Founds blocks : [[0], [1]]
+  Symmetry: is_diagonal=True. Found 1 unique group(s) of blocks.
+  Computing representative g_(0,0) via Scalar CF...
+DEBUG: build ham time = 0.40979504585266113
+DEBUG: build ham time = 0.399245023727417
+target_indices = [0, 39]
+ Founds blocks : [[0], [1]]
+  Symmetry: is_diagonal=True. Found 1 unique group(s) of blocks.
+  Computing representative g_(0,0) via Scalar CF...
+DEBUG: build ham time = 0.40435194969177246
+DEBUG: build ham time = 0.40050816535949707
+rdm : 
+[[0.5+0.j 0. +0.j]
+ [0. +0.j 0.5+0.j]]
+impurity occupation: (0.9999919623464189+0j)
+total occupation : (0.9999919623464189+0j)
+
+Thermally-averaged calculation finished.
+Data saved to 'dump/A_38'

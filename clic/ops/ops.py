@@ -46,24 +46,6 @@ def one_rdm(wf,M,block=None):
 
     return rdm
 
-
-def get_ham(basis,h0,U,method="openmp"):
-    """TO ADD : DETECT SPIN FLIPS TERMS"""
-    h0 = np.ascontiguousarray(h0, dtype=np.complex128)
-    U = np.ascontiguousarray(U, dtype=np.complex128)
-
-    if method == "openmp":
-        t0 = time()
-        H = cc.build_hamiltonian_openmp(basis, h0, U)
-        t1 = time()
-        print(f"DEBUG: build ham time = {t1-t0}")
-    else : 
-        print("method not implemented yet")
-        assert 1==2
-    return H 
-
-
-
 def get_one_body_terms(h0, M, thr=1e-12):
     """
     The non-zeros (above threshold) elements of the one-body hamiltonian
@@ -109,8 +91,6 @@ def get_two_body_terms(U, M, thr=1e-12):
                                       spins[0], spins[1], spins[2], spins[3],
                                       complex(U[i, j, k, l])))
     return terms
-
-
 
 def expect_Sz_from_rdm(rdm, M, block):
     # uses the block mapping you built in one_rdm

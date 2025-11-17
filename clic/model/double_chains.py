@@ -149,7 +149,9 @@ def get_double_chain_transform(h_spin, Nelec):
 # Multi-orbital 
 # ------------------------------------------------------------
 
-def restore_original_impurity(C_total, Nimp, na, nf, ne, r_svd,
+# This is useless I'm totally stupid, 
+# only need to undo C3 by hitting with C3.conj().T
+def restore_original_impurity(C_total, Nimp, r_svd,
                               conduction_seeds, valence_seeds,
                               cond_indices, val_indices,
                               Ub_pairs, Vimp):
@@ -251,6 +253,8 @@ def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-8):
     C1 = block_diag(np.eye(Nimp, dtype=h.dtype), W[:, order_bath])  # rotate only the bath by W (impurity untouched)
     rho1 = C1.conj().T @ rho @ C1                               # transform density to bath-NO basis
     h1   = C1.conj().T @ h   @ C1                               # transform Hamiltonian similarly
+    print(f"DEBUG: C1 = ")
+    print(C1.real)
     # Here, h1 has the form 
     #  IMP  ACTIVE  FILLED EMPTY
     #  himp hia     hif     hie
@@ -274,6 +278,8 @@ def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-8):
 
     # rotate impurity by Vimp and active bath by Wa; filled/empty bath unchanged
     C2 = block_diag(Vimp, block_diag(Wa, np.eye(nf + ne, dtype=h.dtype)))
+    print(f"DEBUG: C2 = ")
+    print(C2.real)
     rho2 = C2.conj().T @ rho1 @ C2
     h2   = C2.conj().T @ h1   @ C2
 
@@ -301,7 +307,8 @@ def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-8):
     C3  = Ub                                                     # per-pair rotation unitary
     rho3 = C3.conj().T @ rho2 @ C3                               # apply to ρ
     h3   = C3.conj().T @ h2   @ C3                               # and to h
-
+    print(f"DEBUG: C3 = ")
+    print(C3.real)
     # Now, h3 has the form 
     #  IA-FILLED IA-EMPTY  FILLED   EMPTY
     #  hiaf         0       hiaf-f  0
@@ -345,19 +352,24 @@ def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-8):
     C4 = np.eye(M, dtype=h.dtype)                                # assemble subspace unitaries
     C4[np.ix_(val_indices,  val_indices )] = Qv_embed
     C4[np.ix_(cond_indices, cond_indices)] = Qc_embed
-
+    print(f"DEBUG: C4 = ")
+    print(C4.real)
     # compose all steps before the final restore
     C_total = C1 @ C2 @ C3 @ C4
-
+    print(f"DEBUG: C_total = ")
+    print(C_total.real)
     # ---- (6) Exact restore of original impurity ----
     # invert per-pair rotations on the heads, undo Vimp on the impurity-Schmidt block,
-    # then permute columns to place the original impurity first. This is delegated.
-    C_total = restore_original_impurity(
-        C_total, Nimp, na, nf, ne, r_svd,
+    # then permute columns to place the original impurity first.
+    C_total_ = restore_original_impurity(
+        C_total, Nimp, r_svd,
         conduction_seeds, valence_seeds,
         cond_indices, val_indices,
         Ub_pairs, Vimp
     )
+    C_total =  C_total @ C3.conj().T
+    print(f"DEBUG: C_total_restored = ")
+    print(C_total.real)
 
     h_final = C_total.conj().T @ h @ C_total                    # final Hamiltonian in double-chain basis (impurity restored)
 
@@ -468,6 +480,10 @@ def double_chain_by_blocks(
             # Run the double-chain transform on the leader block
             h_block = submat(h, leader_idx)
             h_block_final, C_block, meta = transform_fn(h_block, Nimp_b, Nelec_b, tol_occ=tol_occ)
+            print("h_block_final:")
+            print(np.real(h_block_final))
+            print("C_block:")
+            print(np.real(C_block))
 
         # Cache leader result
         leader_unitaries[leader] = (C_block, h_block_final, meta)

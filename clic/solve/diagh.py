@@ -1,47 +1,50 @@
 import numpy as np
 from scipy.sparse.linalg import LinearOperator, eigsh  # or eigs if complex non-Hermitian
-from scipy.sparse import csr_matrix
+from scipy.sparse import csr_matrix, diags
 from scipy.linalg import eigh
-from ..ops.ops import get_ham
 import clic_clib as cc
-from .davidson import davidson_linearop
+from .davidson import davidson_linearop,davidson
 from clic.basis.basis_Np import partition_by_Sz
-from clic.ops import ops
 from time import time
 
-def diagH_(basis,h0,U,M,num_roots,vguess = 'hf', option='matvec',sh_full=None):
-    
-    if sh_full is None:
-        sh_full = cc.build_screened_hamiltonian(h0, U, 1e-10)
-    
-    sh_fb   = cc.build_fixed_basis_tables(sh_full, basis, M)
 
-    
-    A_csr_native = cc.build_fixed_basis_csr(sh_fb, basis, h0, U)
 
-    if option == 'native':
-        A = csr_matrix((np.asarray(A_csr_native.data),
-                        np.asarray(A_csr_native.indices, dtype=np.int64),
-                        np.asarray(A_csr_native.indptr, dtype=np.int64)),
-                    shape=(A_csr_native.N, A_csr_native.N))
+def get_ham(basis,h0,U,method="1",tables=None):
+    """TO ADD : DETECT SPIN FLIPS TERMS"""
+    h0 = np.ascontiguousarray(h0, dtype=np.complex128)
+    U = np.ascontiguousarray(U, dtype=np.complex128)
 
-    if option == 'matvec':
-        def matvec(x):
-            return cc.csr_matvec(A_csr_native, np.asarray(x, dtype=np.complex128))
-        A = LinearOperator((A_csr_native.N, A_csr_native.N), matvec=matvec, dtype=np.complex128)
+    if method == "0":
+        t0 = time()
+        H = cc.build_hamiltonian_openmp(basis, h0, U)
+        t1 = time()
+        print(f"DEBUG: build ham time = {t1-t0}")
 
-   
-    #evals, evecs = eigsh(A, k=num_roots, which="SA", ncv=min(2*num_roots+1, len(basis)))
-    evals, evecs = davidson_linearop(A, num_roots=num_roots, max_subspace=128, block_size=16, tol=1e-10)
+    elif method == "1":
+        t0 = time()
+        M = np.shape(h0)[0] // 2
+        if tables is None:
+            toltables = 1e-12
+            tables = cc.build_hamiltonian_tables(h0,U,toltables)
+        
+        tol_el = 1e-16
+        ftables = cc.build_fixed_basis_tables(tables,basis,M)
+        H = cc.build_hamiltonian_matrix_fixed_basis(
+            ftables, basis, h0, U, tol_el)
+        t1 = time()
+        print(f"DEBUG: build ham time = {t1-t0}")
+    else : 
+        print("method not implemented yet")
+        assert 1==2
+    return H 
 
-    return evals,evecs
 
 
 def diagH(basis, h0, U, M, num_roots, vguess='hf', option='csr', sh_full=None):
 
     if option == 'csr':  # builds the matrix once, then matvec
         if sh_full is None:
-            sh_full = cc.build_screened_hamiltonian(h0, U, 1e-10)
+            sh_full = cc.build_hamiltonian_tables(h0, U, 1e-10)
         sh_fb = cc.build_fixed_basis_tables(sh_full, basis, M)
         A_csr_native = cc.build_fixed_basis_csr(sh_fb, basis, h0, U)
         def matvec(x):
@@ -80,20 +83,9 @@ def diagH(basis, h0, U, M, num_roots, vguess='hf', option='csr', sh_full=None):
     evals, evecs = davidson_linearop(A, num_roots=num_roots, max_subspace=128, block_size=16, tol=1e-10)
     return evals, evecs
 
-def get_roots_(basis0,h0,U,nroots,method='buildH'):
-    if len(basis0) <= 64:
 
-        H = ops.get_ham(basis0, h0, U)
-        evals, evecs = eigh(H.toarray())
-    else:
-        H = ops.get_ham(basis0, h0, U)
-        evals, evecs = eigsh(H, k=nroots, which='SA')
-    indsort = np.argsort(np.real(evals))
-    evals=evals[indsort]
-    evecs=evecs[:,indsort]
-    return evals[:nroots], evecs[:, :nroots]
 
-def get_roots(basis0, h0, U, nroots,method='buildH'):
+def get_roots(basis0, h0, U, nroots, method="davidson", tables=None):
     """
     Calculates the lowest energy eigenstates by block-diagonalizing the Hamiltonian
     in S_z sectors.
@@ -144,7 +136,7 @@ def get_roots(basis0, h0, U, nroots,method='buildH'):
         sub_basis = [basis0[i] for i in sub_indices]
 
         # Build the smaller Hamiltonian for this block only
-        H_block = ops.get_ham(sub_basis, h0, U)
+        H_block = get_ham(sub_basis, h0, U, method="1", tables=tables)
         
         # Decide on diagonalization method based on the BLOCK size
         # This is much more efficient than checking the full basis size
@@ -161,7 +153,32 @@ def get_roots(basis0, h0, U, nroots,method='buildH'):
             # We need to find at most nroots, but cannot ask for more roots
             # than the matrix dimension minus one for eigsh.
             k = min(nroots, sub_basis_size - 1)
-            evals_block, evecs_block = eigsh(H_block, k=k, which='SA')
+            
+            if method == "arpack":
+                print("entering arpack diag")
+
+                v0 = np.random.randn(H_block.shape[0])
+            
+                # adding a small diagonal noise to break degeneracy
+                # eigsh has trouble for very symmetric hamiltonians
+                eps = 1e-8
+                diag_noise = eps * np.random.randn(H_block.shape[0])
+            
+                H_block_pert = H_block + diags(diag_noise)
+                evals_block, evecs_block = eigsh(H_block_pert, k=k, which='SA', v0=v0)
+
+                
+                print("block diagonalized")
+            elif method == "davidson":
+                evals_block, evecs_block = davidson(
+                    H_block,
+                    num_roots=k,
+                    max_subspace=120,
+                    tol=1e-10,
+                    diag=H_block.diagonal(),
+                    block_size=2*k,
+                    verbose=False
+                )
 
         # 3. Reconstruct eigenvectors in the original full basis
         for i in range(len(evals_block)):
@@ -187,6 +204,8 @@ def get_roots(basis0, h0, U, nroots,method='buildH'):
     sorted_evals = np.array(all_evals)[indsort]
     # np.stack creates a matrix from the list of vectors before sorting columns
     sorted_evecs = np.stack(all_evecs_in_full_basis, axis=1)[:, indsort]
+
+    print("DEBUG: finished rearranging vectors")
     
     # Return only the requested number of roots
     return sorted_evals[:nroots], sorted_evecs[:, :nroots]

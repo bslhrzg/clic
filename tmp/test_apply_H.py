@@ -110,7 +110,7 @@ def test_h2o_fci_energy():
 
     # Apply your new function
     # Using tol=0 ensures we don't miss any connections
-    screened_H = qc.build_screened_hamiltonian(h0_alphafirst, U_alphafirst, 1e-12)
+    screened_H = qc.build_hamiltonian_tables(h0_alphafirst, U_alphafirst, 1e-12)
     Hhf_new = qc.apply_hamiltonian(wfhf, screened_H, h0_alphafirst, U_alphafirst, 1e-12) # tol_element=0
     # Find the index of the HF determinant in the FCI basis
     try:
@@ -187,18 +187,18 @@ def test_h2o_fci_energy():
     basis = fci_basis
 
     # 1) Build tables once
-    sh_full = qc.build_screened_hamiltonian(h0_alphafirst, U_alphafirst, 1e-12)
+    sh_full = qc.build_hamiltonian_tables(h0_alphafirst, U_alphafirst, 1e-12)
     sh_fb   = qc.build_fixed_basis_tables(sh_full, basis, M)
 
     def diagH(basis,h0,U,M,num_roots,vguess = 'hf', option='matvec',sh_full=None):
         
         if sh_full is None:
-            sh_full = qc.build_screened_hamiltonian(h0, U, 1e-12)
+            sh_full = qc.build_hamiltonian_tables(h0, U, 1e-12)
         
         sh_fb   = qc.build_fixed_basis_tables(sh_full, basis, M)
 
         
-        A_csr_native = qc.build_fixed_basis_csr(sh_fb, basis, h0, U)
+        A_csr_native = qc.build_fixed_basis_tables(sh_fb, basis, h0, U)
  
         if option == 'native':
             A = csr_matrix((np.asarray(A_csr_native.data),

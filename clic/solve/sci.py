@@ -13,7 +13,7 @@ from numpy.linalg import eigh,eig
 from time import time
 from clic.io_clic.io_utils import vprint 
 from .davidson import davidson 
-from .diagh import get_roots
+from .diagh import get_roots, get_ham
 
 applyH=False
 dodavidson=False
@@ -112,13 +112,19 @@ def selective_ci(
     #print(f"SHhf = {SHHf}")
 
 
-
+    print("DEBUG: entering selective_ci()")
 
     t_start = time()
     basis0=seed
 
+    print("DEBUG: constructing tables")
+    toltables = 1e-12
+    tables = cc.build_hamiltonian_tables(h0,U,toltables)
+    print("DEBUG: tables constructed")
+
+
     # Initial Hamiltonian and ground state
-    H = ops.get_ham(basis0, h0, U)
+    H = get_ham(basis0, h0, U, method="1", tables = tables)
     # For small bases, a dense eig can be faster / safer; otherwise eigsh.
     dim0 = H.shape[0]
     if dim0 <= 256:
@@ -128,7 +134,7 @@ def selective_ci(
         psi0 = cc.Wavefunction(M, basis0, 1/np.sqrt(dim0) * (np.sum(evecs,axis=1)))
 
     else:
-        evals, evecs = eigsh(H, k=1, which='SA')
+        evals, evecs = eigsh(H, k=num_roots, which='SA')
         e0 = float(evals[0])
         #psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
         psi0 = cc.Wavefunction(M, basis0, 1/np.sqrt(dim0) * (np.sum(evecs,axis=1)))
@@ -152,9 +158,7 @@ def selective_ci(
     
 
 
-    thrscr = 1e-12
-    screened_H = cc.build_screened_hamiltonian(h0, 1 * U, thrscr)
-
+   
 
     # Main selection loop
     for it in range(max_iter):
@@ -169,7 +173,7 @@ def selective_ci(
 
         t2=time()
         # generate externals and couplings without normalization or pruning
-        ext, Hpsi_amp = hamiltonian_generator(psi0, one_bh, two_bh, screened_H, h0, U)
+        ext, Hpsi_amp = hamiltonian_generator(psi0, one_bh, two_bh, tables, h0, U)
         t3=time()
         print(f"gen basis time = {t3-t2}")
         #selected_basis = selector(hwf,e0,gen_basis,2*M,h0,U)
@@ -219,17 +223,12 @@ def selective_ci(
 
         
         t5=time()
-        if applyH :
-            evals,evecs = get_roots(basis0,h0,U,nroots=num_roots,method='applyH')
-        else:
-            if dodavidson:
-                evals, evecs = get_roots(basis0,h0,U,nroots=num_roots,method='davidson_memory')
-            else:
-                evals, evecs = get_roots(basis0,h0,U,nroots=num_roots,method='buildH')
+       
+        evals, evecs = get_roots(basis0,h0,U,nroots=num_roots,tables=tables)
 
         e_new = float(evals[0])
         t8=time()
-        #print(f"DEBUG: for basis size {dim}, ham diag time = {t8-t5}")
+        print(f"DEBUG: for basis size {dim}, ham diag time = {t8-t5}")
 
 
         # ADDING THE TWO LOWEST STATES TOGETHER
@@ -276,7 +275,7 @@ def selective_ci(
         print("num_roots > length(basis)")
         num_roots = len(basis0)
 
-    evals, evecs = get_roots(basis0,h0,U,num_roots)
+    evals, evecs = get_roots(basis0,h0,U,num_roots,tables=tables)
     psis = [cc.Wavefunction(M, basis0, evecs[:, i], keep_zeros=True) for i in range(num_roots)]
 
     t_final = time()
@@ -301,7 +300,7 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=0,verbose=True):
     print(f"fci basis size = {len(basis)}")
 
     t0 = time()
-    H_sparse = ops.get_ham(basis,h0,U,method="openmp")
+    H_sparse = get_ham(basis,h0,U,method="1")
     t1 = time()
     vprint(1,f"time to construct H : {t1-t0}")
     
@@ -386,7 +385,27 @@ def cipsi_select(ext_dets, Hpsi_amp, E_var, K, h0, U, select_cutoff=1e-6,
         Haa = cc.KL(occ, occ, K, h0, U)           # diagonal Epstein–Nesbet
         denom = E_var - Haa + level_shift + 1e-8
         v = Hpsi_amp[a]
-        de2 = (abs(v)**2) / denom
+
+        #de2 = (abs(v)**2) / denom
+        
+
+        try:
+            de2 = (abs(v)**2) / denom
+
+        except OverflowError as err:
+            # print debug info *once for this determinant*
+            print("OverflowError in CIPSI selection:")
+            print(f"  det id: {a}")
+            print(f"  occ: {occ}")
+            print(f"  Haa: {Haa}")
+            print(f"  denom: {denom}")
+            print(f"  v: {v}")
+            print(f"  |v|²: {abs(v)**2}")
+            print(f"  exception: {err}")
+
+            # Then either skip or clamp
+            continue   # or: de2 = 0.0
+
         contrib.append((a, de2))
         Ept2_total += de2
 
@@ -394,7 +413,7 @@ def cipsi_select(ext_dets, Hpsi_amp, E_var, K, h0, U, select_cutoff=1e-6,
     contrib.sort(key=lambda t: abs(t[1]), reverse=True)
 
     #print(f"DEBUG: Biggest CPT2:")
-    keep=np.min([10,len(contrib)])
+    #keep=np.min([10,len(contrib)])
     #for a,c in contrib[:keep]:
         #print(f"DEBUG: |amp| = {c} for state {a}")
     

@@ -1,8 +1,8 @@
 # clic/create_generic_aim.py
 
 import numpy as np
-import sys 
-
+import matplotlib.pyplot as plt
+from clic.basis.basis_1p import umo2so
 # The idea here is to define a generic anderson impurity model 
 # with some constraints: the hybridization is always diagonal
 #
@@ -13,11 +13,31 @@ import sys
 # mott_two_semicircle_bath for mott like hybridization 
 
 
-def semicircle_bath(nb, D=1.0, Gamma0=0.2, center=0.0):
+
+def semicircle_bath(nb, D=1.0, Gamma0=0.2, center=0.0,
+                    plot=True, ax=None, n_omega=401):
     """
     Discretize a semicircular hybridization:
         Gamma(omega) = Gamma0 * sqrt(1 - ((omega - center)/D)**2)
     on nb equally spaced bath levels within the support.
+
+    Parameters
+    ----------
+    nb : int
+        Number of bath levels.
+    D : float
+        Half-bandwidth.
+    Gamma0 : float
+        Overall hybridization scale.
+    center : float
+        Center of the semicircle.
+    plot : bool, optional
+        If True, plot the continuous Gamma(omega) together
+        with the discrete bath representation.
+    ax : matplotlib.axes.Axes, optional
+        Axis to plot on. If None and plot=True, a new figure is created.
+    n_omega : int, optional
+        Number of points for the continuous Gamma(omega) curve.
 
     Returns
     -------
@@ -36,9 +56,37 @@ def semicircle_bath(nb, D=1.0, Gamma0=0.2, center=0.0):
     x = (e_bath - center) / D
     Gamma = Gamma0 * np.sqrt(np.clip(1.0 - x**2, 0.0, None))
 
+    # Discrete hybridization amplitudes
     V_bath = np.sqrt(Gamma * delta_eps / np.pi)
-    return e_bath, V_bath
 
+    if plot:
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        # Continuous hybridization
+        omega = np.linspace(center - D, center + D, n_omega)
+        xw = (omega - center) / D
+        Gamma_exact = Gamma0 * np.sqrt(np.clip(1.0 - xw**2, 0.0, None))
+
+        ax.plot(omega, Gamma_exact, label=r"$\Gamma(\omega)$ (continuous)")
+
+        # Discrete representation: in the continuum limit
+        # Gamma(omega) ≈ π * Σ_i V_i^2 δ(ω-ε_i) / Δε
+        Gamma_disc = np.pi * V_bath**2 / delta_eps
+
+        # Sticks for each bath level
+        markerline, stemlines, baseline = ax.stem(
+            e_bath, Gamma_disc, label="discrete bath"
+        )
+
+        ax.set_xlabel(r"$\omega$")
+        ax.set_ylabel(r"$\Gamma(\omega)$")
+        ax.set_xlim(center - D * 1.05, center + D * 1.05)
+        ax.legend()
+        ax.set_title("Semicircular hybridization and discrete bath")
+        plt.savefig("hyb.png")
+
+    return e_bath, V_bath
 
 def mott_two_semicircle_bath(nb, D=1.0, Gamma0=0.2, gap=1.0):
     """
@@ -423,7 +471,38 @@ def build_impurity_model(Nimp_orb, Nb, bath_scheme, eps_imp, lambda_soc,
     # so we can just add the local part here
     h0[:nloc, :nloc] += h_imp
 
+    h0 = np.ascontiguousarray(h0, dtype=np.complex128)
+
     return h0
+
+
+def build_U_tensor(Nimp, M_total_spatial,  U, J, Uprime=None, Jpair=None, symmetrize=True):
+
+
+    U_imp_spatial = build_U_matrix_kanamori(Nimp, U, J,
+                            rotational_invariant=True,
+                            Uprime=Uprime, Jpair=Jpair,
+                            symmetrize=symmetrize)
+    
+    U_imp = umo2so(U_imp_spatial,Nimp)
+
+    M_total_spinfull = M_total_spatial*2
+
+    # Pad the U matrix to the full size of the new hamiltonian
+    # Assumes U_imp is dense (4-index tensor)
+    U_0 = np.zeros((M_total_spinfull,)*4, dtype=U_imp.dtype)
+    imp_size = U_imp.shape[0]
+    halfimp = imp_size // 2
+
+    impindex = [i for i in range(halfimp)] + [i for i in range(M_total_spatial, M_total_spatial+halfimp)]
+    U_0[np.ix_(impindex, impindex, impindex, impindex)] = U_imp
+
+    U_0 = np.ascontiguousarray(U_0, dtype=np.complex128)
+
+    return U_0
+
+
+
 
 
 test=False 

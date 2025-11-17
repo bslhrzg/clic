@@ -401,7 +401,7 @@ def test_h2o_fci_energy():
 
     #print("\nBuilding screened Hamiltonian tables with C++...")
     thr = 1e-10  # Use a small threshold for screening
-    screened_H = qc.build_screened_hamiltonian(h0, U, thr)
+    screened_H = qc.build_hamiltonian_tables(h0, U, thr)
 
     # Apply the Hamiltonian using the new C++ function
     print("Applying Hamiltonian to HF state with new C++ kernel...")
