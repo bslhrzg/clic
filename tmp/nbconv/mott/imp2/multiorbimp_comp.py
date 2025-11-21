@@ -18,7 +18,7 @@ Nimp = 2
 
 scheme = ["mott" for _ in range(Nimp)]
 lambda_soc = 0.0
-Nb = 8
+Nb = 18
 U_kanamori = 0.5 # ~6.8 eV
 J_kanamori = 0.0
 nimp = 2
@@ -81,7 +81,7 @@ print(f"imp_indices_full = {imp_indices_full}")
 # Define impurity indices (now expecting global SPATIAL indices)
 
 
-dodblchain=True
+dodblchain=False
 if dodblchain:  
     print("h0_0 = ")
     print(np.real(h0_0))

@@ -53,15 +53,16 @@ C = None
 
 h0_legacy = h0_0.copy()
 
-for i in range(NF):
-    for j in range(NF):
-        for k in range(NF):
-            for l in range(NF):
-                if U_0[i,j,k,l] != 0:
-                    print(f"U({i,j,k,l}) = {U_0[i,j,k,l]}")
-                    if i==j and i==k and i==l : 
-                        print("setting to 0")
-                        U_0[i,j,k,l] = 0
+if False:
+    for i in range(NF):
+        for j in range(NF):
+            for k in range(NF):
+                for l in range(NF):
+                    if U_0[i,j,k,l] != 0:
+                        print(f"U({i,j,k,l}) = {U_0[i,j,k,l]}")
+                        if i==j and i==k and i==l : 
+                            print("setting to 0")
+                            U_0[i,j,k,l] = 0
 
 print("h0_0 size: ",np.shape(h0_0))
 print("U_0 size: ",np.shape(U_0))

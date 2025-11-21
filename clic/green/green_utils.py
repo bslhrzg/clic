@@ -26,7 +26,6 @@ def wavefunction_support(wf, coeff_thresh=1e-7):
     return set(wf_copy.data().keys())
 
 def wf_to_vec(wf, basis_list):
-    # Let's refine the idea:
     v = np.zeros(len(basis_list), dtype=np.complex128)
     for i, det in enumerate(basis_list):
         # wf.amplitude(det) is <det|wf>

@@ -2,6 +2,7 @@
 # basis_Np.py
 import clic_clib as cc
 from itertools import combinations, product
+from collections import defaultdict
 import numpy as np
 
 def get_fci_basis(num_spatial, num_electrons):
@@ -19,7 +20,6 @@ def get_fci_basis(num_spatial, num_electrons):
         basis_dets.append(det)
     return sorted(basis_dets)
 
-from collections import defaultdict
 
 def partition_by_Sz(basis):
     """

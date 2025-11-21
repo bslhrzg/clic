@@ -40,7 +40,7 @@ def get_ham(basis,h0,U,method="1",tables=None):
 
 
 
-def diagH(basis, h0, U, M, num_roots, vguess='hf', option='csr', sh_full=None):
+def diagH_(basis, h0, U, M, num_roots, vguess='hf', option='csr', sh_full=None):
 
     if option == 'csr':  # builds the matrix once, then matvec
         if sh_full is None:
@@ -84,128 +84,221 @@ def diagH(basis, h0, U, M, num_roots, vguess='hf', option='csr', sh_full=None):
     return evals, evecs
 
 
+import numpy as np
+from scipy.sparse import issparse
+from scipy.sparse.linalg import eigsh
+from numpy.linalg import eigh
 
-def get_roots(basis0, h0, U, nroots, method="davidson", tables=None):
+# assume davidson, get_ham, partition_by_Sz are imported/defined elsewhere
+
+
+def diagH(H, num_roots, option="arpack", **kwargs):
     """
-    Calculates the lowest energy eigenstates by block-diagonalizing the Hamiltonian
-    in S_z sectors.
-
-    This is more efficient than building and diagonalizing the full Hamiltonian
-    as it solves smaller eigenvalue problems for each block.
+    Diagonalize H and return the lowest `num_roots` eigenpairs.
 
     Parameters
     ----------
-    basis0 : list[SlaterDeterminant]
-        The full list of Slater determinants in the basis.
-    h0 : np.ndarray
-        One-body part of the Hamiltonian (hopping terms).
-    U : float
-        Two-body interaction strength (Hubbard U).
+    H : (N, N) array_like or sparse matrix
+        Hamiltonian matrix.
+    num_roots : int
+        Number of lowest eigenvalues to compute (clipped to matrix size).
+    option : {"dense", "arpack", "davidson"}
+        Diagonalization method.
+    **kwargs :
+        Passed to the underlying solver:
+          - arpack: forwarded to eigsh (e.g. which="SA", v0=...)
+          - davidson: forwarded to davidson(...)
+    
+    Returns
+    -------
+    evals : (num_roots,) np.ndarray
+    evecs : (N, num_roots) np.ndarray
+    """
+    dim = H.shape[0]
+    if dim == 0:
+        return np.array([]), np.zeros((0, 0), dtype=complex)
+
+    # cannot ask more eigenpairs than dimension
+    num_roots = min(num_roots, dim)
+
+    if option == "dense":
+        # convert sparse → dense if needed
+        if issparse(H):
+            H_dense = H.toarray()
+        else:
+            H_dense = np.asarray(H)
+        evals, evecs = eigh(H_dense)
+        evals = evals[:num_roots]
+        evecs = evecs[:, :num_roots]
+
+    elif option == "arpack":
+        # eigsh requires k < N; if k == N, fall back to dense
+        if num_roots >= dim:
+            if issparse(H):
+                H_dense = H.toarray()
+            else:
+                H_dense = np.asarray(H)
+            evals, evecs = eigh(H_dense)
+            evals = evals[:num_roots]
+            evecs = evecs[:, :num_roots]
+        else:
+            k = num_roots
+            which = kwargs.pop("which", "SA")  # smallest algebraic by default
+            evals, evecs = eigsh(H, k=k, which=which, **kwargs)
+
+    elif option == "davidson":
+        # sensible defaults, can be overridden via kwargs
+        davidson_defaults = dict(
+            num_roots=num_roots,
+            max_subspace=120,
+            tol=1e-10,
+            diag=H.diagonal() if hasattr(H, "diagonal") else np.diag(H),
+            block_size=2 * num_roots,
+            verbose=False,
+        )
+        davidson_defaults.update(kwargs)
+        evals, evecs = davidson(H, **davidson_defaults)
+
+    else:
+        raise ValueError(f"Unknown diagonalization option: {option}")
+
+    # Ensure global sorting of eigenpairs
+    idx = np.argsort(evals)
+    evals = np.array(evals)[idx]
+    evecs = evecs[:, idx]
+
+    return evals, evecs
+
+
+def diagonalize_by_blocks(
+    basis0,
+    blocks,
+    build_block_hamiltonian,
+    nroots,
+    method="arpack",
+    max_dense_block=512,
+    diag_kwargs=None,
+    dtype=complex,
+):
+    """
+    Generic block-diagonalization helper.
+
+    Parameters
+    ----------
+    basis0 : sequence
+        Full basis, only used for sizing / scattering eigenvectors.
+    blocks : list[list[int] or np.ndarray]
+        List of index arrays/lists, each defining one block in `basis0`.
+    build_block_hamiltonian : callable
+        Function taking `sub_basis` and returning the corresponding H_block.
+        Signature: H_block = build_block_hamiltonian(sub_basis)
     nroots : int
-        The number of lowest-energy eigenstates to return.
+        Number of lowest-energy eigenstates to return globally (across all blocks).
+    method : {"dense", "arpack", "davidson"}
+        Preferred diagonalization method for large blocks.
+    max_dense_block : int
+        Blocks with size <= max_dense_block use dense diagonalization.
+    diag_kwargs : dict or None
+        Extra keyword arguments forwarded to diagH.
+    dtype : numpy dtype
+        Dtype of global eigenvectors.
 
     Returns
     -------
-    evals : np.ndarray
-        The `nroots` lowest eigenvalues, sorted.
-    evecs : np.ndarray
-        The corresponding eigenvectors, with columns ordered by eigenvalue.
-        Each eigenvector is expressed in the original `basis0`.
+    evals : (nroots,) np.ndarray
+    evecs : (len(basis0), nroots) np.ndarray
     """
-    if not basis0:
-        return np.array([]), np.array([[]])
+    if diag_kwargs is None:
+        diag_kwargs = {}
 
-    # 1. Partition the full basis into S_z blocks
-    inds_by_sz, sz_blocks = partition_by_Sz(basis0)
-    
-    print(f"Found {len(sz_blocks)} S_z blocks: {sz_blocks}")
+    full_basis_size = len(basis0)
+    if full_basis_size == 0:
+        return np.array([]), np.zeros((0, 0), dtype=dtype)
 
     all_evals = []
-    all_evecs_in_full_basis = []
-    full_basis_size = len(basis0)
+    all_evecs = []
 
-    # 2. Loop over each block, build its Hamiltonian, and diagonalize it
-    for sz, sub_indices in zip(sz_blocks, inds_by_sz):
-        sub_basis_size = len(sub_indices)
-        if sub_basis_size == 0:
+    for sub_indices in blocks:
+        sub_indices = np.asarray(sub_indices, dtype=int)
+        sub_size = len(sub_indices)
+        if sub_size == 0:
             continue
-        
-        print(f"  Processing Sz={sz} block of size {sub_basis_size}x{sub_basis_size}")
 
-        # Create the sub-basis for this specific S_z block
         sub_basis = [basis0[i] for i in sub_indices]
+        H_block = build_block_hamiltonian(sub_basis)
 
-        # Build the smaller Hamiltonian for this block only
-        H_block = get_ham(sub_basis, h0, U, method="1", tables=tables)
-        
-        # Decide on diagonalization method based on the BLOCK size
-        # This is much more efficient than checking the full basis size
-        if sub_basis_size <= 64:
-            # For small blocks, full diagonalization is fast and easy
-            try:
-                # If H_block is sparse, convert to dense
-                H_block_dense = H_block.toarray()
-            except AttributeError:
-                H_block_dense = H_block
-            evals_block, evecs_block = eigh(H_block_dense)
+        # Decide method for this block
+        if sub_size <= max_dense_block:
+            block_method = "dense"
         else:
-            # For larger blocks, use an iterative solver
-            # We need to find at most nroots, but cannot ask for more roots
-            # than the matrix dimension minus one for eigsh.
-            k = min(nroots, sub_basis_size - 1)
-            
-            if method == "arpack":
-                print("entering arpack diag")
+            block_method = method
 
-                v0 = np.random.randn(H_block.shape[0])
-            
-                # adding a small diagonal noise to break degeneracy
-                # eigsh has trouble for very symmetric hamiltonians
-                eps = 1e-8
-                diag_noise = eps * np.random.randn(H_block.shape[0])
-            
-                H_block_pert = H_block + diags(diag_noise)
-                evals_block, evecs_block = eigsh(H_block_pert, k=k, which='SA', v0=v0)
+        # we cannot ask for more roots than block dimension
+        nroots_block = min(nroots, sub_size)
+        if nroots_block == 0:
+            continue
 
-                
-                print("block diagonalized")
-            elif method == "davidson":
-                evals_block, evecs_block = davidson(
-                    H_block,
-                    num_roots=k,
-                    max_subspace=120,
-                    tol=1e-10,
-                    diag=H_block.diagonal(),
-                    block_size=2*k,
-                    verbose=False
-                )
+        evals_block, evecs_block = diagH(
+            H_block, nroots_block, option=block_method, **diag_kwargs
+        )
 
-        # 3. Reconstruct eigenvectors in the original full basis
+        # Scatter block eigenvectors into full basis
         for i in range(len(evals_block)):
-            # Start with a zero vector of the full basis size
-            evec_full = np.zeros(full_basis_size, dtype=complex)
-            
-            # Get the eigenvector from the block diagonalization
-            evec_sub = evecs_block[:, i]
-            
-            # "Scatter" the values from the sub-eigenvector into the
-            # correct positions in the full-basis eigenvector.
-            # This is the crucial step.
-            evec_full[sub_indices] = evec_sub
-            
-            # 4. Collect results
+            evec_full = np.zeros(full_basis_size, dtype=dtype)
+            evec_full[sub_indices] = evecs_block[:, i]
             all_evals.append(evals_block[i])
-            all_evecs_in_full_basis.append(evec_full)
+            all_evecs.append(evec_full)
 
-    # 5. Sort all the collected eigenvalues and eigenvectors globally
-    indsort = np.argsort(all_evals)
-    
-    # Convert list of arrays to a 2D numpy array and sort
-    sorted_evals = np.array(all_evals)[indsort]
-    # np.stack creates a matrix from the list of vectors before sorting columns
-    sorted_evecs = np.stack(all_evecs_in_full_basis, axis=1)[:, indsort]
+    if not all_evals:
+        return np.array([]), np.zeros((full_basis_size, 0), dtype=dtype)
 
-    print("DEBUG: finished rearranging vectors")
-    
-    # Return only the requested number of roots
-    return sorted_evals[:nroots], sorted_evecs[:, :nroots]
+    all_evals = np.array(all_evals)
+    all_evecs = np.stack(all_evecs, axis=1)  # (dim, nbasis_total)
+
+    # global sort and truncate to requested nroots
+    idx = np.argsort(all_evals)
+    idx = idx[:nroots]
+
+    sorted_evals = all_evals[idx]
+    sorted_evecs = all_evecs[:, idx]
+
+    return sorted_evals, sorted_evecs
+
+
+def get_roots(basis0, h0, U, nroots, method="davidson", tables=None,
+              max_dense_block=512, diag_kwargs=None):
+    """
+    Wrapper: diagonalize the Hubbard Hamiltonian in S_z blocks and
+    return the lowest `nroots` eigenpairs expressed in the full basis.
+    """
+    if diag_kwargs is None:
+        diag_kwargs = {}
+
+    if len(basis0) == 0:
+        return np.array([]), np.zeros((0, 0), dtype=complex)
+
+    # Partition basis into S_z blocks
+    inds_by_sz, sz_blocks = partition_by_Sz(basis0)
+    print(f"Found {len(sz_blocks)} S_z blocks: {sz_blocks}")
+
+    # Build callback for block Hamiltonian construction
+    def build_block_hamiltonian(sub_basis):
+        # you can of course change the "method" argument of get_ham if needed
+        return get_ham(sub_basis, h0, U, method="1", tables=tables)
+
+    # Optional: debug sizes per block
+    for sz, sub_indices in zip(sz_blocks, inds_by_sz):
+        print(f"  Sz={sz}, block size {len(sub_indices)}")
+
+    evals, evecs = diagonalize_by_blocks(
+        basis0=basis0,
+        blocks=inds_by_sz,
+        build_block_hamiltonian=build_block_hamiltonian,
+        nroots=nroots,
+        method=method,
+        max_dense_block=max_dense_block,
+        diag_kwargs=diag_kwargs,
+        dtype=complex,
+    )
+
+    return evals, evecs

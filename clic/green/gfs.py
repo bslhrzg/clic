@@ -285,6 +285,7 @@ def green_function_scalar_fixed_basis(
     if wf_add.data():
         basis_add = build_sector_basis_from_seeds([wf_add], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
         if len(basis_add) > 0:
+            print(f"DEBUG: len(basis_add) = {len(basis_add)}")
             H_add = build_H_in_basis(basis_add, h0_clean, U_clean)
             seed_vec_add = wf_to_vec(wf_add, basis_add)
             
@@ -303,6 +304,7 @@ def green_function_scalar_fixed_basis(
     if wf_rem.data():
         basis_rem = build_sector_basis_from_seeds([wf_rem], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
         if len(basis_rem) > 0:
+            print(f"DEBUG: len(basis_rem) = {len(basis_rem)}")
             H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean)
             seed_vec_rem = wf_to_vec(wf_rem, basis_rem)
             
@@ -328,8 +330,196 @@ def green_function_scalar_fixed_basis(
 # ---------------------------------------------------------------------------
 # TIME PROPAGATION 
 # ---------------------------------------------------------------------------
+def make_time_grid_from_freq(ws, eta, Nt_min=512, Nt_max=8192):
+    """
+    Pick a real-time grid suitable for a given frequency grid ws and damping η.
+
+    Returns
+    -------
+    ts : (Nt,) float
+        Time points.
+    dt : float
+        Time step.
+    """
+    ws = np.asarray(ws, dtype=float)
+    wmin, wmax = ws.min(), ws.max()
+    span = max(wmax - wmin, 1e-6)
+
+    # time scale from η and from Δω
+    t_eta = 8.0 / max(eta, 1e-6)
+    dw = np.median(np.diff(np.unique(np.round(ws, 12)))) if ws.size > 1 else span
+    t_dw = 2.0 * np.pi / max(dw, 1e-6)
+    t_max = max(t_eta, t_dw)
+
+    # dt to avoid aliasing: dt ≲ π/(4 Ω_max)
+    wabs = max(abs(wmin), abs(wmax), 1.0)
+    dt_alias = np.pi / (4.0 * wabs)
+    dt = min(dt_alias, t_max / Nt_max)
+
+    Nt = int(min(max(np.ceil(t_max / dt), Nt_min), Nt_max))
+    ts = dt * np.arange(Nt, dtype=float)
+    return ts, dt
+
+def time_overlaps_from_lanczos(T, Q, bra_vec, v0_norm, ts, sign):
+    """
+    Compute S(t) = <bra| e^{-i sign H t} |v0> using a Lanczos
+    representation H ≈ Q T Q^† built from |v0>.
+
+    Parameters
+    ----------
+    T : (m, m) ndarray
+        Tridiagonal Lanczos matrix.
+    Q : (dim, m) ndarray
+        Orthonormal Lanczos basis.
+    bra_vec : (dim,) ndarray
+        Bra vector (in the full Hilbert space) to contract with.
+    v0_norm : float
+        Norm of the initial vector used to build the Lanczos basis.
+    ts : (Nt,) ndarray
+        Time grid.
+    sign : +1 or -1
+        +1 for e^{-i H t}, -1 for e^{+i H t} depending on convention.
+
+    Returns
+    -------
+    S : (Nt,) complex ndarray
+        Time-dependent overlaps.
+    """
+    if T is None or T.size == 0 or Q is None:
+        return np.zeros_like(ts, dtype=np.complex128)
+
+    # project bra onto Lanczos basis
+    c = Q.conj().T @ bra_vec        # shape (m,)
+
+    # spectral decomposition of T
+    evals, U = np.linalg.eigh(T)    # T = U diag(evals) U^†
+
+    # e1 in Krylov space
+    m = T.shape[0]
+    e1 = np.zeros(m, dtype=np.complex128)
+    e1[0] = 1.0
+
+    Udag_e1 = U.conj().T @ e1       # (m,)
+    cdag_U  = np.conj(c) @ U        # (m,)
+
+    # phases exp(-i sign λ t)  (note: -sign because H vs our earlier +i sign)
+    phases = np.exp(-1j * sign * np.outer(evals, ts))  # (m, Nt)
+
+    # sum over eigenmodes
+    S = v0_norm * (cdag_U[:, None] * Udag_e1[:, None] * phases).sum(axis=0)
+    return S
+
+
+def green_from_time_overlaps(ws, eta, ts, S_add, S_rem):
+    """
+    Build retarded Green's function from time overlaps.
+
+    G^R(ω) = -i ∫_0^∞ dt e^{i ω t - η t} [S_add(t) + S_rem(t)].
+
+    Parameters
+    ----------
+    ws : (Nw,) ndarray
+        Frequency grid.
+    eta : float
+        Damping parameter.
+    ts : (Nt,) ndarray
+        Time grid (uniform spacing).
+    S_add, S_rem : (Nt,) ndarray
+        Time overlaps from addition and removal sectors.
+
+    Returns
+    -------
+    g : (Nw,) complex ndarray
+        Retarded Green's function on ws.
+    """
+    ws = np.asarray(ws, dtype=float)
+    ts = np.asarray(ts, dtype=float)
+    dt = ts[1] - ts[0]
+
+    S_total = S_add + S_rem
+    phase = np.exp(1j * np.outer(ws, ts)) * np.exp(-eta * ts)[None, :]
+    g = -1j * dt * (phase @ S_total)
+    return g
 
 def green_function_from_time_propagation(
+    i, j,
+    M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
+    h0_clean, U_clean, one_body_terms, two_body_terms,
+    coeff_thresh=1e-12, L=100, reorth=True
+):
+    ws = np.asarray(ws, dtype=float)
+    Norb = 2*M
+    assert 0 <= i < Norb and 0 <= j < Norb
+
+    def _index_to_spin_orb(k, M):
+        sk = cc.Spin.Alpha if k < M else cc.Spin.Beta
+        ok = k % M
+        return ok, sk
+
+    oj, sj = _index_to_spin_orb(j, M)
+    oi, si = _index_to_spin_orb(i, M)
+
+    # seeds
+    wf_add_j = cc.apply_creation(psi0_wf, oj, sj)
+    wf_rem_j = cc.apply_annihilation(psi0_wf, oj, sj)
+    have_add = bool(wf_add_j.data())
+    have_rem = bool(wf_rem_j.data())
+    if not have_add and not have_rem:
+        return np.zeros_like(ws, dtype=np.complex128)
+
+    wf_add_i = cc.apply_creation(psi0_wf, oi, si)
+    wf_rem_i = cc.apply_annihilation(psi0_wf, oi, si)
+
+    # build bases
+    basis_add = build_sector_basis_from_seeds(
+        [wf_add_j] if have_add else [],
+        one_body_terms, two_body_terms,
+        NappH,
+        coeff_thresh=coeff_thresh
+    )
+    basis_rem = build_sector_basis_from_seeds(
+        [wf_rem_j] if have_rem else [],
+        one_body_terms, two_body_terms,
+        NappH,
+        coeff_thresh=coeff_thresh
+    )
+
+    # restricted H
+    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if have_add and len(basis_add) else sp.csr_matrix((0,0), dtype=np.complex128)
+    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if have_rem and len(basis_rem) else sp.csr_matrix((0,0), dtype=np.complex128)
+
+    # shift by E0
+    if H_add.shape[0] > 0:
+        H_add = H_add - e0 * sp.eye(H_add.shape[0], dtype=np.complex128, format='csr')
+    if H_rem.shape[0] > 0:
+        H_rem = H_rem - e0 * sp.eye(H_rem.shape[0], dtype=np.complex128, format='csr')
+
+    # project seeds
+    a_j_vec = wf_to_vec(wf_add_j, basis_add) if have_add and H_add.shape[0] else np.zeros((0,), dtype=np.complex128)
+    r_j_vec = wf_to_vec(wf_rem_j, basis_rem) if have_rem and H_rem.shape[0] else np.zeros((0,), dtype=np.complex128)
+    a_i_vec = wf_to_vec(wf_add_i, basis_add) if have_add and H_add.shape[0] else np.zeros((0,), dtype=np.complex128)
+    r_i_vec = wf_to_vec(wf_rem_i, basis_rem) if have_rem and H_rem.shape[0] else np.zeros((0,), dtype=np.complex128)
+
+    # Lanczos on each sector
+    Qp = Tp = n0p = None
+    Qm = Tm = n0m = None
+    if have_add and a_j_vec.size:
+        Qp, Tp, n0p = scalar_lanczos(H_add, a_j_vec, L=L, reorth=reorth, symmetrize=True, scale=True)
+    if have_rem and r_j_vec.size:
+        Qm, Tm, n0m = scalar_lanczos(H_rem, r_j_vec, L=L, reorth=reorth, symmetrize=True, scale=True)
+
+    # time grid
+    ts, dt = make_time_grid_from_freq(ws, eta)
+
+    # time overlaps
+    S_add = time_overlaps_from_lanczos(Tp, Qp, a_i_vec, n0p, ts, sign=-1) if Qp is not None else np.zeros_like(ts, dtype=np.complex128)
+    S_rem = time_overlaps_from_lanczos(Tm, Qm, r_i_vec, n0m, ts, sign=+1) if Qm is not None else np.zeros_like(ts, dtype=np.complex128)
+
+    # Fourier → G(ω)
+    g = green_from_time_overlaps(ws, eta, ts, S_add, S_rem)
+    return g
+
+def green_function_from_time_propagation_(
     i, j,
     M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
     h0_clean, U_clean, one_body_terms, two_body_terms,
@@ -472,7 +662,8 @@ def green_function_from_time_propagation(
         # Diagonalize small tridiagonal T
         evals, U = np.linalg.eigh(T)
         # e1 = (1,0,0,…)
-        e1 = np.zeros((T.shape[0],), dtype=np.complex128); e1[0] = 1.0
+        e1 = np.zeros((T.shape[0],), dtype=np.complex128)
+        e1[0] = 1.0
         Udag_e1 = U.conj().T @ e1         # components of e1 in eigenbasis
         cdag_U  = np.conj(c) @ U          # bra projected in eigenbasis
         # Time evolution exp(i sign λ t) for each eigenvalue
@@ -489,3 +680,84 @@ def green_function_from_time_propagation(
     g = -1j * dt * (phase @ (S_add + S_rem))  # -i factor for retarded GF
 
     return g
+
+
+def lanczos_time_evolution(
+    H,
+    psi0_vec,
+    ts,
+    L=100,
+    reorth=True,
+    symmetrize=True,
+    scale=True,
+):
+    """
+    Time evolution |psi(t)> = exp(-i H t) |psi0> using a single
+    Lanczos/Krylov space built from |psi0>.
+
+    Parameters
+    ----------
+    H : (dim, dim) array_like or csr_matrix
+        Hamiltonian in the chosen sector (Hermitian).
+    psi0_vec : (dim,) ndarray (complex)
+        Initial state |psi(0)> in the same basis as H.
+    ts : (Nt,) ndarray (float)
+        Time grid in the same units as 1/energy in H.
+    L : int
+        Maximum number of Lanczos iterations (Krylov dimension).
+    reorth : bool
+        Reorthogonalize Lanczos vectors in `scalar_lanczos`.
+    symmetrize, scale : bool
+        Passed through to `scalar_lanczos` (as in your GF code).
+
+    Returns
+    -------
+    psis_t : (Nt, dim) ndarray (complex)
+        Wavefunctions at each time t in `ts`, so that
+        psis_t[k, :] ≈ |psi(t_k)>.
+    """
+
+    ts = np.asarray(ts, dtype=float)
+    dim = psi0_vec.shape[0]
+
+    print(f"dim = {dim}")
+
+    # Build Lanczos basis from |psi0>
+    Q, T, v0_norm = scalar_lanczos(
+        H, psi0_vec,
+        L=L,
+        reorth=reorth,
+        symmetrize=symmetrize,
+        scale=scale
+    )
+
+    m = T.shape[0]
+    if m == 0:
+        # degenerate case
+        return np.tile(psi0_vec, (ts.size, 1))
+
+    # Diagonalize the small tridiagonal matrix T
+    evals, U = np.linalg.eigh(T)  # T = U diag(evals) U^†
+
+    # e1 in Krylov space
+    e1 = np.zeros((m,), dtype=np.complex128)
+    e1[0] = 1.0
+
+    # α = U^† e1
+    alpha = U.conj().T @ e1   # shape (m,)
+
+    # phases: exp(-i λ t_k), shape (m, Nt)
+    phases = np.exp(-1j * np.outer(evals, ts))
+
+    # coefficients in eigenbasis for each t: exp(-iλt) * α
+    tmp = phases * alpha[:, None]            # (m, Nt)
+
+    # back to Lanczos basis: coeffs(t) = U * tmp
+    coeffs = U @ tmp                         # (m, Nt)
+
+    # back to full Hilbert space: |psi(t)> = v0_norm * Q * coeffs(t)
+    psis = v0_norm * (Q @ coeffs)            # (dim, Nt)
+
+    # return as (Nt, dim)
+    return psis.T
+

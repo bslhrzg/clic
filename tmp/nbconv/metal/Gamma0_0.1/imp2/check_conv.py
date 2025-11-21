@@ -6,7 +6,7 @@ from pathlib import Path
 dump_dir = Path("dump")
 
 # List of indices to use, as strings
-indices = ["5", "9", "19", "29"]  # extend as needed
+indices = ["9", "19", "29"]  # extend as needed
 
 # Build file list
 files = [dump_dir / f"A_{i}" for i in indices]

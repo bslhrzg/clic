@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 dump_dir = Path("dump")
 
 # List of nb values, as strings (corresponding to file names A_5, A_9, ...)
-indices = ["5", "9", "19", "29"]  # extend as needed
+indices = [ "9", "19", "29"]  # extend as needed
 
 # Build file list
 files = [dump_dir / f"A_{i}" for i in indices]
@@ -19,9 +19,9 @@ DOS_list = []  # will store DOS for each nb, shape -> (n_nb, n_ω)
 # --- Read all A_nb files and build DOS(nb)(ω) ---
 for f in files:
     data = np.loadtxt(f)
+    nw,nimp = data.shape
     w = data[:, 0]
-    A_mat = data[:, 1:]  # all diagonal components A_ii(ω) for this nb
-
+    A_mat = data[:, 1:]/nimp  # all diagonal components A_ii(ω) for this nb
     if omegas is None:
         omegas = w
     else:

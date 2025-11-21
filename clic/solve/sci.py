@@ -292,11 +292,12 @@ def selective_ci(
 
 
 
-def do_fci(h0,U,M,Nelec,num_roots=1,Sz=0,verbose=True):
+def do_fci(h0,U,M,Nelec,num_roots=1,Sz=None,verbose=True):
 
     basis = basis_Np.get_fci_basis(M, Nelec)
-    #inds, blocks = partition_by_Sz(basis)    # lists of indices + Sz values
-    basis, idxs0 = basis_Np.subbasis_by_Sz(basis, Sz)  # S_z = 0 sector
+    if Sz is not None:
+        #inds, blocks = partition_by_Sz(basis)    # lists of indices + Sz values
+        basis, idxs0 = basis_Np.subbasis_by_Sz(basis, Sz)  # S_z = 0 sector
     print(f"fci basis size = {len(basis)}")
 
     t0 = time()
@@ -305,6 +306,7 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=0,verbose=True):
     vprint(1,f"time to construct H : {t1-t0}")
     
     eigvals, eigvecs = eigsh(H_sparse, k=num_roots, which='SA')
+
     t2 = time()
     vprint(1,f"time to diagonalize H : {t2-t1}")
     

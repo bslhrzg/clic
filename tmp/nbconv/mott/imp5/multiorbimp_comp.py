@@ -14,20 +14,24 @@ np.set_printoptions(precision=3, suppress=True, linewidth=300)
 
 
 print("*"*42)
-Nimp = 2
+Nimp = 5
 
-scheme = ["metal" for _ in range(Nimp)]
+scheme = ["mott" for _ in range(Nimp)]
 lambda_soc = 0.0
-Nb =  19
+Nb = 1
 U_kanamori = 0.5 # ~6.8 eV
 J_kanamori = 0.0
-nimp = 2
+nimp = 5
 dc = U_kanamori * (nimp - 0.5) - 0.5 * J_kanamori * (nimp-1)
-eps = [-dc for i in range(Nimp)]
+eps = np.array([-dc for i in range(Nimp)])
+
+eps[:6]+=dc/5 
+eps[6:]-=dc/5
+
 
 D=1
 Gamma0=0.1
-gap=1.0
+gap=0.5
 h0_0 = build_impurity_model(Nimp,Nb,scheme,eps,lambda_soc,
                            D=D, Gamma0=Gamma0, gap=gap)
 
@@ -53,15 +57,16 @@ C = None
 
 h0_legacy = h0_0.copy()
 
-for i in range(NF):
-    for j in range(NF):
-        for k in range(NF):
-            for l in range(NF):
-                if U_0[i,j,k,l] != 0:
-                    print(f"U({i,j,k,l}) = {U_0[i,j,k,l]}")
-                    if i==j and i==k and i==l : 
-                        print("setting to 0")
-                        U_0[i,j,k,l] = 0
+if False:
+    for i in range(NF):
+        for j in range(NF):
+            for k in range(NF):
+                for l in range(NF):
+                    if U_0[i,j,k,l] != 0:
+                        print(f"U({i,j,k,l}) = {U_0[i,j,k,l]}")
+                        if i==j and i==k and i==l : 
+                            print("setting to 0")
+                            U_0[i,j,k,l] = 0
 
 print("h0_0 size: ",np.shape(h0_0))
 print("U_0 size: ",np.shape(U_0))
@@ -80,7 +85,7 @@ print(f"imp_indices_full = {imp_indices_full}")
 # Define impurity indices (now expecting global SPATIAL indices)
 
 
-dodblchain=True
+dodblchain=False
 if dodblchain:  
     print("h0_0 = ")
     print(np.real(h0_0))
@@ -135,12 +140,12 @@ print(np.real(h0_legacy))
 
 sb = get_imp_starting_basis(np.real(h0_0), Nelec, Nelec_imp, imp_indices_spatial)
 print(f"sb = {sb}")
-cipsi_max_iter = 12
+cipsi_max_iter = 5
 
 #print("h0 = ")
 #print(h0_0)
 
-
+num_roots = 20
 
 sci=True
 if sci :
@@ -150,13 +155,13 @@ if sci :
         sb,
         generator=hamiltonian_generator, 
         selector=cipsi_select,
-        num_roots=2,
+        num_roots=num_roots,
         one_bh=None,
         two_bh=None,
         max_iter=cipsi_max_iter,
         conv_tol=1e-5,
-        prune_thr=1e-6,
-        Nmul = 2,
+        prune_thr=1e-4,
+        Nmul = None,
         min_size=513,
         max_size=1e5,
         verbose=True)
@@ -175,40 +180,52 @@ print(f"energies = {energies}, e0 = {e0}")
 print(f"len basis = {len(basis)}")
 print(f"len(basis(psis0)) = {len((psis[0]).get_basis())}")
 
-block_imp = [0,M]
-rdm = one_rdm(psi0, M, block_imp)
-print(f"rdm : ")
-print(rdm)
-
-imp_occ = 0 
-for i in range(2):
-    imp_occ += rdm[i,i]
-
-print(f"impurity occupation: {imp_occ}")
-print(f"total occupation : {np.trace(rdm)}")
-NappH = 1
+NappH = 2
 eta = 0.02
 ws = np.linspace(-2,2,1001)
 target_indices = imp_indices_full
 gfmeth = "scalar_continued_fraction"
 one_bh_n = get_one_body_terms(h0_0, M)
 two_bh_n = get_two_body_terms(U_0, M)
-coeff_thresh = 1e-6
+coeff_thresh = 1e-5
 L = 200
 
-print(f"target_indices = {target_indices}")
-G_sub_block_n = get_green_block(M, psi0, e0, NappH, eta, 
-                                                      h0_0, U_0, ws,target_indices, gfmeth, 
-                                                      one_bh_n,two_bh_n, coeff_thresh, L
-                                                      )
+kT=1e-2
+beta=1/kT 
 
+rdm = np.zeros((Nimp*2,Nimp*2),dtype=complex)
+bw = np.exp(-beta * energies)
+bw = bw / np.sum(bw)
+print(f"Weights : {bw}")
 
-weight = 1.0
 G_total_diag = np.zeros((len(ws), len(target_indices)), dtype=np.complex128)
-for i in range(len(target_indices)):
-    G_total_diag[:, i] += weight * G_sub_block_n[:, i, i]
 
+
+for ipsi in range(len(psis)):
+    psi_n = psis[ipsi]
+    e_n = energies[ipsi]
+    weight = bw[ipsi]
+    rdm += weight * one_rdm(psi_n, M,imp_indices_full)
     
+    print(f"target_indices = {target_indices}")
+    G_sub_block_n = get_green_block(M, psi_n, e_n, NappH, eta, 
+                                                        h0_0, U_0, ws,target_indices, gfmeth, 
+                                                        one_bh_n,two_bh_n, coeff_thresh, L
+                                                        )
+
+
+    for i in range(len(target_indices)):
+        G_total_diag[:, i] += weight * G_sub_block_n[:, i, i]
+
+print(f"rdm : ")
+print(rdm)
+imp_occ = 0 
+for i in range(2*Nimp):
+    imp_occ += rdm[i,i]
+
+print(f"impurity occupation: {imp_occ}")
+print(f"total occupation : {np.trace(rdm)}")
+
 print("\nThermally-averaged calculation finished.")
 A_w_total = -(1 / np.pi) * np.imag(G_total_diag)
 

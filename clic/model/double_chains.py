@@ -149,56 +149,6 @@ def get_double_chain_transform(h_spin, Nelec):
 # Multi-orbital 
 # ------------------------------------------------------------
 
-# This is useless I'm totally stupid, 
-# only need to undo C3 by hitting with C3.conj().T
-def restore_original_impurity(C_total, Nimp, r_svd,
-                              conduction_seeds, valence_seeds,
-                              cond_indices, val_indices,
-                              Ub_pairs, Vimp):
-    """
-    Right-multiply C_total by a unitary so that columns 0..Nimp-1 are exactly
-    the original impurity basis vectors. Does:
-      1) Undo the 2x2 bonding/antibonding per active pair on the chain heads
-      2) Undo the impurity Schmidt rotation Vimp
-      3) Permute columns to put impurity columns first
-    """
-    M = C_total.shape[0]
-    R = np.eye(M, dtype=C_total.dtype)
-
-    # 1) Undo Ub on the chain heads for each paired channel
-    for alpha in range(r_svd):
-        jv = val_indices[alpha]   # valence head position
-        jc = cond_indices[alpha]  # conduction head position
-        U2 = Ub_pairs[alpha]      # 2x2 used earlier
-        R_pair = np.eye(M, dtype=C_total.dtype)
-        # multiply the two columns [jv, jc] on the right by U2 to return to [imp_Schmidt, act_Schmidt]
-        R_pair[np.ix_([jv, jc], [jv, jc])] = U2
-        R = R @ R_pair
-
-    # 2) Identify impurity Schmidt columns then apply Vimp^† on those columns
-    imp_cols = [val_indices[alpha] for alpha in range(r_svd)]
-    for alpha in range(r_svd, Nimp):
-        if alpha in valence_seeds:
-            pos = valence_seeds.index(alpha)
-            imp_cols.append(val_indices[pos])
-        else:
-            pos = conduction_seeds.index(alpha)
-            imp_cols.append(cond_indices[pos])
-
-    R_imp = np.eye(M, dtype=C_total.dtype)
-    R_imp[np.ix_(imp_cols, imp_cols)] = Vimp.conj().T
-    R = R @ R_imp
-
-    # 3) Permute columns so that impurity columns come first, preserving order
-    remaining = [j for j in range(M) if j not in imp_cols]
-    target_order = imp_cols + remaining
-    P = np.eye(M, dtype=C_total.dtype)[:, target_order]
-    R = R @ P
-
-    C_fixed = C_total @ R
-    return C_fixed
-
-
 def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-8):
     """
     Multiorbital double-chain transform.
@@ -359,14 +309,6 @@ def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-8):
     print(f"DEBUG: C_total = ")
     print(C_total.real)
     # ---- (6) Exact restore of original impurity ----
-    # invert per-pair rotations on the heads, undo Vimp on the impurity-Schmidt block,
-    # then permute columns to place the original impurity first.
-    C_total_ = restore_original_impurity(
-        C_total, Nimp, r_svd,
-        conduction_seeds, valence_seeds,
-        cond_indices, val_indices,
-        Ub_pairs, Vimp
-    )
     C_total =  C_total @ C3.conj().T
     print(f"DEBUG: C_total_restored = ")
     print(C_total.real)

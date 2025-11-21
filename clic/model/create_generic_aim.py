@@ -15,7 +15,7 @@ from clic.basis.basis_1p import umo2so
 
 
 def semicircle_bath(nb, D=1.0, Gamma0=0.2, center=0.0,
-                    plot=True, ax=None, n_omega=401):
+                    plot=False, ax=None, n_omega=401):
     """
     Discretize a semicircular hybridization:
         Gamma(omega) = Gamma0 * sqrt(1 - ((omega - center)/D)**2)

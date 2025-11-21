@@ -46,6 +46,40 @@ def one_rdm(wf,M,block=None):
 
     return rdm
 
+
+def get_n_i_j(wf,M,i,j):
+    """ 
+    TO DO : currently too expensive. Should check first if occ
+    Compute the one-body reduced density matrix given a wavefunction
+    Args:
+        wf : a wavefunction object
+        M  : number of spatial orbitals 
+        i,j: get
+    Returns:
+        < wf | c^+_i c_j | wf >
+    """
+
+    wf.normalize()
+
+    # Create the operator term c†_i c_j
+    spin_i = cc.Spin.Alpha if i < M else cc.Spin.Beta
+    spin_j = cc.Spin.Alpha if j < M else cc.Spin.Beta
+    orb_i = i if i < M else i - M
+    orb_j = j if j < M else j - M
+    
+    # The operator term is a list containing a single tuple (h_ij = 1.0)
+    op_term = [(orb_i, orb_j, spin_i, spin_j, 1.0)]
+    
+    # Apply the operator c†_i c_j to the ground state
+    # This creates the state |Φ⟩ = c†_i c_j |Ψ⟩
+    phi_wf = cc.apply_one_body_operator(wf, op_term)
+    #phi_wf.normalize()
+    
+    # The RDM element is <Ψ|Φ>
+    nij = wf.dot(phi_wf)
+
+    return nij
+
 def get_one_body_terms(h0, M, thr=1e-12):
     """
     The non-zeros (above threshold) elements of the one-body hamiltonian
