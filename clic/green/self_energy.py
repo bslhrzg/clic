@@ -1,3 +1,5 @@
+# clic/green/self_energy.py 
+
 import numpy as np
 
 def get_inv_weiss(ws, h_imp, hyb, eta):

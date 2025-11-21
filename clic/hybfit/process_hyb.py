@@ -22,7 +22,7 @@ def print_summary(title, H_full, mapping):
     vprint(1,"beta  bath cols:", mapping["beta_bath_cols"])
 
 
-def _unpermute_to_block_form(H_full: np.ndarray, perm: np.ndarray, Nimp: int):
+def unpermute_to_block_form(H_full: np.ndarray, perm: np.ndarray, Nimp: int):
     P = np.eye(H_full.shape[0], dtype=H_full.dtype)[perm]
     H0 = P.T @ H_full @ P
     himp0 = H0[:Nimp, :Nimp]
@@ -104,7 +104,7 @@ def evaluate_full_fit_and_plots(omega: np.ndarray,
     Nimp = len(mapping["alpha_imp_idx"]) + len(mapping["beta_imp_idx"])
     perm = mapping["perm_full_to_spin_sorted"]
 
-    _, _, V, Hb = _unpermute_to_block_form(H_full, perm, Nimp)
+    _, _, V, Hb = unpermute_to_block_form(H_full, perm, Nimp)
     Delta_fit = utils.delta_from_bath(omega, Hb, V, eta=eta)
 
     # errors, mirroring your analyze_fit style

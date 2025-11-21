@@ -174,7 +174,9 @@ def green_function_block_lanczos_fixed_basis_(
 
 def green_function_block_lanczos_fixed_basis(
     M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
-    h0_clean, U_clean, one_body_terms, two_body_terms, coeff_thresh=1e-12, L=100, reorth=False
+    h0_clean, U_clean, one_body_terms, two_body_terms, 
+    iws = None,
+    coeff_thresh=1e-12, L=100, reorth=False
 ):
     """
     Calculates the Green's function block corresponding ONLY to the provided
@@ -182,6 +184,9 @@ def green_function_block_lanczos_fixed_basis(
     """
     Nw = len(ws)
     num_imp = len(impurity_indices)
+
+    if iws is not None : 
+        Niw = len(iws)
 
     seed_add_wf, add_src_idx = [], []
     seed_rem_wf, rem_src_idx = [], []
@@ -218,8 +223,10 @@ def green_function_block_lanczos_fixed_basis(
     have_g = (R0_g.size != 0 and len(As_g) > 0)
     have_l = (R0_l.size != 0 and len(As_l) > 0)
     
-    G_imp = np.zeros((Nw, num_imp, num_imp), dtype=np.complex128)
-    
+    G = np.zeros((Nw, num_imp, num_imp), dtype=np.complex128)
+    if iws is not None : 
+        G_iws = np.zeros((Niw, num_imp, num_imp), dtype=np.complex128)
+
     # Create a map from the global spin-orbital index to its position (0, 1, 2...) 
     # within the impurity_indices list.
     impurity_map = {idx: i for i, idx in enumerate(impurity_indices)}
@@ -246,23 +253,60 @@ def green_function_block_lanczos_fixed_basis(
                 for b, ib in enumerate(add_src_idx):  # 'b' is index in Gg_eff, 'ib' is global index
                     out_i = impurity_map[ia]          # Find where 'ia' lives in the output matrix
                     out_j = impurity_map[ib]          # Find where 'ib' lives in the output matrix
-                    G_imp[iw, out_i, out_j] += Gg_eff[a, b]
+                    G[iw, out_i, out_j] += Gg_eff[a, b]
 
         if Gl_eff is not None:
             for a, ia in enumerate(rem_src_idx):
                 for b, ib in enumerate(rem_src_idx):
                     out_i = impurity_map[ia]
                     out_j = impurity_map[ib]
-                    G_imp[iw, out_i, out_j] -= Gl_eff[a, b]
+                    G[iw, out_i, out_j] -= Gl_eff[a, b]
 
-    return G_imp, dict(
-        basis_add_size=len(basis_add), basis_rem_size=len(basis_rem)
-    )
+    if iws is not None : 
+        for iiw, iw in enumerate(iws):
+            z_g, z_l = (iw + e0), (-iw + e0) 
+            
+            # Calculate G_eff in the basis of SURVIVING seeds (this part is correct)
+            Gg_eff = None
+            if have_g:
+                G00_g = block_cf_top_left(As_g, Bs_g, z_g)
+                if G00_g.size != 0 and not np.isnan(G00_g).any():
+                    Gg_eff = R0_g.conj().T @ G00_g @ R0_g
 
+            Gl_eff = None
+            if have_l:
+                G00_l = block_cf_top_left(As_l, Bs_l, z_l)
+                if G00_l.size != 0 and not np.isnan(G00_l).any():
+                    Gl_eff = R0_l.conj().T @ G00_l @ R0_l
+            
+            # Place the results from the surviving seed basis into the impurity basis
+            if Gg_eff is not None:
+                for a, ia in enumerate(add_src_idx):      # 'a' is index in Gg_eff, 'ia' is global index
+                    for b, ib in enumerate(add_src_idx):  # 'b' is index in Gg_eff, 'ib' is global index
+                        out_i = impurity_map[ia]          # Find where 'ia' lives in the output matrix
+                        out_j = impurity_map[ib]          # Find where 'ib' lives in the output matrix
+                        G_iws[iiw, out_i, out_j] += Gg_eff[a, b]
+
+            if Gl_eff is not None:
+                for a, ia in enumerate(rem_src_idx):
+                    for b, ib in enumerate(rem_src_idx):
+                        out_i = impurity_map[ia]
+                        out_j = impurity_map[ib]
+                        G_iws[iiw, out_i, out_j] -= Gl_eff[a, b]
+
+    if iws is None:
+        return G, dict(
+            basis_add_size=len(basis_add), basis_rem_size=len(basis_rem)
+        )
+    else : 
+        return G, G_iws, dict(
+            basis_add_size=len(basis_add), basis_rem_size=len(basis_rem)
+        )
 
 def green_function_scalar_fixed_basis(
     M, psi0_wf, e0, ws, eta, i, NappH,
     h0_clean, U_clean, one_body_terms, two_body_terms,
+    iws = None, 
     coeff_thresh=1e-12, L=100, reorth=False
 ):
     """
@@ -274,6 +318,12 @@ def green_function_scalar_fixed_basis(
 
     Nw = len(ws)
     Gii = np.zeros(Nw, dtype=np.complex128)
+
+    # If provided, we will also return Gii on matsubara frequencies
+    if iws is not None: 
+        Niw = len(ws)
+        Gii_iw = np.zeros(Niw, dtype=np.complex128)
+
 
     si = cc.Spin.Alpha if i < M else cc.Spin.Beta
     oi = i % M
@@ -299,6 +349,12 @@ def green_function_scalar_fixed_basis(
                     z_g = (w + e0) + 1j*eta
                     Gii[iw] += norm_sq_g * scalar_cf_from_T(T_g, z_g)
 
+                if iws is not None : 
+                    for iiw, iw in enumerate(iws):
+                        z_g = (iw + e0)
+                        Gii_iw[iiw] += norm_sq_g * scalar_cf_from_T(T_g, z_g)
+
+
     # --- Removal (Hole) Sector ---
     have_l = False
     if wf_rem.data():
@@ -318,14 +374,22 @@ def green_function_scalar_fixed_basis(
                     z_l = (e0 - w) - 1j*eta
                     Gii[iw] -= norm_sq_l * scalar_cf_from_T(T_l, z_l)
 
+                if iws is not None : 
+                    for iiw, iw in enumerate(iws):
+                        z_g = (e0 - iw)
+                        Gii_iw[iiw] -= norm_sq_l * scalar_cf_from_T(T_l, z_l)
+
+
     info = dict(
         basis_add_size=len(basis_add) if 'basis_add' in locals() else 0,
         basis_rem_size=len(basis_rem) if 'basis_rem' in locals() else 0,
         have_g=have_g, have_l=have_l,
         seed_nonzero=(have_g or have_l)
     )
-    return Gii, info
-
+    if iws is None: 
+        return Gii, info
+    else :
+        return Gii, Gii_iw, info
 
 # ---------------------------------------------------------------------------
 # TIME PROPAGATION 

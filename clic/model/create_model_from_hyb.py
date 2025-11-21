@@ -2,11 +2,8 @@
 import numpy as np
 from .config_models import HybFitConfig
 import sys 
-
-from clic.hybfit import utils
-from clic.hybfit.process_hyb import process_hyb_cost, process_hyb_poles # import the function from its module
-from clic.hybfit.process_hyb import analyze_block_fits, evaluate_full_fit_and_plots, print_summary
-
+from clic.hybfit.utils import *
+from clic.hybfit.process_hyb import *
 
 def build_model_from_hyb(
     h_imp: np.ndarray, 
@@ -80,6 +77,13 @@ def build_model_from_hyb(
 
         print_summary("Fit block summary ",H_full, map)
 
+    # 2. Reconstruct the model hybridization delta_fit for return
+    # Extract bath parameters from the permuted H_full
+    Nimp = len(map["alpha_imp_idx"]) + len(map["beta_imp_idx"])
+    _, _, V, Hb = unpermute_to_block_form(H_full, map["perm_full_to_spin_sorted"], Nimp)
+    
+    # Rebuild delta using the same eta as the input data for direct comparison
+    delta_fit = delta_from_bath(omega, Hb, V, eta=eta)
         
 
-    return H_full
+    return H_full, delta_fit

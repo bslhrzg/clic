@@ -25,7 +25,7 @@ class StateAnalyzer:
     def _get_1p_operators(self):
         if "Sz" in self._1p_op_cache:
             return self._1p_op_cache
-        num_imp_spatial = len(self.model.imp_indices)
+        num_imp_spatial = len(self.model.imp_indices_spatial)
         Sz_op = _get_1p_Sz_matrix(num_imp_spatial)
         self._1p_op_cache = {"Sz": Sz_op}
         return self._1p_op_cache
@@ -34,7 +34,7 @@ class StateAnalyzer:
         stats = {}
 
         # many body expectations without building operators
-        _, Sz_full = ops.expect_S2(wf, self.model.M)
+        _, Sz_full = ops.expect_S2(wf, self.model.M_spatial)
 
         # S is only meaningful if eigenstate; still report the derived value
         #S = 0.5 * (np.sqrt(1.0 + 4.0 * np.real(S2)) - 1.0)
@@ -42,8 +42,8 @@ class StateAnalyzer:
         #stats["S"]  = np.real(S)
 
         if self.model.is_impurity_model:
-            imp_spinfull = self.model.imp_indices + [i + self.model.M for i in self.model.imp_indices]
-            rdm_imp = ops.one_rdm(wf, self.model.M, block=imp_spinfull)
+            imp_spinfull = self.model.imp_indices_spatial + [i + self.model.M_spatial for i in self.model.imp_indices_spatial]
+            rdm_imp = ops.one_rdm(wf, self.model.M_spatial, block=imp_spinfull)
             stats["occ"] = float(np.sum(np.real(np.diag(rdm_imp))))
             stats["rdm"] = rdm_imp
 

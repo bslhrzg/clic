@@ -1,3 +1,5 @@
+#clic/green/green_sym.py
+
 import numpy as np
 
 from clic.symmetries import symmetries
@@ -40,7 +42,6 @@ def get_green_block(
     if gfmeth == "time_prop":
         # We compute one full representative block from each identical group, element by element.
         for group in identical_groups:
-            # --- START OF FIX ---
             # Ensure indices are flattened from the start to avoid any nesting issues.
             local_indices_in_rep_block = np.array(blocks[group[0]]).flatten()
             
@@ -59,8 +60,6 @@ def get_green_block(
                     )
                     G_sub_block_n[:, i_idx_in_block, j_idx_in_block] = g_ij_n
             
-            # --- This is the critical change ---
-            # Now copy the computed block to all symmetric equivalents using the robust loop method.
             
             # 1. Extract the data block we just computed, using robust slicing.
             rep_block_data = G_sub_block_n[:, local_indices_in_rep_block, :][:, :, local_indices_in_rep_block]
@@ -74,7 +73,6 @@ def get_green_block(
                 for i_source, i_dest in enumerate(local_indices_in_equiv_block):
                     for j_source, j_dest in enumerate(local_indices_in_equiv_block):
                         G_sub_block_n[:, i_dest, j_dest] = rep_block_data[:, i_source, j_source]
-            # --- END OF FIX ---
 
     # --- Method 2: Scalar Continued Fraction (DIAGONAL ONLY) ---
     elif gfmeth == "scalar_continued_fraction":

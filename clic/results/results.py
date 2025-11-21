@@ -16,14 +16,14 @@ class NelecLowEnergySubspace:
     they are expressed in.
     """
     def __init__(self,
-                 M: int,
+                 M_spatial: int,
                  Nelec: int,
                  energies: np.ndarray,
                  wavefunctions: list[cc.Wavefunction],
                  basis: list[cc.SlaterDeterminant],
                  transformation_matrix: np.ndarray | None = None):
         
-        self.M = M
+        self.M_spatial = M_spatial
         self.Nelec = Nelec
         
         self.energies = np.asarray(energies)
@@ -64,7 +64,7 @@ class NelecLowEnergySubspace:
 
             # === Metadata Group ===
             meta = group.create_group("metadata")
-            meta.attrs["M"] = self.M
+            meta.attrs["M_spatial"] = self.M_spatial
             meta.attrs["Nelec"] = self.Nelec
             meta.attrs["num_states"] = len(self.wavefunctions)
             meta.attrs["basis_size"] = len(self.basis)
@@ -108,7 +108,7 @@ class NelecLowEnergySubspace:
         def _load_from_group(group: h5py.Group):
             # Load Metadata
             meta = group["metadata"]
-            M = int(meta.attrs["M"])
+            M_spatial = int(meta.attrs["M_spatial"])
             Nelec = int(meta.attrs["Nelec"])
             num_states = int(meta.attrs["num_states"])
             basis_size = int(meta.attrs["basis_size"])
@@ -126,17 +126,17 @@ class NelecLowEnergySubspace:
             alpha_list = [alpha_indices_flat[alpha_endpoints[i]:alpha_endpoints[i+1]] for i in range(basis_size)]
             beta_list = [beta_indices_flat[beta_endpoints[i]:beta_endpoints[i+1]] for i in range(basis_size)]
             
-            basis = [cc.SlaterDeterminant(M, a, b) for a, b in zip(alpha_list, beta_list)]
+            basis = [cc.SlaterDeterminant(M_spatial, a, b) for a, b in zip(alpha_list, beta_list)]
 
             # Reconstruct Wavefunctions
             wf_gp = group["wavefunctions"]
             wavefunctions = []
             for i in range(num_states):
                 coeffs = wf_gp[f"state_{i}_coeffs"][:]
-                wf = cc.Wavefunction(M, basis, coeffs)
+                wf = cc.Wavefunction(M_spatial, basis, coeffs)
                 wavefunctions.append(wf)
             
-            return cls(M=M, Nelec=Nelec, energies=energies, wavefunctions=wavefunctions,
+            return cls(M_spatial=M_spatial, Nelec=Nelec, energies=energies, wavefunctions=wavefunctions,
                        basis=basis, transformation_matrix=transformation_matrix)
 
         if isinstance(source, str):
@@ -173,9 +173,10 @@ class ThermalGroundState:
         # --- Store base model information ---
         self.base_h0 = base_model.h0
         self.base_U = base_model.U
-        self.M = base_model.M
+        self.M_spatial = base_model.M_spatial
+        print(f"base_model.is_impurity_model = {base_model.is_impurity_model}")
         self.is_impurity_model = base_model.is_impurity_model
-        self.imp_indices = base_model.imp_indices
+        self.imp_indices_spatial = base_model.imp_indices_spatial
         
         self.results_by_nelec = results_by_nelec
         self._temperature = temperature
@@ -280,19 +281,19 @@ class ThermalGroundState:
             # Re-express the wavefunctions in this new minimal basis
             new_wavefunctions = []
             det_to_idx = {det: i for i, det in enumerate(pruned_basis)}
-            original_M = self.results_by_nelec[nelec].M
+            original_M_spatial = self.results_by_nelec[nelec].M_spatial
             for wf in surviving_wfs:
                 new_coeffs = np.zeros(len(pruned_basis), dtype=np.complex128)
                 for det, coeff in wf.data().items():
                     new_coeffs[det_to_idx[det]] = coeff
-                new_wavefunctions.append(cc.Wavefunction(original_M, pruned_basis, new_coeffs))
+                new_wavefunctions.append(cc.Wavefunction(original_M_spatial, pruned_basis, new_coeffs))
             
             # Get other metadata from the original object (this is the only time we need it)
             original_transform = self.results_by_nelec[nelec].transformation_matrix
 
             # Create the new, clean result object for this Nelec sector
             new_results_by_nelec[nelec] = NelecLowEnergySubspace(
-                M=original_M,
+                M_spatial=original_M_spatial,
                 Nelec=nelec,
                 energies=np.array(surviving_energies),
                 wavefunctions=new_wavefunctions,
@@ -330,10 +331,10 @@ class ThermalGroundState:
             f.attrs["temperature"] = self.temperature
             
             # --- Save the base model context ---
-            f.attrs["M"] = self.M
+            f.attrs["M_spatial"] = self.M_spatial
             f.attrs["is_impurity_model"] = self.is_impurity_model
             if self.is_impurity_model:
-                f.attrs["imp_indices"] = self.imp_indices
+                f.attrs["imp_indices_spatial"] = self.imp_indices_spatial
             f.create_dataset("base_h0", data=self.base_h0)
             f.create_dataset("base_U", data=self.base_U)
 
@@ -359,16 +360,16 @@ class ThermalGroundState:
             from .api import Model
 
             # --- Load the base model context ---
-            M = int(f.attrs["M"])
+            M_spatial = int(f.attrs["M_spatial"])
             is_imp = bool(f.attrs["is_impurity_model"])
-            imp_indices = list(f.attrs.get("imp_indices", []))
+            imp_indices_spatial = list(f.attrs.get("imp_indices_spatial", []))
             base_h0 = f["base_h0"][:]
             base_U = f["base_U"][:]
             
             # Reconstruct the model object. Nelec is just a placeholder here.
-            loaded_model = Model(h0=base_h0, U=base_U, M_spatial=M, Nelec=-1)
+            loaded_model = Model(h0=base_h0, U=base_U, M_spatial=M_spatial, Nelec=-1)
             loaded_model.is_impurity_model = is_imp
-            loaded_model.imp_indices = imp_indices
+            loaded_model.imp_indices_spatial = imp_indices_spatial
 
             for key in f.keys():
                 if key.startswith("nelec_"):

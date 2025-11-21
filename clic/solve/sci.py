@@ -13,7 +13,7 @@ from numpy.linalg import eigh,eig
 from time import time
 from clic.io_clic.io_utils import vprint 
 from .davidson import davidson 
-from .diagh import get_roots, get_ham
+from .diagh import get_roots, get_ham, diagH
 
 applyH=False
 dodavidson=False
@@ -281,7 +281,7 @@ def selective_ci(
     t_final = time()
     print(f"sci total time : {t_final - t_start}")
 
-    sci_res = results.NelecLowEnergySubspace(M=M,Nelec=Nelec,
+    sci_res = results.NelecLowEnergySubspace(M_spatial=M,Nelec=Nelec,
         energies=evals,
         wavefunctions=psis,
         basis=basis0,
@@ -295,6 +295,19 @@ def selective_ci(
 def do_fci(h0,U,M,Nelec,num_roots=1,Sz=None,verbose=True):
 
     basis = basis_Np.get_fci_basis(M, Nelec)
+
+    if len(basis) == 0 : 
+        eigvals = [0]
+        psis = [cc.Wavefunction(M, basis, [1.0])]
+        fci_res = results.NelecLowEnergySubspace(M_spatial=M,Nelec=Nelec,
+        energies=eigvals,
+        wavefunctions=psis,
+        basis=basis,
+        transformation_matrix=None
+        )
+        return fci_res
+
+
     if Sz is not None:
         #inds, blocks = partition_by_Sz(basis)    # lists of indices + Sz values
         basis, idxs0 = basis_Np.subbasis_by_Sz(basis, Sz)  # S_z = 0 sector
@@ -305,20 +318,19 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=None,verbose=True):
     t1 = time()
     vprint(1,f"time to construct H : {t1-t0}")
     
-    eigvals, eigvecs = eigsh(H_sparse, k=num_roots, which='SA')
-
-    t2 = time()
-    vprint(1,f"time to diagonalize H : {t2-t1}")
+    #eigvals, eigvecs = eigsh(H_sparse, k=num_roots, which='SA')
+    eigvals,eigvecs = diagH(H_sparse, num_roots, option="davidson")
+    #num_roots = np.min(num_roots,len(eigvals))
+    #t2 = time()
+    #vprint(1,f"time to diagonalize H : {t2-t1}")
     
-    indsort = np.argsort(np.real(eigvals))
-    eigvals=eigvals[indsort]
-    eigvecs=eigvecs[:,indsort]
     if verbose:
         Es_str = " ".join(f"{ev:.12f}" for ev in eigvals[:num_roots])
         print(f"Es=[{Es_str}]")
+    
     psis = [cc.Wavefunction(M, basis, eigvecs[:,i]) for i in range(num_roots)]
 
-    fci_res = results.NelecLowEnergySubspace(M=M,Nelec=Nelec,
+    fci_res = results.NelecLowEnergySubspace(M_spatial=M,Nelec=Nelec,
         energies=eigvals,
         wavefunctions=psis,
         basis=basis,
