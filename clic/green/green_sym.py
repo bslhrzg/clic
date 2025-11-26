@@ -13,6 +13,7 @@ def get_green_block(
         eta,    # distance to imaginary axis
         h0_n, U_n, # one and two particle hamiltonians
         ws, # frequency mesh
+        iws,
         target_indices, # indexes for which we want G_{ij}
         gfmeth, # method to compute G
         one_bh_n,two_bh_n, # one and two body tables
@@ -37,7 +38,12 @@ def get_green_block(
     num_target = len(target_indices)
     G_sub_block_n = np.zeros((len(ws), num_target, num_target), dtype=np.complex128)
 
-    
+    print(f"DEBUG: here in green_block : iws is not None = {iws is not None}")
+    if iws is not None: 
+        G_sub_block_n_iw = np.zeros((len(iws), num_target, num_target), dtype=np.complex128)
+    else : 
+        G_sub_block_n_iw = None
+
     # --- Method 1: Time Propagation (calculates G_ij element by element) ---
     if gfmeth == "time_prop":
         # We compute one full representative block from each identical group, element by element.
@@ -85,15 +91,21 @@ def get_green_block(
             rep_global_idx = target_indices[rep_local_idx]
             print(f"  Computing representative g_({rep_global_idx},{rep_global_idx}) via Scalar CF...")
             
-            g_ii_n, _ = gfs.green_function_scalar_fixed_basis(
+            g_ii_n,g_ii_iw, _ = gfs.green_function_scalar_fixed_basis(
                 M, psi_n, e_n, ws, eta, rep_global_idx, NappH,
-                h0_n, U_n, one_bh_n, two_bh_n, coeff_thresh=1e-12, L=100
+                h0_n, U_n, one_bh_n, two_bh_n, 
+                iws = iws,
+                coeff_thresh=1e-12, L=100
             )
             
             # Copy the scalar result to all symmetrically equivalent DIAGONAL elements
             for block_idx in group:
                 for local_idx_in_block in blocks[block_idx]:
                     G_sub_block_n[:, local_idx_in_block, local_idx_in_block] = g_ii_n
+                    if iws is not None:
+                        G_sub_block_n_iw[:, local_idx_in_block, local_idx_in_block] = g_ii_iw
+
+            
 
     # --- Method 3: Block Continued Fraction (most efficient for blocks) ---
     elif gfmeth == "block":
@@ -121,4 +133,4 @@ def get_green_block(
                     for j_source, j_dest in enumerate(local_indices_in_equiv_block):
                         G_sub_block_n[:, i_dest, j_dest] = G_dense_computed[:, i_source, j_source]
 
-    return G_sub_block_n
+    return G_sub_block_n, G_sub_block_n_iw

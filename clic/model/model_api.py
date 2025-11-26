@@ -3,6 +3,7 @@
 import numpy as np
 from clic.model import hamiltonians, create_model_from_hyb
 from clic.model.config_models import HybFitConfig
+from clic.hybfit.utils import delta_from_bath
 
 class Model:
     def __init__(self, h0, U):
@@ -37,11 +38,21 @@ class Model:
         
         # Calculate the full hamiltonian (Impurity + Bath)
         if n_bath_poles > 0:
-            full_h0, hyb_approx = create_model_from_hyb.build_model_from_hyb(h_imp, ws, hyb, fit_config)
+            full_h0, Hb, V = create_model_from_hyb.build_model_from_hyb(h_imp, ws, hyb, fit_config)
+            # Rebuild delta using the same eta as the input data for direct comparison
+            hyb_approx = delta_from_bath(ws, Hb, V, eta=eta_hyb)
+            if iws is not None:
+                hyb_approx_iw = delta_from_bath(1j*iws, Hb, V, eta=0)
+            else : 
+                hyb_approx_iw = None
         else :
             print(f"n_bath_poles was set to 0, going with Hubbard I Approximation")
             full_h0 = h_imp 
             hyb_approx = None 
+            hyb_approx_iw = None
+
+        
+
             
         # --- 2. Build the full U ---
         # Assume impurity is at the start
@@ -74,7 +85,8 @@ class Model:
             "ws": ws,
             "iws": iws,
             "original": hyb,
-            "fitted": hyb_approx
+            "fitted": hyb_approx,
+            "fitted_iw": hyb_approx_iw
         }
         
         return model

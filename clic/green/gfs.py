@@ -321,8 +321,11 @@ def green_function_scalar_fixed_basis(
 
     # If provided, we will also return Gii on matsubara frequencies
     if iws is not None: 
-        Niw = len(ws)
+        print("DEBUG in green_function_scalar_fixed_basis: iws is not none")
+        Niw = len(iws)
         Gii_iw = np.zeros(Niw, dtype=np.complex128)
+    else :
+        Gii_iw = None
 
 
     si = cc.Spin.Alpha if i < M else cc.Spin.Beta
@@ -376,7 +379,7 @@ def green_function_scalar_fixed_basis(
 
                 if iws is not None : 
                     for iiw, iw in enumerate(iws):
-                        z_g = (e0 - iw)
+                        z_l = (e0 - iw)
                         Gii_iw[iiw] -= norm_sq_l * scalar_cf_from_T(T_l, z_l)
 
 
@@ -386,10 +389,8 @@ def green_function_scalar_fixed_basis(
         have_g=have_g, have_l=have_l,
         seed_nonzero=(have_g or have_l)
     )
-    if iws is None: 
-        return Gii, info
-    else :
-        return Gii, Gii_iw, info
+ 
+    return Gii, Gii_iw, info
 
 # ---------------------------------------------------------------------------
 # TIME PROPAGATION 

@@ -121,6 +121,9 @@ def diagH(H, num_roots, option="arpack", **kwargs):
     # cannot ask more eigenpairs than dimension
     num_roots = min(num_roots, dim)
 
+    if dim < 512:
+        option = "dense"
+
     if option == "dense":
         # convert sparse → dense if needed
         if issparse(H):
@@ -153,7 +156,7 @@ def diagH(H, num_roots, option="arpack", **kwargs):
             max_subspace=120,
             tol=1e-10,
             diag=H.diagonal() if hasattr(H, "diagonal") else np.diag(H),
-            block_size=2 * num_roots,
+            block_size=2*num_roots,
             verbose=False,
         )
         davidson_defaults.update(kwargs)

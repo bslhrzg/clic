@@ -20,6 +20,14 @@ def get_fci_basis(num_spatial, num_electrons):
         basis_dets.append(det)
     return sorted(basis_dets)
 
+def get_Nelec(det):
+    occ_a = det.alpha_occupied_indices()
+    occ_b = det.beta_occupied_indices()
+    Na = len(occ_a)
+    Nb = len(occ_b)
+    return Na,Nb,Na+Nb
+    
+
 
 def partition_by_Sz(basis):
     """

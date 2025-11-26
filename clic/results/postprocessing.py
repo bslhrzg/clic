@@ -22,6 +22,8 @@ class StateAnalyzer:
         self.model = model
         self._1p_op_cache = {}
 
+        self.rho_imp_thermal = None
+
     def _get_1p_operators(self):
         if "Sz" in self._1p_op_cache:
             return self._1p_op_cache
@@ -47,6 +49,9 @@ class StateAnalyzer:
             stats["occ"] = float(np.sum(np.real(np.diag(rdm_imp))))
             stats["rdm"] = rdm_imp
 
+            #print("here")
+            #print(np.round(np.real(rdm_imp),3))
+
             op_1p = self._get_1p_operators()
             exp_Sz_imp = np.trace(op_1p["Sz"] @ rdm_imp)
             stats["Sz"] = float(np.real(exp_Sz_imp))
@@ -58,7 +63,7 @@ class StateAnalyzer:
 
         return stats
 
-    def print_analysis(self):
+    def do_analysis(self):
         all_states = self.thermal_state._all_states
         weights = self.thermal_state.boltzmann_weights
         if not all_states:
@@ -94,6 +99,7 @@ class StateAnalyzer:
             print("-> Saved 'real-imp-dens.dat'")
             np.savetxt("imag-imp-dens.dat", np.imag(avg_rdm_imp), fmt="% 8.5f")
             print("-> Saved 'imag-imp-dens.dat'")
+            self.rho_imp_thermal = avg_rdm_imp
 
         if len(all_states) > 1:
             avg_occ = float(np.sum(weights * [s["occ"] for s in all_stats]))
@@ -105,4 +111,5 @@ class StateAnalyzer:
             #print(f"<S2>  = {avg_S2:.8f}")
             #print(f"<S>   = {avg_S:.8f}")
             print(f"<Sz>  = {avg_Sz:.8f}")
+            
         print("-"*50)

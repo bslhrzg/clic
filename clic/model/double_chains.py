@@ -363,6 +363,9 @@ def double_chain_by_blocks(
     assert h.shape == (M, M)
     assert 1 <= Nimp <= M
 
+    e0,_ = np.linalg.eigh(h)
+
+
     # 0) Analyze block structure once
     sym = analyze_symmetries_fn(h, verbose=verbose)
     blocks = sym["blocks"]                  # list[list[int]]
@@ -465,4 +468,12 @@ def double_chain_by_blocks(
         identical_groups=identical_groups,
         per_block=block_results
     )
+
+    ef,_ = np.linalg.eigh(h_final)
+    are_eige_equals = np.sum(np.abs(ef-e0)) < 1e-12
+    is_unitary = np.allclose(C_total @ C_total.T.conj(), np.eye(C_total.shape[0]))
+    assert are_eige_equals
+    assert is_unitary
+    print("is_unitary ok, are eige equals ok, in dbl chain transform")
+
     return h_final, C_total, meta_global

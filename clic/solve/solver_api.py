@@ -56,6 +56,7 @@ class GroundStateSolver:
             imp_indices = self.model.imp_indices_spatial
             
             if method == "dbl_chain":
+
                 hmf, _, _, rho_mf = mf.mfscf(self.model.h0, self.model.U, self.Nelec)
 
                 hmf_ab = basis_1p.transform_h0_alphafirst_to_interleaved(hmf)
@@ -340,7 +341,7 @@ class FockSpaceSolver:
         
         return final_subspaces
 
-    def solve(self, initial_temperature: float = 5.0):
+    def solve(self, initial_temperature: float = 300.0):
         """
         Main entry point. Decides the strategy based on self.nelec_setting.
         """

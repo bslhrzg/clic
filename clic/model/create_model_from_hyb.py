@@ -81,9 +81,6 @@ def build_model_from_hyb(
     # Extract bath parameters from the permuted H_full
     Nimp = len(map["alpha_imp_idx"]) + len(map["beta_imp_idx"])
     _, _, V, Hb = unpermute_to_block_form(H_full, map["perm_full_to_spin_sorted"], Nimp)
-    
-    # Rebuild delta using the same eta as the input data for direct comparison
-    delta_fit = delta_from_bath(omega, Hb, V, eta=eta)
-        
+            
 
-    return H_full, delta_fit
+    return H_full, Hb, V

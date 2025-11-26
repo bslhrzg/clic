@@ -113,6 +113,38 @@ def umo2so(U_mo, M):
                         U_so[p_b, q_a, r_b, s_a] = val
     return U_so
 
+def basis_change_h0(A, C):
+    """
+    Performs a basis change on a 1-electron operator (A).
+
+
+    Args:
+        A (np.ndarray): A 2D array (matrix).
+        C (np.ndarray): The 2D transformation matrix.
+    """
+    # Same calculation for the 2D matrix A
+    Anew = C.T.conj() @ A @ C
+    
+    return Anew
+
+def basis_change_U(B, C):
+    """
+    Performs a basis change on a 2-electron operator (U).
+
+    This version uses a single, optimized einsum call for the 4D tensor transformation.
+
+    Args:
+        B (np.ndarray): A 4D array (tensor).
+        C (np.ndarray): The 2D transformation matrix.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: A tuple containing the transformed Anew and Unew.
+    """
+    # Same calculation for the 2D matrix A
+    Unew = np.einsum('ai,bj,abgd,gk,dl->ijkl', C.conj(), C.conj(), B, C, C, optimize=True)
+    
+    return Unew
+
 def basis_change_h0_U(A, B, C):
     """
     Performs a basis change on a 2-electron operator (U) and a 1-electron operator (A).
@@ -132,6 +164,7 @@ def basis_change_h0_U(A, B, C):
     Unew = np.einsum('ai,bj,abgd,gk,dl->ijkl', C.conj(), C.conj(), B, C, C, optimize=True)
     
     return Anew, Unew
+
 
 
 def get_natural_orbitals(wf,M,block):

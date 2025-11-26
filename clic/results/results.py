@@ -165,7 +165,7 @@ class ThermalGroundState:
     def __init__(self,
                  results_by_nelec: dict[int, 'NelecLowEnergySubspace'],
                  base_model: 'Model',
-                 temperature: float = 5.0):
+                 temperature: float = 300.0):
         
         if not isinstance(results_by_nelec, dict):
             raise TypeError("`results_by_nelec` must be a dictionary.")
@@ -180,6 +180,7 @@ class ThermalGroundState:
         
         self.results_by_nelec = results_by_nelec
         self._temperature = temperature
+        print(f"WOLOLOOOOO: TEMPERATURE HERE ? {temperature}")
         
         self._all_states: list[tuple[float, int, cc.Wavefunction]] = []
         for nelec, result in self.results_by_nelec.items():
@@ -230,7 +231,7 @@ class ThermalGroundState:
         
         print(f"Recalculated thermal properties for T={self.temperature} K.")
 
-    def prune(self, threshold: float = 1e-2):
+    def prune(self, threshold: float = 1e-3):
         """
         Removes states whose Boltzmann weight is below a given threshold.
         This method completely rebuilds the internal state of the object,

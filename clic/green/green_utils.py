@@ -6,7 +6,7 @@ import scipy.sparse as sp
 import numpy.linalg as npl
 from numpy.linalg import norm
 from ..solve.diagh import get_ham
-
+from ..basis.basis_Np import get_Nelec,get_fci_basis
 # -----------------------------
 # Helpers: wavefunction <-> basis
 # -----------------------------
@@ -44,7 +44,22 @@ def expand_basis_by_H(seed_dets, one_body_terms, two_body_terms, NappH):
     B_{t+1} = B_t ∪ H*B_t connections (via one- and two-body graph expansion)
     Stop after NappH expansions.
     """
+
     current = set(seed_dets)
+
+
+    do_fci = False 
+
+    if do_fci :
+        print("DEBUG, do_fci=True in expand_basis")
+        print(seed_dets)
+        if len(seed_dets) > 0 :
+            det_test = list(seed_dets)[0]
+            _,_,Nelec_seed = get_Nelec(det_test)
+            fci_sec = get_fci_basis(det_test.n_spatial,Nelec_seed)
+            current |= set(fci_sec)
+        return sorted(list(current))
+
     for _ in range(NappH):
         conn1 = cc.get_connections_one_body(list(current), one_body_terms)
         conn2 = cc.get_connections_two_body(list(current), two_body_terms)

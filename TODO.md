@@ -8,12 +8,15 @@
     - ~~blocks~~ 
     - apply_hamiltonian
 - revoir TGS analysis, trop lent 
+- for HIA, dbl_chain should NOT be done
+
 
 # To add
 
-- multiorb aim as new model class
-- $\Delta_{approx}$ and $\Sigma$
-- Green calc for Matsubara freq
+- multiorb aim as new model class 
+- $\Delta_{approx}$ and $\Sigma$ --> TO CHECK
+- Green calc for Matsubara freq:
+    FINISH THIS
 
 # Organization 
 
@@ -24,7 +27,7 @@
     - ~~lanczos~~
 - either decide on one sci worflow, either add options
 - reorganize where get_ham and everything goes
-
+- hybfit should be cleaned 
 
 # Cosmetics
 

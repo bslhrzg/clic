@@ -201,6 +201,8 @@ def perform_multi_orbital_no_transform(h0, U, block_dict, impurity_indices, Ne_p
     h_final = np.zeros_like(h0, dtype=np.complex128)
     C_total = np.identity(h0.shape[0], dtype=np.complex128)
 
+    e0,_ = np.eigh(h0)
+
     # Process spin-up and spin-down blocks separately but identically
     for spin_offset in [0, M]: # 0 for spin-up, M for spin-down
         

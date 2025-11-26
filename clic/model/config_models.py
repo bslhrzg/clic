@@ -13,7 +13,7 @@ class BathConfig(BaseModel):
     Represents the [model.parameters.bath] subsection.
     Used only for the 'anderson_impurity_model' type to define its bath.
     """
-    nb: int = Field(..., gt=0, description="Number of bath sites.")
+    nb: int = Field(..., gt=-1, description="Number of bath sites.")
     min_e: float = Field(..., description="Minimum energy of the bath band.")
     max_e: float = Field(..., description="Maximum energy of the bath band.")
     hybridization_V: float = Field(..., description="Constant hybridization strength.")
@@ -151,7 +151,8 @@ class GreenFunctionConfig(BaseModel):
     Represents the top-level [green_function] section.
     If this section is present, a Green's function calculation is performed.
     """
-    omega_mesh: List[Union[int, float]]
+    omega_mesh: Union[List[Union[int, float]], List[float]]
+    matsubara_mesh: Union[List[float],None] = None
     eta: float = Field(..., gt=0)
     block_indices: Union[Literal["impurity"], List[int]]
     lanczos: LanczosParameters

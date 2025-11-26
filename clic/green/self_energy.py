@@ -1,6 +1,7 @@
 # clic/green/self_energy.py 
 
 import numpy as np
+from clic.symmetries import symmetries
 
 def get_inv_weiss(ws, h_imp, hyb, eta):
     """
@@ -73,5 +74,4 @@ def get_sigma(inv_G0,inv_G):
     ∑(w) = inv(G0(w)) - inv(G(w))
     """
     return inv_G0 - inv_G
-
 
