@@ -13,20 +13,22 @@
 
 # To add
 
-- multiorb aim as new model class 
-- $\Delta_{approx}$ and $\Sigma$ --> TO CHECK
-- Green calc for Matsubara freq:
-    FINISH THIS
+- ~~multiorb aim as new model class~~
+- ~~$\Delta_{approx}$ and $\Sigma$~~
+- ~~Green calc for Matsubara freq~~
+- $\Delta$ fit for offdiag case
+- reuse psi0 in sci as guess
+- parallelize over states in green
 
 # Organization 
 
-- i use Lanczos in different places, I should have a module which implement different Lanczos flavor once 
+- ~~i use Lanczos in different places, I should have a module which implement different Lanczos flavor once~~ 
 - ~~mean field : should be a generic function, spin is only a particular case of the block case~~
     - ~~add a spinblock_only possibility for mfscf then~~
 - ~~maybe use different modules, I have too many files~~
     - ~~lanczos~~
 - either decide on one sci worflow, either add options
-- reorganize where get_ham and everything goes
+- ~~reorganize where get_ham and everything goes~~
 - hybfit should be cleaned 
 
 # Cosmetics

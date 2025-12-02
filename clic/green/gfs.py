@@ -58,7 +58,7 @@ def scalar_cf_from_T(T, z):
 # Top-level: fixed-basis block-Lanczos Green's function
 # -----------------------------
 
-def green_function_block_lanczos_fixed_basis_(
+def green_function_block_lanczos_fixed_basis__(
     M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
     h0_clean, U_clean, one_body_terms, two_body_terms, coeff_thresh=1e-12, L=100, reorth=False
 ):
@@ -172,14 +172,14 @@ def green_function_block_lanczos_fixed_basis_(
     )
 
 
-def green_function_block_lanczos_fixed_basis(
+def green_function_block_lanczos_fixed_basis_(
     M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
     h0_clean, U_clean, one_body_terms, two_body_terms, 
     iws = None,
     coeff_thresh=1e-12, L=100, reorth=False
 ):
     """
-    Calculates the Green's function block corresponding ONLY to the provided
+    Calculates the Green's function block corresponding only to the provided
     impurity_indices. Returns a dense matrix in the basis of those indices.
     """
     Nw = len(ws)
@@ -226,6 +226,8 @@ def green_function_block_lanczos_fixed_basis(
     G = np.zeros((Nw, num_imp, num_imp), dtype=np.complex128)
     if iws is not None : 
         G_iws = np.zeros((Niw, num_imp, num_imp), dtype=np.complex128)
+    else :
+        G_iws = None
 
     # Create a map from the global spin-orbital index to its position (0, 1, 2...) 
     # within the impurity_indices list.
@@ -253,13 +255,21 @@ def green_function_block_lanczos_fixed_basis(
                 for b, ib in enumerate(add_src_idx):  # 'b' is index in Gg_eff, 'ib' is global index
                     out_i = impurity_map[ia]          # Find where 'ia' lives in the output matrix
                     out_j = impurity_map[ib]          # Find where 'ib' lives in the output matrix
+                    #print(f"DEBUG: G.shape = {G.shape}, Gg_eff.shape = {Gg_eff.shape}, \n,out_i = {out_i},out_j = {out_j}, a = {a}, b = {b}")
                     G[iw, out_i, out_j] += Gg_eff[a, b]
 
         if Gl_eff is not None:
+            print("len(seed_rem_wf) =", len(seed_rem_wf))
+            print("len(rem_src_idx) =", len(rem_src_idx))
+            if have_l:
+                print("R0_l.shape =", R0_l.shape)
+                print("G00_l.shape =", G00_l.shape)
+                print("Gl_eff.shape =", Gl_eff.shape)
             for a, ia in enumerate(rem_src_idx):
                 for b, ib in enumerate(rem_src_idx):
                     out_i = impurity_map[ia]
                     out_j = impurity_map[ib]
+                    print(f"DEBUG: G.shape = {G.shape}, Gl_eff.shape = {Gl_eff.shape},out_i = {out_i},out_j = {out_j}, a = {a}, b = {b}")
                     G[iw, out_i, out_j] -= Gl_eff[a, b]
 
     if iws is not None : 
@@ -294,15 +304,156 @@ def green_function_block_lanczos_fixed_basis(
                         out_j = impurity_map[ib]
                         G_iws[iiw, out_i, out_j] -= Gl_eff[a, b]
 
-    if iws is None:
-        return G, dict(
-            basis_add_size=len(basis_add), basis_rem_size=len(basis_rem)
-        )
-    else : 
-        return G, G_iws, dict(
-            basis_add_size=len(basis_add), basis_rem_size=len(basis_rem)
+    
+    return G, G_iws, dict(
+        basis_add_size=len(basis_add), basis_rem_size=len(basis_rem)
         )
 
+
+
+def green_function_block_lanczos_fixed_basis(
+    M, psi0_wf, e0, ws, eta, impurity_indices, NappH,
+    h0_clean, U_clean, one_body_terms, two_body_terms,
+    iws = None,
+    coeff_thresh=1e-12, L=100, reorth=False
+):
+    """
+    Calculates the Green's-function block corresponding only to the provided
+    impurity_indices. Returns a dense matrix in the basis of those indices.
+    """
+    Nw = len(ws)
+    num_imp = len(impurity_indices)
+
+    if iws is not None:
+        Niw = len(iws)
+
+    # --- 1. Generate |ψ0> → c†_i|ψ0>, c_i|ψ0> seeds and their global indices ---
+    seed_add_wf, add_src_idx = [], []
+    seed_rem_wf, rem_src_idx = [], []
+    for i in impurity_indices:
+        si = cc.Spin.Alpha if i < M else cc.Spin.Beta
+        oi = i % M
+        wa = cc.apply_creation(psi0_wf, oi, si)
+        if wa.data():
+            seed_add_wf.append(wa)
+            add_src_idx.append(i)
+        wr = cc.apply_annihilation(psi0_wf, oi, si)
+        if wr.data():
+            seed_rem_wf.append(wr)
+            rem_src_idx.append(i)
+
+    # --- 2. Build Hilbert-space bases for N+1 and N-1 sectors ---
+    basis_add = build_sector_basis_from_seeds(
+        seed_add_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
+    )
+    basis_rem = build_sector_basis_from_seeds(
+        seed_rem_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
+    )
+
+    H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if len(basis_add) \
+        else sp.csr_matrix((0, 0), dtype=np.complex128)
+    H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean) if len(basis_rem) \
+        else sp.csr_matrix((0, 0), dtype=np.complex128)
+
+    # --- 3. Convert wf seeds → vectors in those bases ---
+    seed_vecs_add = [wf_to_vec(wf, basis_add) for wf in seed_add_wf] if len(basis_add) else []
+    seed_vecs_rem = [wf_to_vec(wf, basis_rem) for wf in seed_rem_wf] if len(basis_rem) else []
+
+    Q0_add = np.column_stack(seed_vecs_add) if seed_vecs_add else None
+    Q0_rem = np.column_stack(seed_vecs_rem) if seed_vecs_rem else None
+
+    # --- 4. Run block Lanczos with *raw* seed blocks ---
+    As_g = Bs_g = Qs_g = R0_g = None
+    As_l = Bs_l = Qs_l = R0_l = None
+    D_add = D_rem = None      # projections from Lanczos initial block to seeds
+
+    have_g = False
+    if Q0_add is not None and Q0_add.size > 0 and not np.allclose(Q0_add, 0):
+        # r = number of seed columns; block_lanczos_matrix will orthonormalize internally
+        r_add = Q0_add.shape[1]
+        As_g, Bs_g, Qs_g, R0_g = block_lanczos_matrix(
+            H_add, r=r_add, seed=Q0_add, max_steps=L, reorth=reorth
+        )
+        have_g = (R0_g is not None) and (len(As_g) > 0)
+        if have_g:
+            # Effective initial block size after internal rank reduction
+            r0g = R0_g.shape[0]
+            # First r0g columns of Qs_g are the orthonormalized initial block
+            Q0g_eff = Qs_g[:, :r0g]
+            # Seed matrix S_add: columns are the original seed vectors
+            S_add = Q0_add
+            # Projection D_add: Q0g_eff^\dagger S_add   (r0g x n_add)
+            D_add = Q0g_eff.conj().T @ S_add
+
+    have_l = False
+    if Q0_rem is not None and Q0_rem.size > 0 and not np.allclose(Q0_rem, 0):
+        r_rem = Q0_rem.shape[1]
+        As_l, Bs_l, Qs_l, R0_l = block_lanczos_matrix(
+            H_rem, r=r_rem, seed=Q0_rem, max_steps=L, reorth=reorth
+        )
+        have_l = (R0_l is not None) and (len(As_l) > 0)
+        if have_l:
+            r0l = R0_l.shape[0]
+            Q0l_eff = Qs_l[:, :r0l]
+            S_rem = Q0_rem
+            D_rem = Q0l_eff.conj().T @ S_rem   # (r0l x n_rem)
+
+    # --- 5. Allocate output Green's functions ---
+    G = np.zeros((Nw, num_imp, num_imp), dtype=np.complex128)
+    G_iws = np.zeros((Niw, num_imp, num_imp), dtype=np.complex128) if iws is not None else None
+
+    # Map global index → position in impurity block
+    impurity_map = {idx: i for i, idx in enumerate(impurity_indices)}
+
+    # Helper: accumulate a seed-basis GF into the impurity block
+    def accumulate_seed_block(target_G, freq_idx, G_seed, src_indices, sign=1.0):
+        # G_seed is (#seeds x #seeds), indices are add_src_idx or rem_src_idx
+        for a, ia in enumerate(src_indices):
+            for b, ib in enumerate(src_indices):
+                out_i = impurity_map[ia]
+                out_j = impurity_map[ib]
+                target_G[freq_idx, out_i, out_j] += sign * G_seed[a, b]
+
+    # --- 6. Real-axis frequencies ---
+    for iw, w in enumerate(ws):
+        z_g = (w + e0) + 1j * eta
+        z_l = (-w + e0) - 1j * eta
+
+        if have_g and D_add is not None:
+            G00_g = block_cf_top_left(As_g, Bs_g, z_g)  # in the orthonormal initial-block basis
+            if G00_g.size != 0 and not np.isnan(G00_g).any():
+                # G_add in seed basis: D_add^\dagger G00_g D_add
+                G_add_seed = D_add.conj().T @ G00_g @ D_add
+                accumulate_seed_block(G, iw, G_add_seed, add_src_idx, sign=+1.0)
+
+        if have_l and D_rem is not None:
+            G00_l = block_cf_top_left(As_l, Bs_l, z_l)
+            if G00_l.size != 0 and not np.isnan(G00_l).any():
+                G_rem_seed = D_rem.conj().T @ G00_l @ D_rem
+                accumulate_seed_block(G, iw, G_rem_seed, rem_src_idx, sign=-1.0)
+
+    # --- 7. Matsubara frequencies ---
+    if iws is not None:
+        for iiw, iw in enumerate(iws):
+            z_g = (iw + e0)
+            z_l = (-iw + e0)
+
+            if have_g and D_add is not None:
+                G00_g = block_cf_top_left(As_g, Bs_g, z_g)
+                if G00_g.size != 0 and not np.isnan(G00_g).any():
+                    G_add_seed = D_add.conj().T @ G00_g @ D_add
+                    accumulate_seed_block(G_iws, iiw, G_add_seed, add_src_idx, sign=+1.0)
+
+            if have_l and D_rem is not None:
+                G00_l = block_cf_top_left(As_l, Bs_l, z_l)
+                if G00_l.size != 0 and not np.isnan(G00_l).any():
+                    G_rem_seed = D_rem.conj().T @ G00_l @ D_rem
+                    accumulate_seed_block(G_iws, iiw, G_rem_seed, rem_src_idx, sign=-1.0)
+
+    return G, G_iws, dict(
+        basis_add_size=len(basis_add),
+        basis_rem_size=len(basis_rem),
+    )
 def green_function_scalar_fixed_basis(
     M, psi0_wf, e0, ws, eta, i, NappH,
     h0_clean, U_clean, one_body_terms, two_body_terms,

@@ -29,8 +29,8 @@ class CiMethodConfig(BaseModel):
     selector: Literal["cipsi"] = "cipsi"
     num_roots: int = Field(1, gt=0, description="Number of eigenstates to compute.")
     max_iter: int = Field(10, gt=-1, description="Maximum number of SCI iterations.")
-    conv_tol: float = Field(1e-6, gt=0, description="Energy convergence tolerance.")
-    prune_thr: float = Field(1e-7, ge=0, description="Threshold for pruning determinants in SCI.")
+    conv_tol: float = Field(1e-5, ge=0, description="Energy convergence tolerance.")
+    prune_thr: float = Field(1e-5, ge=0, description="Threshold for pruning determinants in SCI.")
     Nmul: Optional[float] = Field(None, description="Factor to expand the basis size at each SCI step.")
 
 
@@ -143,7 +143,7 @@ class SolverParameters(BaseModel):
     use_no: Literal["none", "no0"] = "none"
     ci_method: CiMethodConfig
     nelec_range: Optional[Union[tuple[int, int], Literal["auto"], None]] = None
-    initial_temperature: float = 5.0
+    temperature: float = 5.0
 
 
 class GreenFunctionConfig(BaseModel):

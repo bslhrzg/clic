@@ -166,7 +166,6 @@ def basis_change_h0_U(A, B, C):
     return Anew, Unew
 
 
-
 def get_natural_orbitals(wf,M,block):
     """Compute the natural orbitals for a given block"""
     gamma = ops.one_rdm(wf,M,block=block)

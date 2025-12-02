@@ -8,7 +8,7 @@ import clic_clib as cc
 from clic.model import bath_transform, double_chains, hamiltonians
 from clic.basis import basis_1p, basis_Np
 from clic.ops import ops
-from clic.solve import sci
+from clic.solve import sci,fci
 from clic.mf import mf
 from clic.results import results
 from clic.symmetries import symmetries
@@ -130,14 +130,14 @@ class GroundStateSolver:
             return results.ThermalGroundState(
                 results_by_nelec={0: self.result},
                 base_model=self.model, 
-                temperature=self.settings.initial_temperature
+                temperature=self.settings.temperature
             )
 
         self._prepare_basis()
 
         ci_settings = self.settings.ci_method
         if ci_settings.type == "fci":
-            result_obj = sci.do_fci(
+            result_obj = fci.do_fci(
                 h0=self.model.h0, U=self.model.U, M=self.model.M_spatial, 
                 Nelec=self.Nelec, num_roots=ci_settings.num_roots, Sz=None, verbose=True
             )
@@ -198,7 +198,7 @@ class GroundStateSolver:
         self.result = results.ThermalGroundState(
             results_by_nelec={self.Nelec: result_obj},
             base_model=clean_model, 
-            temperature=self.settings.initial_temperature
+            temperature=self.settings.temperature
         )
         return self.result
 
@@ -341,7 +341,7 @@ class FockSpaceSolver:
         
         return final_subspaces
 
-    def solve(self, initial_temperature: float = 300.0):
+    def solve(self):
         """
         Main entry point. Decides the strategy based on self.nelec_setting.
         """
@@ -375,7 +375,7 @@ class FockSpaceSolver:
         self.result = results.ThermalGroundState(
             results_by_nelec=all_subspaces,
             base_model=self.base_model,
-            temperature=initial_temperature
+            temperature= self.settings.temperature
         )
         
         self.result.prune()

@@ -92,6 +92,6 @@ def build_H_in_basis(basis_dets, h0_clean, U_clean):
     if len(basis_dets) == 0:
         return sp.csr_matrix((0,0), dtype=np.complex128)
     #H = cc.build_hamiltonian_openmp(basis_dets, h0_clean, U_clean)
-    H = get_ham(basis_dets,h0_clean,U_clean,method="1")
+    H = get_ham(basis_dets,h0_clean,U_clean)
 
     return H

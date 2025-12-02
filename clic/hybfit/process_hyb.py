@@ -451,6 +451,9 @@ def process_hyb_cost(
     blocks: List[List[int]] = sym["blocks"]
     identical_groups: List[List[int]] = sym["identical_groups"]
 
+    print(f"DEBUG: blocks = {blocks}")
+    print(f"DEBUG: identical_groups = {identical_groups}")
+
     # enforce scalar leaders
     leaders = [g[0] for g in identical_groups]
     for leader in leaders:

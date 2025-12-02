@@ -15,7 +15,6 @@ def get_green_block(
         ws, # frequency mesh
         iws,
         target_indices, # indexes for which we want G_{ij}
-        gfmeth, # method to compute G
         one_bh_n,two_bh_n, # one and two body tables
         coeff_thresh,  # threshold to prune states 
         L   # number of lanczos iterations
@@ -30,6 +29,17 @@ def get_green_block(
     blocks = symdict["blocks"] 
     identical_groups = symdict["identical_groups"]
     is_diagonal = symdict["is_diagonal"]
+
+    if is_diagonal:
+        gfmeth = "scalar_continued_fraction"
+    else : 
+        gfmeth = "block"
+
+    #if not is_diagonal:
+    #    symdict = symmetries.construct_spin_only_symdict(np.shape(sub_h0)[0])
+    #    blocks = symdict["blocks"] 
+    #    identical_groups = symdict["identical_groups"]
+    #    is_diagonal = symdict["is_diagonal"]
     
     print(f" Founds blocks : {blocks}")
     print(f"  Symmetry: is_diagonal={is_diagonal}. Found {len(identical_groups)} unique group(s) of blocks.")
@@ -117,9 +127,9 @@ def get_green_block(
             print(f"  Computing representative block (global indices {global_indices_to_compute}) via Block CF...")
             
             # This function now correctly returns a dense block, e.g., of shape (1001, 1, 1)
-            G_dense_computed, _ = gfs.green_function_block_lanczos_fixed_basis(
+            G_dense_computed, G_dense_computed_iw,_ = gfs.green_function_block_lanczos_fixed_basis(
                 M, psi_n, e_n, ws, eta, global_indices_to_compute, NappH,
-                h0_n, U_n, one_bh_n, two_bh_n, coeff_thresh=1e-12, L=100
+                h0_n, U_n, one_bh_n, two_bh_n, iws, coeff_thresh=1e-12, L=100
             )
 
             # Copy the computed block to all symmetric equivalents
@@ -132,5 +142,8 @@ def get_green_block(
                 for i_source, i_dest in enumerate(local_indices_in_equiv_block):
                     for j_source, j_dest in enumerate(local_indices_in_equiv_block):
                         G_sub_block_n[:, i_dest, j_dest] = G_dense_computed[:, i_source, j_source]
+                        if iws is not None: 
+                            G_sub_block_n_iw[:, i_dest, j_dest] = G_dense_computed_iw[:, i_source, j_source]
+
 
     return G_sub_block_n, G_sub_block_n_iw

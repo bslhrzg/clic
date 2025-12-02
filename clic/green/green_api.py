@@ -124,13 +124,13 @@ class GreenFunctionCalculator:
             
             h0_n, U_n, one_bh_n, two_bh_n = hamiltonian_cache[nelec_n]
 
-            # gfmeth = "block"
-            gfmeth = "scalar_continued_fraction"
+            #gfmeth = "block"
+            #gfmeth = "scalar_continued_fraction"
             # gfmeth = "time_prop"
 
             # G_sub_block_n has shape (nw, num_target, num_target)
             G_sub_block_n, G_sub_block_n_iw = green_sym.get_green_block(M, psi_n, e_n, p_lanczos.NappH, p_gf.eta, 
-                                                      h0_n, U_n, ws, iws,  target_indices, gfmeth, 
+                                                      h0_n, U_n, ws, iws,  target_indices, 
                                                       one_bh_n, two_bh_n, p_lanczos.coeff_thresh, p_lanczos.L
                                                       )
  
@@ -257,6 +257,7 @@ class GreenFunctionCalculator:
         is_diagonal = symdict["is_diagonal"]
 
         print(f"Self-Energy Calculation: Found {len(identical_groups)} unique symmetry groups.")
+        print(f"blocks : {blocks}")
         
         # 3. Prepare Hybridization
         hyb_to_use = hyb
@@ -273,6 +274,7 @@ class GreenFunctionCalculator:
 
         # 4. Initialize Sigma container
         Sigma_total = np.zeros_like(G_imp)
+        G0_total = np.zeros_like(G_imp)
 
         if np.imag(ws[0]) == 0:
             eta = self.gf_config.eta
@@ -307,7 +309,8 @@ class GreenFunctionCalculator:
             inv_G0_sub = z - h_sub - Delta_sub
             
             # G^{-1} calculation
-            if is_diagonal:
+            #if is_diagonal:
+            if len(group) == 1:
                 # Optimized path for diagonal blocks (1x1 or diagonal matrices)
                 # Avoids linalg.inv numerical noise completely
                 inv_G_sub = np.zeros_like(G_sub)
@@ -320,7 +323,11 @@ class GreenFunctionCalculator:
                     inv_G_sub[:, k, k] = inv_diags[:, k]
             else:
                 # Standard block inversion
-                inv_G_sub = np.linalg.inv(G_sub)
+                #inv_G_sub = np.linalg.inv(G_sub)
+                #G_sub = 0.5 * (G_sub + np.swapaxes(G_sub.conj(), 1, 2))
+                N_sub = G_sub.shape[-1]
+                I_sub = np.eye(N_sub)[None, :, :]           # (1, N_sub, N_sub)
+                inv_G_sub = np.linalg.solve(G_sub, I_sub)   # broadcast over first axis
 
             # Dyson: Sigma = G0^{-1} - G^{-1}
             Sigma_sub = inv_G0_sub - inv_G_sub
@@ -330,6 +337,7 @@ class GreenFunctionCalculator:
             for i_src, i_dest in enumerate(local_indices):
                 for j_src, j_dest in enumerate(local_indices):
                     Sigma_total[:, i_dest, j_dest] = Sigma_sub[:, i_src, j_src]
+                    G0_total[:, i_dest, j_dest] = np.linalg.inv(inv_G0_sub)[:, i_src, j_src]
 
             # 2. Copy to Equivalent Blocks
             for other_block_idx in group[1:]:
@@ -341,4 +349,5 @@ class GreenFunctionCalculator:
                         Sigma_total[:, i_dest, j_dest] = Sigma_sub[:, i_src, j_src]
 
         print(f"Self-Energy calculated via symmetry blocks. Shape: {Sigma_total.shape}")
-        return Sigma_total
+        return Sigma_total, G0_total
+    

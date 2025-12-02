@@ -20,12 +20,12 @@ def dmft_step(
     # 2. DEFINE THE MODEL
     # ==============================================================================
 
-    n_bath_poles = 0
+    n_bath_poles = 3
 
     fit_method = "cost_minimization"
     #fit_method = "poles_reconstruction"
     eta_hyb = 0.005
-    eta_broad = 0.00
+    eta_broad = 0.02
 
     model = Model.from_hybridization(h_imp, U_imp, ws, hyb, n_bath_poles, eta_hyb,
                             fit_method=fit_method,
@@ -43,17 +43,20 @@ def dmft_step(
     # ==============================================================================
     # Create the settings object (using your existing Pydantic structures)
     if n_bath_poles > 0:
-        basis_prep_method = "dbl_chain" # or "dbl_chain"
+        if n_bath_poles > 3:
+            basis_prep_method = "dbl_chain" # or "dbl_chain"
+        else : 
+            basis_prep_method = "none"
         ci_type = "sci" # or "fci"
-        num_roots = 4
+        num_roots = 6
     else : 
         basis_prep_method = "none"
         ci_type = "fci"
         num_roots = 14
     max_iter = 6
-    conv_tol = 1e-5
+    conv_tol = 5e-5
     prune_thr = 1e-5
-    Nmul = 1
+    Nmul = None
 
 
     solver_settings = SolverParameters(
@@ -66,7 +69,7 @@ def dmft_step(
             prune_thr=prune_thr,
             Nmul=Nmul,
         ),
-        initial_temperature=300.0
+        temperature=100.0
     )
 
     # Instantiate the Manager (FockSpaceSolver)
@@ -89,7 +92,7 @@ def dmft_step(
     # ==============================================================================
     L_lanczos = 150 
     NappH = 2
-    coeff_thresh = 1e-7
+    coeff_thresh = 1e-6
 
     gf_config = GreenFunctionConfig(
         omega_mesh=ws,
@@ -125,6 +128,10 @@ def dmft_step(
     hyb_approx = model.hyb_data["fitted"]
     hyb_approx_iw = model.hyb_data["fitted_iw"]
 
+    #dump(np.imag(hyb_approx),ws,'imag-hyb_real')
+    #dump(np.imag(hyb_approx_iw),iws,'imag-hyb_mats')
+
+
     if n_bath_poles > 0:
         hyb_sig = hyb_approx 
         hyb_sig_iw = hyb_approx_iw
@@ -133,12 +140,12 @@ def dmft_step(
         hyb_sig = None
         hyb_sig_iw = None
 
-    Sigma = gf_calc.calculate_self_energy( 
+    Sigma, G0 = gf_calc.calculate_self_energy( 
                                 ws, 
                                 G_imp, 
                                 hyb_sig)
 
-    Sigma_iw = gf_calc.calculate_self_energy( 
+    Sigma_iw, G0_iw = gf_calc.calculate_self_energy( 
                                 1j * iws, 
                                 G_imp_iw, 
                                 hyb_sig_iw)
@@ -149,6 +156,11 @@ def dmft_step(
     dump(np.real(Sigma_iw),iws,'real-sig_mats')
     dump(np.imag(Sigma_iw),iws,'imag-sig_mats')
 
+    dump(np.real(G0),ws,'real-G0_real')
+    dump(np.imag(G0),ws,'imag-G0_real')
+    dump(np.real(G0_iw),iws,'real-G0_mats')
+    dump(np.imag(G0_iw),iws,'imag-G0_mats')
+
     # Compute static self energy 
     avg_rdm_imp = analyzer.rho_imp_thermal
     sig_static = np.einsum('ikjl,ij->kl', U_imp, avg_rdm_imp) - \
@@ -158,12 +170,3 @@ def dmft_step(
     np.savetxt("imag-sig_static.dat", np.imag(sig_static), fmt="% 8.5f")
 
     return sig_static,Sigma,Sigma_iw
-
-
-def dmft_step_(
-        ws,
-        iws,
-        hyb,h_imp,
-        U_imp,
-        ):
-    return None,None,None

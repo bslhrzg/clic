@@ -156,6 +156,7 @@ def block_lanczos(apply_op, gram, Q0, K=None, reorth=True, tol=1e-12, cap_dim=No
         Q_blocks is a list of blocks
         R0 is the initial block sqrt Gram
     """
+
     if K is None:
         K = 10**9
 
@@ -178,10 +179,21 @@ def block_lanczos(apply_op, gram, Q0, K=None, reorth=True, tol=1e-12, cap_dim=No
         Ak = 0.5 * (Ak + Ak.conj().T)
         A_blocks.append(Ak)
 
+        #print("Here in block lanczso: Qk.shape", Qk.shape, "Qkm1.shape", Qkm1.shape, "Bkm1.shape", Bkm1.shape)
+
+
         # W = H Qk - Qk Ak - Q_{k-1} B_{k-1}^H
+        #W = HQk + _axpy_last(Qk, -Ak)
+        #if Bkm1.size:
+        #    W = W + _axpy_last(Qkm1, -Bkm1.conj().T)
         W = HQk + _axpy_last(Qk, -Ak)
-        if Bkm1.size:
+
+        # Only apply the Q_{k-1} B_{k-1}^H correction if shapes are consistent.
+        # A: Qkm1 (..., b_prev), C: Bkm1^H (b_prev, b_curr)
+        if Bkm1.size and Qkm1.shape[-1] == Bkm1.shape[1]:
             W = W + _axpy_last(Qkm1, -Bkm1.conj().T)
+        # else: skip this term; orthogonality to previous blocks is still enforced
+        #       by _orthonormalize_block(W, Q_blocks, ...).
 
         Qnext, Bk, rk = _orthonormalize_block(W, Q_blocks, gram, reorth=reorth, tol=tol)
         if rk == 0:

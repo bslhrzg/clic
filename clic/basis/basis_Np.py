@@ -4,6 +4,7 @@ import clic_clib as cc
 from itertools import combinations, product
 from collections import defaultdict
 import numpy as np
+from ..model.model_utils import test_spin_sym
 
 def get_fci_basis(num_spatial, num_electrons):
     """
@@ -246,6 +247,10 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
         bath_alpha_local = bath_det.alpha_occupied_indices()
         bath_beta_local = bath_det.beta_occupied_indices()
 
+        #print(f"imp_alpha_local = {imp_alpha_local}, imp_beta_local = {imp_beta_local}, \
+        #      bath_alpha_local = {bath_alpha_local},bath_beta_local = {bath_beta_local}")
+
+
         # Map local indices back to GLOBAL spatial indices
         global_alpha_imp = [imp_indices[i] for i in imp_alpha_local]
         global_beta_imp = [imp_indices[i] for i in imp_beta_local]
@@ -259,13 +264,15 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
         # Create the FINAL determinant in the GLOBAL context (using M_global)
         final_dets.append(cc.SlaterDeterminant(M_global, final_alpha, final_beta))
 
-    # Remove duplicates if any were generated (e.g., from odd electron cases)
-    # The hash and eq bindings on your C++ class make this possible.
     unique_dets = sorted(list(set(final_dets)))
-    if Nelec % 2 == 0:
-        target_Sz = 0 
-        print(f"Retaining only Sz={target_Sz} in starting basis")
-        unique_dets,_ = subbasis_by_Sz(unique_dets, target_Sz)
+
+    is_spin_sym = test_spin_sym(h0)
+    print(f"DEBUG: is_spin_sym : {is_spin_sym}")
+    if is_spin_sym:
+        if Nelec % 2 == 0:
+            target_Sz = 0 
+            print(f"Retaining only Sz={target_Sz} in starting basis")
+            unique_dets,_ = subbasis_by_Sz(unique_dets, target_Sz)
 
     #for det in unique_dets:
     #    print(f"det : {det}")
