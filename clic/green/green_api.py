@@ -170,68 +170,6 @@ class GreenFunctionCalculator:
         
         return ws, G_total, G_total_iw, A_w_total
 
-    def calculate_self_energy_(self, 
-                              ws: np.ndarray, 
-                              G_imp: np.ndarray, 
-                              hyb: Optional[np.ndarray] = None) -> np.ndarray:
-        """
-        Computes the Self-Energy matrix using the Dyson equation:
-            Sigma(w) = G0_inv(w) - G_imp_inv(w)
-            G0_inv(w) = (w + i*eta)I - h_imp - Delta(w)
-
-        Args:
-            ws: Frequency mesh used in the calculation.
-            G_imp: The thermally averaged Impurity Green's function matrix (nw, n_orb, n_orb).
-            hyb: (Optional) The hybridization function Delta(w). 
-                 If None, the method attempts to find 'hyb_data' attached to self.thermal_state.
-                 If still not found, it assumes Delta=0 (isolated impurity).
-
-        Returns:
-            Sigma: The self-energy matrix (nw, n_orb, n_orb).
-        """
-        if self.thermal_state is None:
-            raise RuntimeError("Thermal state is not loaded. Cannot extract impurity Hamiltonian.")
-
-        # 1. Extract Impurity Hamiltonian (h_imp)
-        target_indices = self.get_target_indices()
-        # Extract the submatrix corresponding to the impurity from the full base H0
-        h_imp = self.thermal_state.base_h0[np.ix_(target_indices, target_indices)]
-
-        # 2. Determine Hybridization (hyb)
-        # Priority: 1. Argument passed, 2. Attached to thermal_state, 3. None
-        hyb_to_use = hyb
-        
-        if hyb_to_use is None:
-            # Check if hyb_data was preserved in the thermal state (e.g. via the Model object)
-            # Note: Standard ThermalGroundState load might not have this unless added manually
-            if hasattr(self.thermal_state, 'hyb_data') and self.thermal_state.hyb_data is not None:
-                print("Using hybridization data found in thermal_state.")
-                # Assuming the stored hyb matches the frequency mesh 'ws'
-                # If stored in a dict like in Model: {'fitted': ...}
-                hyb_data = self.thermal_state.hyb_data
-                if isinstance(hyb_data, dict) and 'fitted' in hyb_data:
-                    hyb_to_use = hyb_data['fitted']
-                else:
-                    # Fallback if hyb_data is just the array
-                    hyb_to_use = hyb_data 
-            else:
-                print("Warning: No hybridization function provided or found in thermal state.")
-                print("Calculating Self-Energy relative to the ISOLATED impurity (Sigma + Delta).")
-
-        # 3. Calculate Inverse Weiss Field: G0^{-1}
-        eta = self.gf_config.eta
-        inv_G0 = se.get_inv_weiss(ws, h_imp, hyb_to_use, eta)
-
-        # 4. Invert the Interacting Green's Function: G^{-1}
-        inv_G = se.invert_G(G_imp)
-
-        # 5. Apply Dyson Equation
-        sigma = se.get_sigma(inv_G0, inv_G)
-
-        print(f"Self-Energy calculated. Shape: {sigma.shape}")
-        return sigma
-    
-
 
     def calculate_self_energy(self, 
                               ws: np.ndarray, 

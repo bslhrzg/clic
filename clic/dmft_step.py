@@ -13,6 +13,7 @@ def dmft_step(
         iws,
         hyb,h_imp,
         U_imp,
+        clic_params
         ):
 
 
@@ -20,7 +21,7 @@ def dmft_step(
     # 2. DEFINE THE MODEL
     # ==============================================================================
 
-    n_bath_poles = 3
+    n_bath_poles = clic_params["n_bath_poles"]
 
     fit_method = "cost_minimization"
     #fit_method = "poles_reconstruction"
@@ -37,7 +38,7 @@ def dmft_step(
     print(f"model.is_impurity_model : {model.is_impurity_model}")
     print(f"model.imp_indices_spatial : {model.imp_indices_spatial}")
 
-    Nelec_imp = 1
+    Nelec_imp = clic_params["Nelec_imp"]
     # ==============================================================================
     # 3. RUN THE SOLVER
     # ==============================================================================
@@ -48,15 +49,15 @@ def dmft_step(
         else : 
             basis_prep_method = "none"
         ci_type = "sci" # or "fci"
-        num_roots = 6
+        num_roots = clic_params["num_roots"]
     else : 
         basis_prep_method = "none"
         ci_type = "fci"
         num_roots = 14
-    max_iter = 6
-    conv_tol = 5e-5
+    max_iter = clic_params["num_roots"]
+    conv_tol = clic_params["conv_tol"]
     prune_thr = 1e-5
-    Nmul = None
+    Nmul = clic_params["Nmul"]
 
 
     solver_settings = SolverParameters(
@@ -69,7 +70,7 @@ def dmft_step(
             prune_thr=prune_thr,
             Nmul=Nmul,
         ),
-        temperature=100.0
+        temperature=clic_params["temperature"]
     )
 
     # Instantiate the Manager (FockSpaceSolver)
@@ -91,8 +92,8 @@ def dmft_step(
     # 4. CALCULATE GREEN'S FUNCTION
     # ==============================================================================
     L_lanczos = 150 
-    NappH = 2
-    coeff_thresh = 1e-6
+    NappH = clic_params["NappH"]
+    coeff_thresh = clic_params["lanczos_thr"]
 
     gf_config = GreenFunctionConfig(
         omega_mesh=ws,

@@ -2,7 +2,7 @@ import sys
 import os
 import numpy as np
 import h5py
-#from mpi4py import MPI # <--- The Magic
+from mpi4py import MPI # <--- The Magic
 
 
 from clic import *
@@ -54,7 +54,7 @@ def prepare_from_rspt(
  
 CALL_COUNT=0
 
-def solve(label, solver_param, dc_param, dc_flag, 
+def solve(label, solver_param_, dc_param, dc_flag, 
           U_mat_view, hyb_view, h_dft_view, sig_view, 
           sig_real_view, sig_static_view, sig_dc_view,
           iw_view, w_view, 
@@ -66,11 +66,34 @@ def solve(label, solver_param, dc_param, dc_flag,
     print(f"\n[Python] ENTER solve(), CALL_COUNT={CALL_COUNT}")
 
     # Get the Communicator from the host application
-    #comm = MPI.COMM_WORLD
-    #rank = comm.Get_rank()
-    #size = comm.Get_size()
-    size = 1
-    rank=0
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    # ------------------------------------------------------------------
+    # 0. Create NumPy wrappers for the output buffers on *all* ranks
+    # ------------------------------------------------------------------
+    # These arrays are views into the RSPT-provided memory.
+    sig = np.frombuffer(sig_view, dtype=np.complex128)
+    sig = sig.reshape((n_orb, n_orb, n_iw), order='F')
+
+    sig_real = np.frombuffer(sig_real_view, dtype=np.complex128)
+    sig_real = sig_real.reshape((n_orb, n_orb, n_w), order='F')
+
+    sig_static = np.frombuffer(sig_static_view, dtype=np.complex128)
+    sig_static = sig_static.reshape((n_orb, n_orb), order='F')
+
+    sig_dc = np.frombuffer(sig_dc_view, dtype=np.complex128)
+    sig_dc = sig_dc.reshape((n_orb, n_orb), order='F')  # if you ever need it
+
+    iw = np.frombuffer(iw_view, dtype=np.float64)
+    w  = np.frombuffer(w_view,  dtype=np.float64)
+
+    # Placeholders for results (will be filled on rank 0)
+    res_static = None
+    res_sigma = None
+    res_sigma_iw = None
+
     # --- ONLY RANK 0 WRITES ---
     if rank == 0:
 
@@ -81,6 +104,34 @@ def solve(label, solver_param, dc_param, dc_flag,
         # ... (Same as before) ...
 
         # --- 2. Convert Memory Views to NumPy Arrays ---
+
+        print(f"Solver params : {solver_param_.strip()}")
+
+        solver_param = solver_param_.strip().split()
+        print(f"solver_param = {solver_param}")
+        if len(solver_param) < 2 : 
+            raise ValueError(f"Expected at least 2 parameters, got {solver_param}")
+
+        clic_params = {}
+        clic_params["n_bath_poles"] = int(solver_param[0]) 
+        clic_params["Nelec_imp"]    = int(solver_param[1])
+
+
+        clic_params["num_roots"] = int(solver_param[2]) if len(solver_param) > 2 else 4
+        clic_params["temperature"]  = float(solver_param[3]) if len(solver_param) > 3 else 5
+        clic_params["NappH"] = int(solver_param[4]) if len(solver_param) > 4 else 1
+
+        clic_params["conv_tol"] = float(solver_param[5]) if len(solver_param) > 5 else 5e-4
+        clic_params["Nmul"] = float(solver_param[6]) if len(solver_param) > 6 else None 
+        clic_params["lanczos_thr"] = float(solver_param[7]) if len(solver_param) > 7 else 1e-5 
+
+
+
+
+# If you have NappH or more parameters, continue...
+        #n_bath_poles, Nelec_imp, num_roots, temperature, NappH = solver_param.strip()
+        #print(f"n_bath_poles = {n_bath_poles}, Nelec_imp = {Nelec_imp}, \
+        #      num_roots = {num_roots}, temperature = {temperature}, NappH = {NappH}")
         
         # 4-Index U Matrix (n_orb, n_orb, n_orb, n_orb)
         U_mat = np.frombuffer(U_mat_view, dtype=np.complex128)
@@ -171,46 +222,43 @@ def solve(label, solver_param, dc_param, dc_flag,
             c2s,
             c2cf)
         
-        res_static,res_sigma,res_sigma_iw = dmft_step(w,iw,hyb_clic,h_imp_clic,U_imp_clic)
+        res_static,res_sigma,res_sigma_iw = dmft_step(
+            w,iw,hyb_clic,h_imp_clic,U_imp_clic,clic_params)
     
 
-    # ==========================================================================
-    # Broadcast Results to All Ranks
-    # ==========================================================================
-    # RSPT runs on all ranks and expects the self-energy to be updated in memory on all ranks.
-    
-    #res_static = comm.bcast(res_static, root=0)
-    #res_sigma = comm.bcast(res_sigma, root=0)
-    #res_sigma_iw = comm.bcast(res_sigma_iw, root=0)
+    # ------------------------------------------------------------------
+    # 2. Broadcast results to all ranks
+    # ------------------------------------------------------------------
+    # On non-root ranks, res_* is currently None; that's fine, bcast will fill it.
+    res_static = comm.bcast(res_static, root=0)
+    res_sigma = comm.bcast(res_sigma, root=0)
+    res_sigma_iw = comm.bcast(res_sigma_iw, root=0)
 
-
-    # NOTE: We assume 'dmft_step' returns Dynamic Sigma as (n_freq, n_orb, n_orb).
-    # RSPT expects (n_orb, n_orb, n_freq).
-    # We must transpose axes (0,1,2) -> (1,2,0) before assignment.
-    
-    # 1. Static Self Energy: (n_orb, n_orb) -> No transpose needed usually
+    # ------------------------------------------------------------------
+    # 3. Write results back into RSPT buffers on *all* ranks
+    # ------------------------------------------------------------------
+    # 1. Static Self Energy: (n_orb, n_orb)
     sig_static[:] = res_static[:]
 
     # 2. Real Axis Self Energy
-    # Check shape to be safe
-    if res_sigma.shape[0] == n_w: 
+    if res_sigma.shape[0] == n_w:
+        # (w, orb, orb) -> (orb, orb, w)
         print("Coucou, on modifie sig_real")
-        # It is (w, orb, orb), Transpose to (orb, orb, w)
         sig_real[:] = np.moveaxis(res_sigma, 0, -1)
     else:
-        # It is already (orb, orb, w)
+        # Already (orb, orb, w)
         sig_real[:] = res_sigma[:]
 
     # 3. Matsubara Self Energy
     if res_sigma_iw.shape[0] == n_iw:
+        # (iw, orb, orb) -> (orb, orb, iw)
         print("Coucou, on modifie sig")
-        # It is (iw, orb, orb), Transpose to (orb, orb, iw)
         sig[:] = np.moveaxis(res_sigma_iw, 0, -1)
     else:
         sig[:] = res_sigma_iw[:]
 
     er = 0
     print(f"coucou, returning {er} here")
-    print("*"*108)
+    print("*" * 108)
 
     return er

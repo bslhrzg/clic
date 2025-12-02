@@ -69,7 +69,7 @@ def subbasis_by_Sz(basis, target_Sz):
     return [basis[i] for i in idxs], idxs
 
 
-def _extract_spatial_energies(h0, order="AlphaFirst", tol=1e-12):
+def _extract_spatial_energies_(h0, order="AlphaFirst", tol=1e-12):
     """
     Return spatial orbital energies eps (length M) from either
     spatial h0 (M×M) or spin-orbital h0 (2M×2M).
@@ -100,10 +100,147 @@ def _extract_spatial_energies(h0, order="AlphaFirst", tol=1e-12):
         return d_a, M
     else:
         # Just treat as spatial
-        return diag, K
+        #return diag, K
+        return d_a, M
+
+def _extract_spatial_energies(h0, order="AlphaFirst", tol=1e-12):
+    """
+    Return spatial orbital energies eps (length M) from either
+    spatial h0 (M×M) or spin-orbital h0 (2M×2M) in the
+    spin-symmetric case (eps_alpha == eps_beta).
+
+    In the spin-broken case, raise a ValueError; that case must be
+    handled by a spin-orbital filling routine.
+    """
+    h0 = np.asarray(h0)
+    if h0.ndim != 2 or h0.shape[0] != h0.shape[1]:
+        raise ValueError("h0 must be square")
+
+    K = h0.shape[0]
+    diag = np.real_if_close(np.diag(h0).astype(float))
+
+    # Already spatial: no explicit spin
+    if K % 2 != 0:
+        M = K
+        return diag, M
+
+    # Spin-orbital case: K = 2M
+    M = K // 2
+    if order == "AlphaFirst":
+        d_a = diag[:M]
+        d_b = diag[M:]
+    elif order == "Interleaved":
+        d_a = diag[0::2]
+        d_b = diag[1::2]
+    else:
+        raise ValueError("order must be 'AlphaFirst' or 'Interleaved'")
+
+    if np.allclose(d_a, d_b, atol=tol, rtol=0):
+        # Restricted case: same energies for α and β
+        return d_a, M
+    else:
+        # This must be treated with a spin-orbital filling algorithm
+        raise ValueError("Spin-broken case (eps_alpha != eps_beta) must be handled separately.")
+    
+
+from itertools import combinations
+
+def _get_starting_basis_spin_orbital(h0, Nelec, order="AlphaFirst", tol=1e-12):
+    """
+    Spin-broken case: build starting determinants by filling the lowest
+    spin-orbital energies (α and β treated separately).
+
+    Returns a list of SlaterDeterminant(M, occ_a, occ_b) with M = K//2.
+    """
+    h0 = np.asarray(h0)
+    K = h0.shape[0]
+    if K % 2 != 0:
+        raise ValueError("Spin-orbital routine called with odd dimension.")
+
+    diag = np.real_if_close(np.diag(h0).astype(float))
+    M = K // 2  # spatial orbitals
+
+    # Build spin-orbital energies and mapping
+    if order == "AlphaFirst":
+        # α: 0..M-1, β: M..2M-1
+        d_a = diag[:M]
+        d_b = diag[M:]
+        eps_spin = np.concatenate([d_a, d_b])
+        # map spin-orbital index -> (spin, spatial_index)
+        def so_to_spin_spatial(so):
+            if so < M:
+                return 'a', so
+            else:
+                return 'b', so - M
+
+    elif order == "Interleaved":
+        # diag: [ε_a0, ε_b0, ε_a1, ε_b1,...]
+        eps_spin = diag.copy()
+        def so_to_spin_spatial(so):
+            if so % 2 == 0:
+                return 'a', so // 2
+            else:
+                return 'b', so // 2
+    else:
+        raise ValueError("order must be 'AlphaFirst' or 'Interleaved'")
+
+    if not (0 <= Nelec <= 2*M):
+        raise ValueError(f"Nelec ({Nelec}) must be between 0 and {2*M}.")
+
+    # Sort spin-orbitals by energy
+    order_idx = np.argsort(eps_spin, kind="mergesort")
+    eps_sorted = eps_spin[order_idx]
+
+    # Degeneracy blocks in spin-orbital space
+    blocks = []
+    if K > 0:
+        s = 0
+        for i in range(1, K):
+            if abs(eps_sorted[i] - eps_sorted[s]) > tol:
+                blocks.append(order_idx[s:i].tolist())
+                s = i
+        blocks.append(order_idx[s:K].tolist())
+
+    # Fill electrons one by one across spin orbitals
+    fixed_blocks, boundary_block = [], []
+    left = Nelec
+    for blk in blocks:
+        if left >= len(blk):
+            fixed_blocks.append(blk)
+            left -= len(blk)
+        else:
+            boundary_block = blk
+            break
+
+    if left > 0 and not boundary_block:
+        raise RuntimeError(f"Cannot place {Nelec} electrons in {K} spin orbitals? This should not happen for Nelec <= 2M.")
+
+    fixed_spin_occ = [i for blk in fixed_blocks for i in blk]
+
+    occ_sets = []
+    if left == 0:
+        occ_sets.append(tuple(sorted(fixed_spin_occ)))
+    else:
+        for subset in combinations(boundary_block, left):
+            occ_sets.append(tuple(sorted(fixed_spin_occ + list(subset))))
+
+    # Map spin-orbital occupancies to (alpha_indices, beta_indices)
+    dets = []
+    for occ_spin in occ_sets:
+        occ_a = []
+        occ_b = []
+        for so in occ_spin:
+            spin, p = so_to_spin_spatial(so)
+            if spin == 'a':
+                occ_a.append(p)
+            else:
+                occ_b.append(p)
+        dets.append(cc.SlaterDeterminant(M, sorted(occ_a), sorted(occ_b)))
+
+    return sorted(dets)
 
 
-def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
+def get_starting_basis_(h0, Nelec, order="AlphaFirst", tol=1e-12):
     """
     Build a starting CI basis by filling lowest spatial orbital energies for the
     GIVEN SUBSPACE h0. It creates SlaterDeterminant objects that are local to this subspace.
@@ -111,6 +248,8 @@ def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
     eps, M_subspace = _extract_spatial_energies(h0, order=order, tol=tol)
     # The M for the determinant is ALWAYS the subspace M. This function is self-contained.
     M_for_det = M_subspace
+
+    print(f"DEBUG, here in get_starting_basis : M_for_det = {M_for_det}")
 
     if not (0 <= Nelec <= 2*M_subspace):
         raise ValueError(f"Nelec ({Nelec}) cannot be between 0 and {2*M_subspace} for a subspace of size {M_subspace}.")
@@ -188,6 +327,101 @@ def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
 
     return sorted(dets)
 
+def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
+    """
+    Build a starting CI basis by filling lowest-energy states for the
+    GIVEN SUBSPACE h0.
+
+    - If h0 is spatial (M×M) or spin-symmetric (2M×2M with eps_alpha == eps_beta),
+      we use spatial energies and the "pairs + single" logic.
+
+    - If h0 is spin-broken (2M×2M with eps_alpha != eps_beta),
+      we fill individual spin orbitals by energy.
+    """
+    h0 = np.asarray(h0)
+    K = h0.shape[0]
+
+    # Try spatial / spin-symmetric path first
+    try:
+        eps, M_subspace = _extract_spatial_energies(h0, order=order, tol=tol)
+        # Spatial or restricted spin case; keep your old logic here
+        M_for_det = M_subspace
+
+        if not (0 <= Nelec <= 2*M_subspace):
+            raise ValueError(f"Nelec ({Nelec}) cannot be between 0 and {2*M_subspace} for a subspace of size {M_subspace}.")
+
+        # --- BEGIN: your original spatial logic (unchanged) ---
+        order_idx = np.argsort(eps, kind="mergesort")
+        eps_sorted = eps[order_idx]
+
+        blocks = []
+        if M_subspace > 0:
+            s = 0
+            for i in range(1, M_subspace):
+                if abs(eps_sorted[i] - eps_sorted[s]) > tol:
+                    blocks.append(order_idx[s:i].tolist())
+                    s = i
+            blocks.append(order_idx[s:M_subspace].tolist())
+
+        pairs = Nelec // 2
+        has_single = (Nelec % 2 == 1)
+
+        fixed_blocks, boundary_block = [], []
+        pairs_left = pairs
+        for blk in blocks:
+            if pairs_left >= len(blk):
+                fixed_blocks.append(blk)
+                pairs_left -= len(blk)
+            else:
+                boundary_block = blk
+                break
+
+        fixed_pairs = [i for blk in fixed_blocks for i in blk]
+
+        pair_sets = []
+        if M_subspace > 0 and pairs_left > 0 and not boundary_block:
+            raise RuntimeError(f"Cannot place {pairs} pairs in {M_subspace} orbitals. Not enough low-energy states for Nelec={Nelec}.")
+
+        if pairs_left == 0:
+            pair_sets.append(tuple(sorted(fixed_pairs)))
+        elif boundary_block:
+            for subset in combinations(boundary_block, pairs_left):
+                pair_sets.append(tuple(sorted(fixed_pairs + list(subset))))
+
+        dets = []
+        if not has_single:
+            for P in pair_sets:
+                occ_a = sorted(list(P))
+                occ_b = sorted(list(P))
+                dets.append(cc.SlaterDeterminant(M_for_det, occ_a, occ_b))
+        else:
+            for P in pair_sets:
+                Pset = set(P)
+                remaining = [i for i in order_idx if i not in Pset]
+                if not remaining:
+                    continue
+                e0 = eps[remaining[0]]
+                singles_block = [i for i in remaining if abs(eps[i] - e0) <= tol]
+
+                for s in singles_block:
+                    occ_a = sorted(list(Pset) + [s])
+                    occ_b = sorted(list(Pset))
+                    dets.append(cc.SlaterDeterminant(M_for_det, occ_a, occ_b))
+
+                    occ_a2 = sorted(list(Pset))
+                    occ_b2 = sorted(list(Pset) + [s])
+                    dets.append(cc.SlaterDeterminant(M_for_det, occ_a2, occ_b2))
+        # --- END: original spatial logic ---
+
+        return sorted(dets)
+
+    except ValueError as e:
+        # If the error is from spin-broken case, fall through to spin-orbital filling.
+        if "Spin-broken case" not in str(e):
+            raise
+
+    # Spin-broken branch: use spin-orbital energies
+    return _get_starting_basis_spin_orbital(h0, Nelec, order=order, tol=tol)
 
 def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst", tol=0.01):
     """
@@ -220,6 +454,8 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
     h0_imp = h0[np.ix_(imp_spin_indices, imp_spin_indices)]
     h0_bath = h0[np.ix_(bath_spin_indices, bath_spin_indices)]
 
+    #print(f"DEBUG: h0_bath.shape = {h0_bath.shape}")
+
     Nelec_bath = Nelec - Nelec_imp
     if Nelec_bath < 0:
         raise ValueError(f"Nelec_imp ({Nelec_imp}) cannot be greater than Nelec ({Nelec}).")
@@ -249,6 +485,9 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
 
         #print(f"imp_alpha_local = {imp_alpha_local}, imp_beta_local = {imp_beta_local}, \
         #      bath_alpha_local = {bath_alpha_local},bath_beta_local = {bath_beta_local}")
+        
+        #print(f"bath_indices = {bath_indices}")
+        #print(f"imp_indices = {imp_indices}")
 
 
         # Map local indices back to GLOBAL spatial indices

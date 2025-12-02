@@ -4,7 +4,7 @@ import numpy as np
 from scipy.sparse import lil_matrix
 from . import results
 from clic.ops import ops
-from ..api import Model
+from ..model.model_api import Model
 
 def _get_1p_Sz_matrix(M):
     sz_diag = np.concatenate([np.full(M, 0.5), np.full(M, -0.5)])
