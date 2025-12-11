@@ -116,10 +116,12 @@ def dmft_step(
     # Pass the result from the solver directly to the GF calculator
     ws, G_imp, G_imp_iw, A_imp = gf_calc.run(ground_state_result=result)
 
-    dump(np.real(G_imp),ws,'real-G_real')
-    dump(np.imag(G_imp),ws,'imag-G_real')
-    dump(np.real(G_imp_iw),iws,'real-G_mats')
-    dump(np.imag(G_imp_iw),iws,'imag-G_mats')
+    dirdump = "dump_"+clic_params["label"]
+
+    dump(np.real(G_imp),ws,'real-G_real',output_dir=dirdump)
+    dump(np.imag(G_imp),ws,'imag-G_real',output_dir=dirdump)
+    dump(np.real(G_imp_iw),iws,'real-G_mats',output_dir=dirdump)
+    dump(np.imag(G_imp_iw),iws,'imag-G_mats',output_dir=dirdump)
 
 
     # ==============================================================================
@@ -150,17 +152,33 @@ def dmft_step(
                                 1j * iws, 
                                 G_imp_iw, 
                                 hyb_sig_iw)
+    
+
+    def check_imag_diag_negative(Sigma, name="Sigma",eps_sigma=1e-12):
+        imag_diag = np.imag(np.diagonal(Sigma, axis1=1, axis2=2))
+        bad = imag_diag > eps_sigma
+        if np.any(bad):
+            idx = np.argwhere(bad)
+            raise ValueError(
+                f"{name}: Im Sigma_ii > 0 detected at indices (iw, orb): {idx[:10]}"
+            )
+        print(f"{name}: diagonal Im parts OK (<= 0 within tol)")
+
+    check_imag_diag_negative(Sigma, "Sigma_real")
+    check_imag_diag_negative(Sigma_iw, "Sigma_mats")
 
 
-    dump(np.real(Sigma),ws,'real-sig_real')
-    dump(np.imag(Sigma),ws,'imag-sig_real')
-    dump(np.real(Sigma_iw),iws,'real-sig_mats')
-    dump(np.imag(Sigma_iw),iws,'imag-sig_mats')
 
-    dump(np.real(G0),ws,'real-G0_real')
-    dump(np.imag(G0),ws,'imag-G0_real')
-    dump(np.real(G0_iw),iws,'real-G0_mats')
-    dump(np.imag(G0_iw),iws,'imag-G0_mats')
+
+    dump(np.real(Sigma),ws,'real-sig_real',output_dir=dirdump)
+    dump(np.imag(Sigma),ws,'imag-sig_real',output_dir=dirdump)
+    dump(np.real(Sigma_iw),iws,'real-sig_mats',output_dir=dirdump)
+    dump(np.imag(Sigma_iw),iws,'imag-sig_mats',output_dir=dirdump)
+
+    dump(np.real(G0),ws,'real-G0_real',output_dir=dirdump)
+    dump(np.imag(G0),ws,'imag-G0_real',output_dir=dirdump)
+    dump(np.real(G0_iw),iws,'real-G0_mats',output_dir=dirdump)
+    dump(np.imag(G0_iw),iws,'imag-G0_mats',output_dir=dirdump)
 
     # Compute static self energy 
     avg_rdm_imp = analyzer.rho_imp_thermal

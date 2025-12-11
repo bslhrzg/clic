@@ -346,7 +346,7 @@ if __name__ == "__main__":
     print("\nRunning matrix-free block Lanczos for the impurity Green's function...")
     t_start = time.time()
     G_mat_lanc_wf = green_function_block_lanczos_wf(H_op, M, psi0_wf, e0, L, ws, eta)
-    G_mat_lanc_wf,_ =  green_function_block_lanczos_fixed_basis(
+    G_mat_lanc_wf,_,_ =  green_function_block_lanczos_fixed_basis(
                     M, psi0_wf, e0, ws, eta, [i for i in range(2*M)], 2,
                     h0, V, one_body_terms, two_body_terms, coeff_thresh=1e-12, L=100, reorth=False
                 )

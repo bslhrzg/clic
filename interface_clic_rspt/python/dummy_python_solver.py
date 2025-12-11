@@ -113,6 +113,7 @@ def solve(label, solver_param_, dc_param, dc_flag,
             raise ValueError(f"Expected at least 2 parameters, got {solver_param}")
 
         clic_params = {}
+        clic_params["label"] = lbl
         clic_params["n_bath_poles"] = int(solver_param[0]) 
         clic_params["Nelec_imp"]    = int(solver_param[1])
 
