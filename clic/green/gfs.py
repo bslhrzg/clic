@@ -13,7 +13,7 @@ from ..lanczos.scalar_lanczos import *
 # Continued fraction for top-left block
 # -----------------------------
 
-def block_cf_top_left(As, Bs, z):
+def block_cf_top_left_(As, Bs, z):
     """
     Evaluate the top left block of the block tridiagonal resolvent using a
     backward continued fraction with linear solves.
@@ -37,6 +37,68 @@ def block_cf_top_left(As, Bs, z):
     except npl.LinAlgError:
         return np.full_like(Id0, np.nan)
 
+def debug_shapes(As, Bs):
+    print("nA =", len(As), "nB =", len(Bs))
+    for j, A in enumerate(As):
+        print(f"A[{j}] {A.shape}")
+    for j, B in enumerate(Bs):
+        print(f"B[{j}] {B.shape}")
+    print("Pairs (A[k], B[k], A[k+1]) assuming B[k] couples k<->k+1:")
+    for k in range(min(len(Bs), len(As)-1)):
+        print(f"k={k}: A[k]={As[k].shape}, B[k]={Bs[k].shape}, A[k+1]={As[k+1].shape}")
+
+def block_cf_top_left(As, Bs, z):
+    if not As:
+        return np.array([[]], dtype=np.complex128)
+
+    nA = len(As)
+    nB = len(Bs)
+    if nB != nA - 1:
+        raise ValueError(f"Expected len(Bs)=len(As)-1, got {nB} vs {nA-1}")
+
+    # Σ_{n-1} = 0 in space of A_{n-1}
+    Sigma_next = np.zeros_like(As[-1], dtype=np.complex128)
+
+    for k in range(nA - 2, -1, -1):
+        mk  = As[k].shape[0]
+        mk1 = As[k+1].shape[0]
+        A1  = As[k+1]
+        B   = Bs[k]
+
+        # Sigma_next must be mk1 x mk1 here
+        if Sigma_next.shape != (mk1, mk1):
+            raise ValueError(
+                f"Sigma shape mismatch at k={k}: "
+                f"Sigma_next={Sigma_next.shape}, A[k+1]={A1.shape}"
+            )
+
+        M = z * np.eye(mk1, dtype=np.complex128) - A1 - Sigma_next
+
+        try:
+            if B.shape == (mk1, mk):
+                # B : (k+1 -> k),  Σ_k = B^H M^{-1} B
+                X = npl.solve(M, B)              # (mk1 x mk)
+                Sigma_k = B.conj().T @ X         # (mk x mk)
+            elif B.shape == (mk, mk1):
+                # B : (k -> k+1),  Σ_k = B M^{-1} B^H
+                X = npl.solve(M, B.conj().T)     # (mk1 x mk)
+                Sigma_k = B @ X                  # (mk x mk)
+            else:
+                raise ValueError(
+                    f"Incompatible B at k={k}: "
+                    f"A[k]={As[k].shape}, A[k+1]={A1.shape}, B={B.shape}"
+                )
+        except npl.LinAlgError:
+            return np.full((As[0].shape[0], As[0].shape[0]), np.nan, dtype=np.complex128)
+
+        Sigma_next = Sigma_k  # becomes Σ_{k} for next iteration (space of A[k])
+
+    m0 = As[0].shape[0]
+    try:
+        return npl.solve(z * np.eye(m0, dtype=np.complex128) - As[0] - Sigma_next,
+                         np.eye(m0, dtype=np.complex128))
+    except npl.LinAlgError:
+        return np.full((m0, m0), np.nan, dtype=np.complex128)
 
 def scalar_cf_from_T(T, z):
     """
@@ -321,6 +383,7 @@ def green_function_block_lanczos_fixed_basis(
     Calculates the Green's-function block corresponding only to the provided
     impurity_indices. Returns a dense matrix in the basis of those indices.
     """
+    print("DEBUG: entering green_function_block_lanczos_fixed_basis()")
     Nw = len(ws)
     num_imp = len(impurity_indices)
 
@@ -349,6 +412,9 @@ def green_function_block_lanczos_fixed_basis(
     basis_rem = build_sector_basis_from_seeds(
         seed_rem_wf, one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh
     )
+
+    print(f"DEBUG: green_function_block_lanczos_fixed_basis")
+    print(f"DEBUG: len(basis_add) = {len(basis_add)}, len(basis_rem) = {len(basis_rem)}")
 
     H_add = build_H_in_basis(basis_add, h0_clean, U_clean) if len(basis_add) \
         else sp.csr_matrix((0, 0), dtype=np.complex128)
@@ -391,6 +457,17 @@ def green_function_block_lanczos_fixed_basis(
         As_l, Bs_l, Qs_l, R0_l = block_lanczos_matrix(
             H_rem, r=r_rem, seed=Q0_rem, max_steps=L, reorth=reorth
         )
+
+        #for (cnt,A) in enumerate(As_l) : 
+        #    print(f"A.shape = {cnt, A.shape}")
+        #for (cnt,B) in enumerate(Bs_l) : 
+        #    print(f"B.shape = {cnt, B.shape}")
+        #for (cnt,Q) in enumerate(Qs_l) : 
+        #    print(f"Q.shape = {cnt, Q.shape}")
+        #for (cnt,R) in enumerate(R0_l) : 
+        #    print(f"R.shape = {cnt, R.shape}")
+
+
         have_l = (R0_l is not None) and (len(As_l) > 0)
         if have_l:
             r0l = R0_l.shape[0]
@@ -454,6 +531,7 @@ def green_function_block_lanczos_fixed_basis(
         basis_add_size=len(basis_add),
         basis_rem_size=len(basis_rem),
     )
+
 def green_function_scalar_fixed_basis(
     M, psi0_wf, e0, ws, eta, i, NappH,
     h0_clean, U_clean, one_body_terms, two_body_terms,

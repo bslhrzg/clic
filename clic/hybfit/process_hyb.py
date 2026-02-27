@@ -326,6 +326,8 @@ def process_hyb_poles(
             keep = np.ones(Nbath, dtype=bool)
             keep[drop_j] = False
             V_full = V_full[:, keep]
+            eps_all = np.array(eps_all)
+            print(f"DEBUG: eps_all[keep] = {eps_all[keep]}")
             H_b_full = np.diag(eps_all[keep])
             # update spin lists
             alpha_cols = [j for j in alpha_cols if j != drop_j]

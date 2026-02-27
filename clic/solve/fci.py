@@ -17,6 +17,9 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=None,verbose=True):
 
     basis = basis_Np.get_fci_basis(M, Nelec)
 
+    num_roots = np.min([num_roots,len(basis)])
+
+
     if len(basis) == 0 : 
         eigvals = [0]
         psis = [cc.Wavefunction(M, basis, [1.0])]
@@ -35,7 +38,7 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=None,verbose=True):
     print(f"fci basis size = {len(basis)}")
 
     t0 = time()
-    H_sparse = get_ham(basis,h0,U,method="1")
+    H_sparse = get_ham(basis,h0,U)
     t1 = time()
     vprint(1,f"time to construct H : {t1-t0}")
     

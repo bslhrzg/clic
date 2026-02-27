@@ -49,20 +49,24 @@ class HybFitCost:
             target_delta = self.delta_input_scalar
         
         eta_fit = eta_0 + broadening_Gamma
-        vprint(3,f"Fit will be performed with effective broadening eta_fit = {eta_fit:.4f}",filename=self.logfile)
+        vprint(3,f"Fit will be performed with effective broadening eta_fit = {eta_fit:.4f}, and weight function {weight_func}",filename=self.logfile)
 
         # Set optimizer defaults if not provided
-        opt_defaults = {'strategy': 'best1bin', 'maxiter': 500, 'popsize': 15, 'tol': 1e-2, 'disp': False}
+        opt_defaults = {'strategy': 'best1bin', 'maxiter': 1000, 'popsize': 15, 'tol': 1e-3, 'disp': False}
         opt_settings = {**opt_defaults, **opt_kwargs}
         
         bounds_list = ([(bounds_e[0], bounds_e[1])] * self.n_target_poles +
-                       [(-10.0, 10.0)] * (2 * self.n_target_poles))
+                       [(-0.1, 0.1)] * (2 * self.n_target_poles))
+
+        #guess = np.random.normal(0.1,0.01,3*self.n_target_poles)
 
         vprint(3,f"Starting global optimization ({opt_settings['strategy']})...",filename=self.logfile)
+
         result = optimize.differential_evolution(
             self._cost_function,
             bounds=bounds_list,
             args=(target_delta, eta_fit, weight_func),
+            #x0 = guess,
             **opt_settings
         )
 
@@ -109,5 +113,5 @@ class HybFitCost:
         result = np.zeros_like(y, dtype=np.complex128)
         for i, omega_i in enumerate(self.omega):
             kernel = (1 / np.pi) * width / ((omega_i - self.omega)**2 + width**2)
-            result[i] = np.trapz(y * kernel, self.omega)
+            result[i] = np.trapezoid(y * kernel, self.omega)
         return result

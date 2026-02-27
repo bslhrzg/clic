@@ -18,8 +18,7 @@ from clic.lanczos.scalar_lanczos import *
 
 from clic.mf.mf import mfscf, block_electron_counts, group_electron_counts
 
-from clic.model.double_chains import double_chain_by_blocks,get_double_chain_transform_multi
-from clic.model.bath_transform import get_double_chain_transform
+from clic.model.double_chains import double_chain_by_blocks,get_double_chain_transform_multi,get_double_chain_transform
 from clic.model.hamiltonians import *
 from clic.model.create_generic_aim import *
 

@@ -24,6 +24,9 @@ def get_double_chain_transform(h_spin, Nelec):
             - h_final_matrix (np.ndarray): The final Hamiltonian in the double-chain basis.
             - C_total (np.ndarray): The total unitary transformation matrix C.
     """
+
+    
+
     M = h_spin.shape[0]
 
     # --- (i) Mean-Field ---
@@ -78,11 +81,11 @@ def get_double_chain_transform(h_spin, Nelec):
 
     h_conduction = h_decoupled[np.ix_(conduction_indices, conduction_indices)]
     v0_c = np.zeros(h_conduction.shape[0]); v0_c[0] = 1.0
-    T_c, Q_c = clic.scalar_lanczos(h_conduction, v0_c)
+    Q_c, T_c, _ = clic.scalar_lanczos(h_conduction, v0_c)
 
     h_valence = h_decoupled[np.ix_(valence_indices, valence_indices)]
     v0_v = np.zeros(h_valence.shape[0]); v0_v[0] = 1.0
-    T_v, Q_v = clic.scalar_lanczos(h_valence, v0_v)
+    Q_v, T_v, _ = clic.scalar_lanczos(h_valence, v0_v)
     
     C_lanczos = np.identity(M)
     if Q_c.shape[1] > 0:
@@ -314,6 +317,9 @@ def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-8):
     print(C_total.real)
 
     h_final = C_total.conj().T @ h @ C_total                    # final Hamiltonian in double-chain basis (impurity restored)
+
+    print(f"DEBUG: h_final = ")
+    print(h_final.real)
 
     meta = dict(                                                # bookkeeping for diagnostics/restarts
         r=r_svd, na=na, nf=nf, ne=ne,

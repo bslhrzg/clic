@@ -180,7 +180,6 @@ class ThermalGroundState:
         
         self.results_by_nelec = results_by_nelec
         self._temperature = temperature
-        print(f"WOLOLOOOOO: TEMPERATURE HERE ? {temperature}")
         
         self._all_states: list[tuple[float, int, cc.Wavefunction]] = []
         for nelec, result in self.results_by_nelec.items():
@@ -230,6 +229,29 @@ class ThermalGroundState:
         self.boltzmann_weights = unnormalized_weights / self.partition_function
         
         print(f"Recalculated thermal properties for T={self.temperature} K.")
+
+    def fit_mu_for_nelec_target(
+        self,
+        N_target: float,
+        mu_bounds=(-50.0, 50.0),
+        tol_N=1e-8,
+        max_iter=200
+        ):
+        mu, w, Z, avgN = fit_chemical_potential_for_target_N(
+            states=self._all_states,
+            temperature_K=self._temperature,
+            N_target=N_target,
+            k_B_in_energy_per_K=k_B_IN_RY_PER_K,
+            mu_bounds=mu_bounds,
+            tol_N=tol_N,
+            max_iter=max_iter,
+        )        
+        print(f"fit_mu_for_nelec_target: mu = {mu}")
+        for k, (E, n, wf) in enumerate(self._all_states):
+            self._all_states[k] = (E - mu*n, n, wf)
+        self._all_states.sort(key=lambda s: s[0])
+
+        return mu, w, Z, avgN
 
     def prune(self, threshold: float = 1e-3):
         """
@@ -381,3 +403,125 @@ class ThermalGroundState:
         
         print("Load complete.")
         return cls(results, base_model=loaded_model, temperature=temp)
+
+
+def fit_chemical_potential_for_target_N(
+    states: list[tuple[float, int, "cc.Wavefunction"]],
+    temperature_K: float,
+    N_target: float,
+    k_B_in_energy_per_K: float,
+    mu_bounds: tuple[float, float] = (-10.0, 10.0),
+    tol_N: float = 1e-8,
+    max_iter: int = 200,
+):
+    """
+    Fit mu such that <N>_mu = N_target for the grand-canonical ensemble of
+    precomputed eigenstates.
+
+    Weights:
+        w_s(mu) ∝ exp(-beta * (E_s - mu * N_s))
+
+    Parameters
+    ----------
+    states : list of (energy, nelec, wavefunction)
+        Energies must be in the same energy unit as mu (e.g. Ry or eV).
+    temperature_K : float
+    N_target : float
+        Desired average particle number.
+    k_B_in_energy_per_K : float
+        Boltzmann constant in the same energy unit as energies and mu.
+        (You already have k_B_IN_RY_PER_K.)
+    mu_bounds : (mu_lo, mu_hi)
+        Bracketing interval for bisection.
+    tol_N : float
+        Converge when |<N>-N_target| < tol_N.
+    max_iter : int
+
+    Returns
+    -------
+    mu_star : float
+    weights : np.ndarray, shape (n_states,)
+        Normalized Boltzmann weights at mu_star.
+    Z_unnormalized : float
+        Sum of unnormalized weights (with the usual energy shift for stability).
+    avgN : float
+        Achieved <N> at mu_star.
+    """
+
+    beta = 1.0 / (k_B_in_energy_per_K * temperature_K)
+
+    E = np.asarray([s[0] for s in states], dtype=float)
+    E = E - np.mean(E)
+    N = np.asarray([s[1] for s in states], dtype=float)
+
+    def _weights_and_avgN(mu: float):
+        # x_s = E_s - sign * mu * N_s
+        x = E - mu * N
+        x0 = np.min(x)  # stability shift (depends on mu!)
+        w_unn = np.exp(-beta * (x - x0))
+        Z = np.sum(w_unn)
+        w = w_unn / Z
+        avgN = float(np.dot(w, N))
+        return w, Z, avgN
+
+    def _f(mu: float):
+        return _weights_and_avgN(mu)[2] - N_target
+
+    mu_lo, mu_hi = float(mu_bounds[0]), float(mu_bounds[1])
+
+    f_lo = _f(mu_lo)
+    f_hi = _f(mu_hi)
+
+    # Expand bracket if needed
+    if f_lo * f_hi > 0:
+        # Try geometric expansion a few times
+        span = mu_hi - mu_lo
+        for _ in range(30):
+            span *= 2.0
+            mu_lo_try = mu_lo - span
+            mu_hi_try = mu_hi + span
+            f_lo = _f(mu_lo_try)
+            f_hi = _f(mu_hi_try)
+            if f_lo * f_hi <= 0:
+                mu_lo, mu_hi = mu_lo_try, mu_hi_try
+                break
+        else:
+            # No bracket: target unreachable with provided states
+            # Return best endpoint with diagnostic.
+            w_lo, Z_lo, avgN_lo = _weights_and_avgN(mu_lo)
+            w_hi, Z_hi, avgN_hi = _weights_and_avgN(mu_hi)
+            if abs(avgN_lo - N_target) <= abs(avgN_hi - N_target):
+                raise RuntimeError(
+                    f"Could not bracket N_target. "
+                    f"With mu={mu_lo:.6g}, <N>={avgN_lo:.6g}; "
+                    f"with mu={mu_hi:.6g}, <N>={avgN_hi:.6g}. "
+                    f"Likely missing relevant N sectors / excited states."
+                )
+            else:
+                raise RuntimeError(
+                    f"Could not bracket N_target. "
+                    f"With mu={mu_hi:.6g}, <N>={avgN_hi:.6g}; "
+                    f"with mu={mu_lo:.6g}, <N>={avgN_lo:.6g}. "
+                    f"Likely missing relevant N sectors / excited states."
+                )
+
+    # Bisection (monotone at T>0 if spectrum coverage is adequate)
+    for _ in range(max_iter):
+        mu_mid = 0.5 * (mu_lo + mu_hi)
+        w_mid, Z_mid, avgN_mid = _weights_and_avgN(mu_mid)
+        f_mid = avgN_mid - N_target
+
+        if abs(f_mid) < tol_N:
+            return mu_mid, w_mid, Z_mid, avgN_mid
+
+        # keep the sign change interval
+        if f_lo * f_mid <= 0:
+            mu_hi, f_hi = mu_mid, f_mid
+        else:
+            mu_lo, f_lo = mu_mid, f_mid
+
+    # If not converged, return the midpoint result
+    mu_mid = 0.5 * (mu_lo + mu_hi)
+    w_mid, Z_mid, avgN_mid = _weights_and_avgN(mu_mid)
+
+    return mu_mid, w_mid, Z_mid, avgN_mid

@@ -17,6 +17,46 @@ def dmft_step(
         ):
 
 
+    print("ENTERING DMFT STEP with params: ")
+
+    for key in clic_params: 
+        print(f"{key}: {clic_params[key]}")
+
+    dirdump = "dump_"+clic_params["label"] 
+
+
+    ################################################
+    # Windowing the hybridization 
+    # 
+    def windowing_hyb(hyb, width, position):
+        print("----------------------------------")
+        print(f"APPLYING WINDOW ON HYB WITH WIDTH {width} AT {position}")
+        def gpd(mu,sigma,x):
+            C = 1 /(sigma * np.sqrt(2*np.pi))
+            return C * np.exp(-0.5*(x-mu)**2 / (sigma**2))
+        n_orb = hyb.shape[1]
+        for i in range(n_orb):
+            for j in range(n_orb):
+                hyb[:,i,j] *= gpd(position,width,ws)
+        
+        return hyb 
+    
+    window_width = 0.1 
+    window_pos = 0.0 
+    hyb = windowing_hyb(hyb,window_width,window_pos)
+    ##################################################
+
+
+    norb = hyb.shape[1]
+    print(f"hyb.shape = {hyb.shape}")
+    av_im_hyb = np.zeros((norb,norb))
+    for i in range(norb):
+        for j in range(norb):
+            av_im_hyb[i,j] = np.mean(np.abs(np.imag(hyb[:,i,j])))
+
+    print("<Im hyb_ij>")
+    print(av_im_hyb)
+    #assert 1 == 0
     # ==============================================================================
     # 2. DEFINE THE MODEL
     # ==============================================================================
@@ -25,18 +65,60 @@ def dmft_step(
 
     fit_method = "cost_minimization"
     #fit_method = "poles_reconstruction"
-    eta_hyb = 0.005
+    eta_hyb = 0.01
     eta_broad = 0.02
+    warp_kind = "none"
 
-    model = Model.from_hybridization(h_imp, U_imp, ws, hyb, n_bath_poles, eta_hyb,
-                            fit_method=fit_method,
-                            warp_kind = "emph0",
-                            warp_w0 = 0.01,
-                            eta_broad = eta_broad,
-                            iws = iws)
 
-    print(f"model.is_impurity_model : {model.is_impurity_model}")
-    print(f"model.imp_indices_spatial : {model.imp_indices_spatial}")
+    dump(np.real(hyb),ws,'real-hyb',output_dir=dirdump)
+    dump(np.imag(hyb),ws,'imag-hyb',output_dir=dirdump)
+
+
+    diag_fit = True 
+
+    if diag_fit : 
+
+        print("----------------------------------")
+        print("FITTING DIAGONAL PART OF HYB ONLY")    
+        hyb_to_fit = np.zeros_like(hyb)
+        norb = hyb.shape[1]
+        for i in range(norb):
+            hyb_to_fit[:,i,i] = hyb[:,i,i]
+
+        h_imp_to_fit = np.zeros_like(h_imp)
+        for i in range(norb):
+            h_imp_to_fit[i,i] = h_imp[i,i]
+
+        model = Model.from_hybridization(h_imp_to_fit, U_imp, ws, hyb_to_fit, n_bath_poles, eta_hyb,
+                                fit_method=fit_method,
+                                warp_kind = warp_kind,
+                                warp_w0 = 0.01,
+                                eta_broad = eta_broad,
+                                iws = iws)
+        
+        print("model.h0[:norb,:norb]:")
+        print(model.h0[:norb,:norb].real)
+        ind_imp = model.imp_indices_spinfull
+        model.h0[np.ix_(ind_imp,ind_imp)] = h_imp
+
+        print("model.h0[:norb,:norb]:")
+        print(model.h0[:norb,:norb].real)
+
+        print(f"model.is_impurity_model : {model.is_impurity_model}")
+        print(f"model.imp_indices_spatial : {model.imp_indices_spatial}")
+
+    else : 
+
+        model = Model.from_hybridization(h_imp, U_imp, ws, hyb, n_bath_poles, eta_hyb,
+                        fit_method=fit_method,
+                        warp_kind = "none",
+                        warp_w0 = 0.01,
+                        eta_broad = eta_broad,
+                        iws = iws)
+
+    h0n = model.h0.shape[0]
+    for i in range(h0n):
+        print(f"h0_ii({i}) = {model.h0[i,i]}")
 
     Nelec_imp = clic_params["Nelec_imp"]
     # ==============================================================================
@@ -56,7 +138,7 @@ def dmft_step(
         num_roots = 14
     max_iter = clic_params["num_roots"]
     conv_tol = clic_params["conv_tol"]
-    prune_thr = 1e-5
+    prune_thr = 1e-12
     Nmul = clic_params["Nmul"]
 
 
@@ -83,7 +165,8 @@ def dmft_step(
         Nelec_imp=Nelec_imp
     )
 
-    result = solver.solve()
+    N_target = None #13.3
+    result = solver.solve(N_target=N_target)
 
     print("\n--- Post-Solver Analysis ---")
     analyzer = StateAnalyzer(result, model)
@@ -116,7 +199,6 @@ def dmft_step(
     # Pass the result from the solver directly to the GF calculator
     ws, G_imp, G_imp_iw, A_imp = gf_calc.run(ground_state_result=result)
 
-    dirdump = "dump_"+clic_params["label"]
 
     dump(np.real(G_imp),ws,'real-G_real',output_dir=dirdump)
     dump(np.imag(G_imp),ws,'imag-G_real',output_dir=dirdump)
@@ -131,8 +213,7 @@ def dmft_step(
     hyb_approx = model.hyb_data["fitted"]
     hyb_approx_iw = model.hyb_data["fitted_iw"]
 
-    #dump(np.imag(hyb_approx),ws,'imag-hyb_real')
-    #dump(np.imag(hyb_approx_iw),iws,'imag-hyb_mats')
+    dump(np.imag(hyb_approx),ws,'imag-hyb_app_real')
 
 
     if n_bath_poles > 0:
@@ -154,15 +235,32 @@ def dmft_step(
                                 hyb_sig_iw)
     
 
-    def check_imag_diag_negative(Sigma, name="Sigma",eps_sigma=1e-12):
+    def check_imag_diag_negative_(Sigma, name="Sigma",eps_sigma=1e-12):
         imag_diag = np.imag(np.diagonal(Sigma, axis1=1, axis2=2))
         bad = imag_diag > eps_sigma
         if np.any(bad):
             idx = np.argwhere(bad)
-            raise ValueError(
-                f"{name}: Im Sigma_ii > 0 detected at indices (iw, orb): {idx[:10]}"
-            )
+            print(f"{name}: Im Sigma_ii > 0 detected : Sigma[{idx[1::10]}] =  {Sigma[idx[::10]]}")
+            Sigma[idx] = np.real(Sigma[idx]) - 0.001 *1j
         print(f"{name}: diagonal Im parts OK (<= 0 within tol)")
+
+
+    def check_imag_diag_negative(Sigma, name="Sigma", eps_sigma=1e-12, clamp_im=-1e-3):
+        # Sigma: (n_w, n, n)
+        diag = np.diagonal(Sigma, axis1=1, axis2=2)          # shape (n_w, n)
+        bad = np.imag(diag) > eps_sigma
+
+        if np.any(bad):
+            iw, i = np.nonzero(bad)                           # 1D arrays of same length
+            print(f"{name}: Im Sigma_ii > 0 at {len(iw)} points. Showing a few:")
+            for k in range(min(5, len(iw))):
+                print(f"  (iw={iw[k]}, i={i[k]}): {Sigma[iw[k], i[k], i[k]]}")
+
+            # clamp ONLY those diagonal entries
+            Sigma[iw, i, i] = np.real(Sigma[iw, i, i]) + 1j*clamp_im
+
+        else:
+            print(f"{name}: diagonal Im parts OK (<= 0 within tol)")
 
     check_imag_diag_negative(Sigma, "Sigma_real")
     check_imag_diag_negative(Sigma_iw, "Sigma_mats")

@@ -3,13 +3,17 @@ import matplotlib.pyplot as plt
 
 def plot_spectral_function(ws, A_w, impurity_indices, title, filename=None):
     """
-    Plots the impurity spectral function A(w) and saves it to a file.
+    Plots and save the impurity spectral function A(w) and saves it to a file.
     """
     print(f"impurity_indices = {impurity_indices}")
     if len(np.shape(A_w)) == 3:
         dos = np.sum(A_w[:, impurity_indices, impurity_indices], axis=1).real
     elif len(np.shape(A_w)) == 2:
         dos = np.sum(A_w[:, impurity_indices], axis=1).real
+
+    ry2ev = 13.6057039763
+    np.savetxt('A_w.dat', np.c_[ws * ry2ev,dos])
+
     plt.figure(figsize=(8, 5))
     plt.plot(ws, dos, label="Total Impurity DOS")
     plt.title(title)

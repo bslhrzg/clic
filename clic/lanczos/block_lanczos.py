@@ -66,7 +66,7 @@ def _zeros_like_last(X, b):
 def _truncate_last(X, k):
     return X[..., :k].copy()
 
-def _orthonormalize_block(W, bases, gram, reorth=True, tol=1e-12):
+def _orthonormalize_block_(W, bases, gram, reorth=True, tol=1e-12):
     """
     Orthonormalize a block of vectors W against an existing set of orthonormal bases.
 
@@ -134,9 +134,67 @@ def _orthonormalize_block(W, bases, gram, reorth=True, tol=1e-12):
         B = Uc.conj().T @ B @ Uc
     return Q, B, Q.shape[-1]
 
+
+def _orthonormalize_block(W, bases, gram, reorth=True, tol=1e-12):
+    """
+    Orthonormalize block W against bases, then normalize itself.
+    Handles rank deficiency by reducing the column dimension.
+    
+    Returns:
+       Q: Orthonormalized block (N, r)
+       B: Coupling matrix (r, m_original) such that W ~ Q @ B
+       r: Rank
+    """
+    # 1. Re-orthogonalize against all previous basis blocks
+    if bases:
+        passes = 2 if reorth else 1
+        for _ in range(passes):
+            for P in bases:
+                # C = <P, W>
+                C = gram(P, W)  # Shape (b_P, b_W)
+                # W <- W - P @ C
+                W = _axpy_last(P, -C) + W
+
+    # 2. Local normalization (Eigen-decomposition of Gram matrix)
+    G = gram(W, W)  # Shape (b_W, b_W)
+    
+    # Symmetrize to ensure Hermiticity
+    Gh = 0.5 * (G + G.conj().T)
+    s, U = npl.eigh(Gh)
+    s = np.clip(s, 0.0, None)
+
+    # 3. Determine Rank
+    # Threshold relative to spectral norm
+    max_s = s.max() if s.size > 0 else 0.0
+    thr = max(tol, max_s * 1e-12)
+    mask = s > thr
+    r = int(mask.sum())
+
+    if r == 0:
+        return None, None, 0
+
+    # 4. Construct Q and B for the active subspace
+    # U_r: eigenvectors corresponding to non-zero sv (b_W, r)
+    Ur = U[:, mask]
+    sr = s[mask]
+    
+    sqrt_s = np.sqrt(sr)
+    inv_sqrt_s = 1.0 / sqrt_s
+
+    # Q = W @ U_r @ \Sigma^{-1/2}
+    # Shape: (N, b_W) @ (b_W, r) -> (N, r)
+    Q = _axpy_last(W, Ur)
+    Q = Q * inv_sqrt_s[None, :]  # Broadcast scale columns
+
+    # B = \Sigma^{1/2} @ U_r^H
+    # Shape: (r, b_W). This connects the old size b_W to new size r.
+    # B_ij = sqrt(s_i) * conj(Ur_ji)
+    B = Ur.conj().T * sqrt_s[:, None]  # Broadcast scale rows
+
+    return Q, B, r
 # ---------------- definitive generic block Lanczos ----------------
 
-def block_lanczos(apply_op, gram, Q0, K=None, reorth=True, tol=1e-12, cap_dim=None):
+def block_lanczos_(apply_op, gram, Q0, K=None, reorth=True, tol=1e-12, cap_dim=None):
     """
     Generic block Lanczos for Hermitian problems with a custom inner product.
 
@@ -211,6 +269,91 @@ def block_lanczos(apply_op, gram, Q0, K=None, reorth=True, tol=1e-12, cap_dim=No
         Qkm1, Bkm1 = Qk, Bk
         Q_blocks.append(Qnext)
         total_cols += rk
+
+    B_blocks = []
+    for k in range(len(Q_blocks)-1):
+        B_blocks.append( gram(Q_blocks[k+1], apply_op(Q_blocks[k])) )
+
+    return A_blocks, B_blocks, Q_blocks, R0
+
+def block_lanczos(apply_op, gram, Q0, K=None, reorth=True, tol=1e-12, cap_dim=None):
+    """
+    Generic block Lanczos for Hermitian problems with a custom inner product.
+    
+    Corrected to ensure len(B_blocks) == len(A_blocks) - 1.
+    """
+
+    if K is None:
+        K = 10**9
+
+    Q_blocks = []
+    Q0c = Q0.copy()
+    Q0o, R0, r0 = _orthonormalize_block(Q0c, [], gram, reorth=reorth, tol=tol)
+    
+    if r0 == 0:
+        return [], [], [], None
+    
+    Q_blocks.append(Q0o)
+
+    A_blocks = []
+    B_blocks = [] # Will contain B_0, B_1, ... B_{K-1}
+    
+    # Variables for the 3-term recurrence
+    Qkm1 = _zeros_like_last(Q0o, 0)
+    Bkm1 = np.zeros((0, Q0o.shape[-1]), dtype=np.complex128)
+    
+    total_cols = Q0o.shape[-1]
+
+    for _ in range(K):
+        Qk = Q_blocks[-1]
+        
+        # 1. Apply Operator
+        HQk = apply_op(Qk)
+        
+        # 2. Compute Diagonal Block Ak
+        Ak = gram(Qk, HQk)
+        Ak = 0.5 * (Ak + Ak.conj().T)
+        A_blocks.append(Ak)
+
+        # 3. Compute Residual W (3-term recurrence)
+        # W = H Qk - Qk Ak - Q_{k-1} B_{k-1}^H
+        W = HQk + _axpy_last(Qk, -Ak)
+
+        # Apply previous block correction if shapes align
+        if Bkm1.size and Qkm1.shape[-1] == Bkm1.shape[1]:
+            W = W + _axpy_last(Qkm1, -Bkm1.conj().T)
+
+        # 4. Orthonormalize Residual -> Q_{k+1}, B_k
+        Qnext, Bk, rk = _orthonormalize_block(W, Q_blocks, gram, reorth=reorth, tol=tol)
+        
+        # Breakdown check
+        if rk == 0:
+            break
+
+        # Cap total dimension if requested
+        if cap_dim is not None and total_cols + rk > cap_dim:
+            keep = max(0, cap_dim - total_cols)
+            if keep == 0:
+                break
+            Qnext = _truncate_last(Qnext, keep)
+            Bk = Bk[:keep, :]
+            rk = keep
+
+        # Store B_k (Coupling from k -> k+1)
+        B_blocks.append(Bk)
+        
+        # Advance pointers
+        Qkm1, Bkm1 = Qk, Bk
+        Q_blocks.append(Qnext)
+        
+        total_cols += rk
+
+    # Fix: Ensure B_blocks corresponds to internal couplings only.
+    # If we have N diagonal blocks (A_0...A_{N-1}), we need N-1 off-diagonal blocks.
+    # The loop produces B_0...B_{N-1}. B_{N-1} couples to the residual Q_N, 
+    # which is outside the truncated matrix. We discard it.
+    if len(B_blocks) >= len(A_blocks):
+        B_blocks = B_blocks[:max(0, len(A_blocks) - 1)]
 
     return A_blocks, B_blocks, Q_blocks, R0
 

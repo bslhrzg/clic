@@ -350,7 +350,6 @@ def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
         if not (0 <= Nelec <= 2*M_subspace):
             raise ValueError(f"Nelec ({Nelec}) cannot be between 0 and {2*M_subspace} for a subspace of size {M_subspace}.")
 
-        # --- BEGIN: your original spatial logic (unchanged) ---
         order_idx = np.argsort(eps, kind="mergesort")
         eps_sorted = eps[order_idx]
 
@@ -438,6 +437,11 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
         vacuum_det = cc.SlaterDeterminant(M_global, [], [])
         return [vacuum_det]
     
+    if Nelec == K : 
+        fulloc = [i for i in range(M_global)]
+        fullocc_det = cc.SlaterDeterminant(M_global, fulloc, fulloc)
+        return [fullocc_det]
+    
     # --- 1. Partition the system ---
     imp_indices = sorted(list(set(imp_indices)))
     M_imp = len(imp_indices)
@@ -458,7 +462,10 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
 
     Nelec_bath = Nelec - Nelec_imp
     if Nelec_bath < 0:
-        raise ValueError(f"Nelec_imp ({Nelec_imp}) cannot be greater than Nelec ({Nelec}).")
+        #raise ValueError(f"Nelec_imp ({Nelec_imp}) cannot be greater than Nelec ({Nelec}).")
+        print(f"Nelec_imp > Nelec --> setting Nelec_imp to Nelec")
+        Nelec_imp = Nelec
+        Nelec_bath = 0
 
     print(f"Generating basis for {Nelec_imp} electrons on impurity and {Nelec_bath} on bath.")
 

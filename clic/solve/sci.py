@@ -16,6 +16,10 @@ from clic.io_clic.io_utils import vprint
 from .davidson import davidson 
 from .diagh import get_roots, get_ham, diagH
 
+from ..mf.mf import mfscf_0
+from ..basis.basis_1p import basis_change_h0_U
+from ..basis.basis_Np import get_rhf_determinant
+
 applyH=False
 dodavidson=False
 
@@ -94,6 +98,15 @@ def selective_ci(
 
     print("DEBUG: entering selective_ci()")
 
+
+    print("DEBUG HF : ")
+    #hmf, es_final, Vs_final, rho = mfscf(h0, U, Nelec, maxiter=100, alpha=0.2, threshold=1e-7, spinsym_only=False)
+    hmf, es_hf, Vs_hf, rho_hf = mfscf_0(h0, U, Nelec, maxiter=100)
+    print("--------------------")
+    #h0,U = basis_change_h0_U(h0,U,Vs_final)
+    #seed = get_rhf_determinant(Nelec,M)
+
+
     is_spin_sym = test_spin_sym(h0)
     print(f"DEBUG: is_spin_sym: {is_spin_sym}")
 
@@ -110,7 +123,6 @@ def selective_ci(
     # psi0 is NOT in general the ground state
     # At first, we use a linear combination of ALL eigenstates of the seed basis if possible 
     # This is to keep symmetry allowed states while in CIPSI
-    # After this, ????
 
     # HERE DIAG
     # Initial Hamiltonian and ground state
@@ -228,10 +240,23 @@ def selective_ci(
         t8=time()
         #print(f"DEBUG: for basis size {dim}, ham diag time = {t8-t5}")
 
+        def get_degeneracy(evals,tol=1e-3):
+            deg = 0 
+            e_ = evals - evals[0]
+            for i in range(len(evals)):
+                if e_[i] < tol :
+                    deg+=1 
+                else : 
+                    break 
+            return deg 
 
-        # ADDING THE TWO LOWEST STATES TOGETHER
+
+        # ADDING THE DEGENERATE GROUND STATES
         if num_roots > 1 :
-            psi0 = cc.Wavefunction(M, basis0, 1/np.sqrt(2) * (evecs[:, 0] + evecs[:, 1]))
+            deg = get_degeneracy(evals)
+            psi0 = cc.Wavefunction(M, basis0, 1/np.sqrt(deg) * (np.sum(evecs[:, :deg],axis=1)))
+            #psi0.normalize()
+            #psi0 = cc.Wavefunction(M, basis0, 1/np.sqrt(2) * (evecs[:, 0] + evecs[:, 1] + evecs[:, 0]))
         else :
             psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
         psi0.prune(prune_thr)

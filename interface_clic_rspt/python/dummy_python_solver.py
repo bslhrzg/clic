@@ -100,11 +100,6 @@ def solve(label, solver_param_, dc_param, dc_flag,
         lbl = label.strip()
         print(f"\n [Python] --- (MPI Rank {rank}/{size}) Dumping data for Cluster: {lbl} ---")
 
-        # --- 1. Interpret Scalars & Strings ---
-        # ... (Same as before) ...
-
-        # --- 2. Convert Memory Views to NumPy Arrays ---
-
         print(f"Solver params : {solver_param_.strip()}")
 
         solver_param = solver_param_.strip().split()

@@ -73,6 +73,9 @@ class GroundStateSolver:
                 
                 self.model.h0 = C.conj().T @ self.model.h0 @ C 
                 self.transformation_matrix = C
+
+                print(f"DEBUG: h0 transformed = ")
+                print(self.model.h0.real)
             
             elif method == "bath_no":
                 h_final, C_total = bath_transform.get_multi_orbital_natural_orbital_transform(
@@ -341,7 +344,7 @@ class FockSpaceSolver:
         
         return final_subspaces
 
-    def solve(self):
+    def solve(self, N_target = None):
         """
         Main entry point. Decides the strategy based on self.nelec_setting.
         """
@@ -378,6 +381,13 @@ class FockSpaceSolver:
             temperature= self.settings.temperature
         )
         
+        if N_target is not None: 
+            print("DEBUG: ENFORCING N_TARGET HERE")
+            mu, w, Z, avgN = self.result.fit_mu_for_nelec_target(N_target)
+            M = self.base_model.h0.shape[0]
+            mu_op = np.eye(M) * mu
+            self.base_model.h0 -= mu_op
+
         self.result.prune()
         return self.result
 

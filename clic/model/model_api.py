@@ -24,9 +24,9 @@ class Model:
     @classmethod
     def from_hybridization(cls, h_imp, U_imp, ws, hyb, n_bath_poles, eta_hyb,
                            fit_method="cost_minimization",
-                           warp_kind = "emph0",
+                           warp_kind = "none",
                            warp_w0 = 0.01,
-                           eta_broad = 0.0,
+                           eta_broad = 0.00,
                            iws = None):
         """
         Creates a Model by fitting the hybridization.

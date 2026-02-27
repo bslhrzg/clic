@@ -42,8 +42,9 @@ def fit(omega, delta, n_poles, method, *,
 
         # Set default for n_lanczos_blocks if not provided
         if n_lanczos_blocks is None:
-            n_lanczos_blocks = 10 * n_poles
-
+            n_lanczos_blocks = 40 * n_poles
+        print()
+        print(f"DEBUG: n_lanczos_blocks = {n_lanczos_blocks}")
         # This includes explicit args and any relevant ones from kwargs.
         pole_args = {
             'warp_kind': kwargs.pop('warp_kind', 'atanh'),

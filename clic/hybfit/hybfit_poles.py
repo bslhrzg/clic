@@ -355,47 +355,170 @@ class HybFitPoles:
 
     @staticmethod
     def _block_lanczos_alg(x_vals, weight_mats, K, b, tol=1e-12):
-        S, M = len(x_vals), weight_mats[0].shape[0]
-        def blk_ip_grid(Phi, Psi, mu_list):
-            mu = np.stack(mu_list, axis=0)
-            acc = np.einsum('smi,smn,snj->ij', Phi.conj(), mu, Psi, optimize=True)
-            return 0.5*(acc + acc.conj().T)
-        def _sqrt_and_pinv_from_gram(G):
-            s, U = npl.eigh(0.5 * (G + G.conj().T))
-            s_clipped = np.clip(s, 0.0, None)
-            thr = max(tol, (np.max(s_clipped) if s_clipped.size else 0.0) * 1e-12)
-            mask = s_clipped > thr
-            sqrt_s, pisqrt_s = np.zeros_like(s_clipped), np.zeros_like(s_clipped)
-            sqrt_s[mask] = np.sqrt(s_clipped[mask])
-            pisqrt_s[mask] = 1.0 / sqrt_s[mask]
-            B = U @ np.diag(sqrt_s) @ U.T.conj()
-            B_pinv = U @ np.diag(pisqrt_s) @ U.T.conj()
-            return B, B_pinv, int(np.sum(mask))
+        """
+        Block Lanczos with full re-orthogonalization and robust breakdown handling.
+        """
+        S = len(x_vals)
+        M = weight_mats[0].shape[0]
+
+        # Pre-stack mu for efficiency: (S, M, M)
+        mu_stack = np.stack(weight_mats, axis=0)
+        
+        # Check for data integrity
+        if not np.isfinite(mu_stack).all():
+            raise ValueError("Input weight matrices contain NaNs or Infs.")
+        if not np.isfinite(x_vals).all():
+            raise ValueError("Input omega grid contains NaNs or Infs.")
+
+        def blk_ip_fast(Phi, Psi):
+            # Compute <Phi, Psi>_mu = sum_s Phi(s)^H * mu(s) * Psi(s)
+            # Shapes: Phi=(S, M, b1), mu=(S, M, M), Psi=(S, M, b2) -> Result (b1, b2)
+            
+            # einsum is robust, but for very large arrays, dot might be better. 
+            # Sticking to einsum for clarity and block handling.
+            acc = np.einsum('smi,smn,snj->ij', Phi.conj(), mu_stack, Psi, optimize=True)
+            return 0.5 * (acc + acc.conj().T)
+
+        def _robust_normalization(W):
+            """
+            Computes G = <W, W>_mu. 
+            Returns (Bk, Bk_pinv, rank, W_norm_max)
+            """
+            # 1. Compute Gram matrix
+            G = blk_ip_fast(W, W)
+            
+            if not np.isfinite(G).all():
+                # If G has NaNs, W must have NaNs. This is unrecoverable.
+                return None, None, 0, np.inf
+
+            # 2. Eigen-decomposition of Gram matrix
+            # G should be Hermitian PSD
+            eigvals, eigvecs = npl.eigh(G)
+            
+            # 3. Filter eigenvalues (Deflation)
+            # Treat negative eigenvalues (numerical noise) as zero.
+            # Determine threshold based on the largest eigenvalue (spectral norm).
+            max_eig = np.max(eigvals)
+            
+            # If the block is essentially zero (residual vanished), return rank 0
+            if max_eig < 1e-14: 
+                return np.zeros_like(G), np.zeros_like(G), 0, max_eig
+
+            # Threshold: relative to peak, but bounded by machine precision
+            limit = max(tol * max_eig, 1e-14)
+            keep_mask = eigvals > limit
+            
+            if not np.any(keep_mask):
+                return np.zeros_like(G), np.zeros_like(G), 0, max_eig
+
+            rank = np.sum(keep_mask)
+            
+            # 4. Construct Inverse Square Root
+            # B = U sqrt(S) U^H
+            # B_pinv = U 1/sqrt(S) U^H
+            
+            ev_kept = eigvals[keep_mask]
+            U_kept = eigvecs[:, keep_mask]
+            
+            sqrt_ev = np.sqrt(ev_kept)
+            inv_sqrt_ev = 1.0 / sqrt_ev
+            
+            # Reconstruct full size matrices (b x b)
+            # Note: We keep the block size fixed in the output matrices, 
+            # even if rank dropped. The projection W @ B_pinv will kill null directions.
+            
+            # B_pinv maps unnormalized -> normalized
+            Bk_pinv = U_kept @ np.diag(inv_sqrt_ev) @ U_kept.conj().T
+            
+            # Bk maps normalized -> unnormalized (inverse of pinv on the subspace)
+            Bk = U_kept @ np.diag(sqrt_ev) @ U_kept.conj().T
+            
+            return Bk, Bk_pinv, rank, max_eig
+
+        # --- Algorithm Start ---
+
         M0 = sum(weight_mats)
         M0 = 0.5 * (M0 + M0.conj().T)
+        
+        # Initial block: Identity (unnormalized)
         Phi0_raw = np.zeros((S, M, b), dtype=np.complex128)
-        for s in range(S): Phi0_raw[s] = np.eye(M, b, dtype=np.complex128)
-        G0 = blk_ip_grid(Phi0_raw, Phi0_raw, weight_mats)
-        _, B0_pinv, _ = _sqrt_and_pinv_from_gram(G0)
-        Phi_i = Phi0_raw @ B0_pinv
+        for s in range(S):
+            Phi0_raw[s] = np.eye(M, b, dtype=np.complex128)
+
+        # Normalize Initial Block
+        Bk, Bk_pinv, rank, _ = _robust_normalization(Phi0_raw)
+        
+        if rank < 1:
+            print("Warning: Initial weight matrix M0 is essentially zero. Returning empty fit.")
+            return [], [], [], M0
+
+        Phi_i = Phi0_raw @ Bk_pinv
+
+        # Storage
+        A_blocks = []
+        B_blocks = []
+        Phi_list = [Phi_i.copy()] # Store orthonormal blocks
+        
+        # Recurrence variables
         Phi_im1 = np.zeros_like(Phi_i)
-        A_blocks, B_blocks, Phi_list = [], [], [Phi_i.copy()]
-        B_im1 = np.zeros((b, b), dtype=np.complex128)
+        B_im1 = np.zeros((b, b), dtype=np.complex128) # Zero matrix for first step
+
         for k in range(K):
+            # --- 1. Apply Operator (x * Phi) ---
+            # x_vals is (S,), Phi_i is (S, M, b)
             XPhi = x_vals[:, None, None] * Phi_i
-            Ak = blk_ip_grid(Phi_i, XPhi, weight_mats)
-            A_blocks.append(0.5 * (Ak + Ak.conj().T))
-            W = XPhi - Phi_i @ Ak - Phi_im1 @ B_im1.T.conj()
+            
+            # --- 2. Compute Projection Ak ---
+            Ak = blk_ip_fast(Phi_i, XPhi)
+            A_blocks.append(Ak)
+
+            # --- 3. Compute Residual (3-term recurrence) ---
+            # W = x*Phi_i - Phi_i*Ak - Phi_{i-1}*B_{i-1}^H
+            W = XPhi - (Phi_i @ Ak) - (Phi_im1 @ B_im1.conj().T)
+
+            # --- 4. Re-orthogonalization (Gram-Schmidt) ---
+            # Project against ALL previous blocks to maintain orthogonality.
+            # Iterating twice ensures stability (Iterated Classical Gram-Schmidt).
             for _ in range(2):
-                for P in Phi_list: W -= P @ blk_ip_grid(P, W, weight_mats)
-            G = blk_ip_grid(W, W, weight_mats)
-            Bk, Bk_pinv, eff_rank = _sqrt_and_pinv_from_gram(G)
-            if eff_rank == 0 or k == K - 1: break
+                for P in Phi_list:
+                    # Projection coefficient C = <P, W>
+                    C = blk_ip_fast(P, W)
+                    # Remove component: W = W - P*C
+                    W -= P @ C
+
+            # Check W for finiteness before normalization
+            if not np.isfinite(W).all():
+                print(f"Warning: Block Lanczos breakdown at step {k}: Residual W contains NaNs/Infs.")
+                break
+
+            # --- 5. Normalize Residual ---
+            Bk, Bk_pinv, rank, w_norm = _robust_normalization(W)
+            
+            # --- 6. Breakdown / Convergence Check ---
+            # If rank < b, the Krylov subspace is exhausted or we hit linear dependence.
+            # We stop here. The existing T matrix is valid up to size k*b.
+            if rank < b:
+                # Optional: If rank > 0, we could technically continue with a smaller block size,
+                # but for fixed-size T-matrix implementation, we usually stop.
+                print(f"Info: Block Lanczos exhausted subspace at step {k} (rank {rank}/{b}, norm {w_norm:.2e}).")
+                break
+            
+            if k == K - 1:
+                # Last step, we don't need B_{k+1}
+                break
+
             B_blocks.append(Bk)
+            
+            # Compute next orthonormal block
             Phi_ip1 = W @ Bk_pinv
-            Phi_im1, Phi_i = Phi_i, Phi_ip1
-            Phi_list.append(Phi_i.copy())
+            
+            # Update history
+            Phi_im1 = Phi_i
+            Phi_i = Phi_ip1
             B_im1 = Bk
+            
+            Phi_list.append(Phi_i.copy())
+
         return A_blocks, B_blocks, Phi_list, M0
 
     @staticmethod

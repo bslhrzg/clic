@@ -129,6 +129,10 @@ def get_siam_h(nb, bath_scheme="metal",
         e_bath, V_bath = semicircle_bath(nb, D=D, Gamma0=Gamma0, center=0.0)
     elif bath_scheme == "mott":
         e_bath, V_bath = mott_two_semicircle_bath(nb, D=D, Gamma0=Gamma0, gap=gap)
+    elif bath_scheme == "flat":
+        e_bath, V_bath = semicircle_bath(nb, D=D, Gamma0=Gamma0, center=0.0)
+        V_bath[:] = Gamma0
+        
     else:
         raise ValueError(f"Unknown bath_scheme: {bath_scheme}")
 

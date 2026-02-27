@@ -108,7 +108,8 @@ class GreenFunctionCalculator:
         #for (state_info, weight) in tqdm(iterator, total=len(self.thermal_state._all_states), desc="Processing thermal states"):
         for (state_info, weight) in iterator:
             e_n, nelec_n, psi_n = state_info
-
+            print("\n")
+            print(f"Computing green function for state with energy {e_n} and nelec = {nelec_n}")
             # Get the correct transformed Hamiltonian for this state's Nelec sector
             if nelec_n not in hamiltonian_cache:
                 subspace = self.thermal_state.results_by_nelec[nelec_n]
@@ -196,6 +197,7 @@ class GreenFunctionCalculator:
 
         print(f"Self-Energy Calculation: Found {len(identical_groups)} unique symmetry groups.")
         print(f"blocks : {blocks}")
+        print(f"identical_groups = {identical_groups}")
         
         # 3. Prepare Hybridization
         hyb_to_use = hyb
@@ -241,6 +243,9 @@ class GreenFunctionCalculator:
             eye_sub = np.eye(len(local_indices))
             
             # Broadcast w to (nw, N_sub, N_sub)
+            print(f"DEBUG in self energy: eta = {eta}")
+            print(f"DEBUG in self energy: ws[0] = {ws[0]}")
+
             z = ws[:, None, None] * eye_sub + 1j * eta * eye_sub
             
             # G0^{-1} calculation

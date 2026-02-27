@@ -23,12 +23,12 @@ def build_model_from_hyb(
     logfile = "hybfit_details.txt"
 
     if hybfit_config.method == "poles_reconstruction":
-
+        print(f"DEBUG : warp_kind = {warp_kind}")
         warp_k=None
         if warp_kind == "none":
             warp_k = "const"
         elif warp_kind == "emph0":
-            warp_k = "asinh"
+            warp_k = "atanh"
         else :
             print(f"ERROR: Unknown model parameter type '{warp_kind}'", file=sys.stderr)
             sys.exit(1)
@@ -36,14 +36,14 @@ def build_model_from_hyb(
         warp_w0 = hybfit_config.warp_w0
 
         H_full, map = process_hyb_poles(
-        omega, hyb, h_imp, n_target_poles,n_lanczos_blocks=101, 
+        omega, hyb, h_imp, n_target_poles,n_lanczos_blocks=201, 
         warp_kind=warp_k, warp_w0=warp_w0,logfile=logfile
         )
 
         block_errs = analyze_block_fits(omega, hyb, map, eta=eta)
-        global_errs = evaluate_full_fit_and_plots(
-            omega, hyb, H_full, map, eta=eta, out_dir="hyb_plots", case_tag=""
-        )
+        #global_errs = evaluate_full_fit_and_plots(
+        #    omega, hyb, H_full, map, eta=eta, out_dir="hyb_plots", case_tag=""
+        #)
 
         print_summary("Fit block summary ",H_full, map)
 
@@ -51,6 +51,7 @@ def build_model_from_hyb(
 
         broadening_Gamma = hybfit_config.eta_broad
 
+        print(f"DEBUG in create_model_from_hyb: warp_kind = {warp_kind}")
         weight_func=None
         if warp_kind == "none":
             weight_func = "const"
@@ -65,7 +66,7 @@ def build_model_from_hyb(
             n_target_poles=n_target_poles,
             eta_0=eta,                 # same broadening you used to generate hyb1
             bounds_e=[omega.min(), omega.max()],   # or a tighter physical window
-            weight_func='const',
+            weight_func=weight_func,
             broadening_Gamma=broadening_Gamma,
             logfile=logfile
             )

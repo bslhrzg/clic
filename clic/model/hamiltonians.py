@@ -186,7 +186,7 @@ def calculate_bath_filling(h0: np.ndarray, M_imp: int, zero_threshold: float = 1
         h0 (np.ndarray): The one-body Hamiltonian in the spin-orbital basis.
         M_imp (int): The number of SPATIAL orbitals in the impurity.
         zero_threshold (float): A small energy threshold around zero to handle
-                                orbitals exactly at the Fermi level.
+                                orbitals at the Fermi level.
 
     Returns:
         int: The estimated number of electrons in the bath.
@@ -216,7 +216,6 @@ def calculate_bath_filling(h0: np.ndarray, M_imp: int, zero_threshold: float = 1
         elif abs(energy) < zero_threshold:
             # At the Fermi level, often counted as half-filled,
             # but rounding down is safer for integer electron counts.
-            # Your Julia code does this, so we replicate it.
             bath_filling += 0.5
     
     return int(np.floor(bath_filling))

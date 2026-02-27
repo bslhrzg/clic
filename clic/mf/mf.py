@@ -109,6 +109,74 @@ def mfscf_(h0_0, U_0, Ne, maxiter=100):
     print(f"tr rho = {np.trace(rho)}")
     return hmf, es, Vs, rho
 
+def mfscf_0(h0_0, U_0, Ne, maxiter=100):
+    """
+    Mean-field self-consistent field (MF-SCF) loop with simple linear mixing,
+    Blind to any symmetry 
+    """
+
+    NF = h0_0.shape[0]
+    M = NF // 2
+
+
+    vprint(1,"starting from ρ(h0)")
+    es, Vs = solve_h0(h0_0)
+    vprint(1,f"iter 0, E = {np.real(es[:Ne]).sum()}")#, es = {es}")
+    rho = get_rho(es, Vs, Ne)
+
+    print(f"Ne = {Ne}")
+    print(f"tr rho = {np.trace(rho)}")
+
+    alpha = 0.2
+    print(f"mixing parameter: α = {alpha}")
+
+    hmf = None
+    Vmf = None
+    E0 = 1_000.0
+    threshold = 1e-6
+
+    # Report sparsity info (optional)
+    nz_count = int(np.count_nonzero(U_0))
+    print(f"number of non-zero U elements : {nz_count}")
+
+    DE = -1.0
+    print(f"{'Iter':>4s} {'E_total':>12s} {'ΔE[n-1]':>15s}")# {'es[1:Ne]':>20s}
+
+    it = 0
+    for it in range(1, maxiter + 1):
+        # Vectorized mean-field build on the FULL space
+        Vmf, ec = get_mean_field(U_0, rho, use_einsum=True)
+
+        # Work in spin-up block for diagonalization
+        hmf = h0_0 + Vmf
+        es, Vs = solve_h0(hmf)
+        E = np.real(es[:Ne//2]).sum()  
+        E_total = 0.5 * np.real(np.trace(rho @ (h0_0+hmf)))
+     
+
+        if it % 10 == 0:
+            #es_occ = np.real(es[:Ne])
+            #es_occ_str = "[" + ", ".join(f"{x:.3f}" for x in es_occ) + "]"
+            print(f"{it:4d} {E_total:12.8f} {DE:15.4e}") #{es_occ_str:>20s}
+
+        DE = abs(E - E0)
+        if DE < threshold:
+            print(f"converged in {it} iterations")
+            break
+        else:
+            E0 = E
+
+        rho_new = get_rho(es, Vs, Ne)
+        rho = alpha * rho_new + (1.0 - alpha) * rho
+
+    if it == maxiter:
+        print(f"NOT CONVERGED IN {maxiter} ITERATIONS")
+
+
+    #print(f"HF energies : {es}")
+    print(f"tr rho = {np.trace(rho)}")
+    return hmf, es, Vs, rho
+
 # -----------------------------------------------------
 
 # -----------------------------------------------------
