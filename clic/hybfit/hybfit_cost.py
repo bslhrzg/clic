@@ -39,7 +39,7 @@ class HybFitCost:
         vprint(3,"--- Fitting poles via Cost Minimization ---",filename=self.logfile)
         
         if bounds_e is None:
-            bounds_e = [np.min(self.omega), np.max(self.omega)]
+            bounds_e = [np.min(self.omega)+0.01, np.max(self.omega)-0.01]
         vprint(3,f"Using energy bounds for bath sites: [{bounds_e[0]:.2f}, {bounds_e[1]:.2f}]",filename=self.logfile)
 
         if broadening_Gamma > 0:

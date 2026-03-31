@@ -109,7 +109,7 @@ def mfscf_(h0_0, U_0, Ne, maxiter=100):
     print(f"tr rho = {np.trace(rho)}")
     return hmf, es, Vs, rho
 
-def mfscf_0(h0_0, U_0, Ne, maxiter=100):
+def mfscf_0(h0_0, U_0, Ne, maxiter=100, start_from_broken_sym=True):
     """
     Mean-field self-consistent field (MF-SCF) loop with simple linear mixing,
     Blind to any symmetry 
@@ -118,11 +118,17 @@ def mfscf_0(h0_0, U_0, Ne, maxiter=100):
     NF = h0_0.shape[0]
     M = NF // 2
 
-
-    vprint(1,"starting from ρ(h0)")
-    es, Vs = solve_h0(h0_0)
-    vprint(1,f"iter 0, E = {np.real(es[:Ne]).sum()}")#, es = {es}")
-    rho = get_rho(es, Vs, Ne)
+    if not start_from_broken_sym:
+        vprint(1,"starting from ρ(h0)")
+        es, Vs = solve_h0(h0_0)
+        vprint(1,f"iter 0, E = {np.real(es[:Ne]).sum()}")#, es = {es}")
+        rho = get_rho(es, Vs, Ne)
+    else:
+        vprint(1,"starting from broken symmetry ρ")
+        rand_h = np.random.random(h0_0.shape) * 0.01
+        es, Vs = solve_h0(h0_0+rand_h)
+        vprint(1,f"iter 0, E = {np.real(es[:Ne]).sum()}")#, es = {es}")
+        rho = get_rho(es, Vs, Ne)
 
     print(f"Ne = {Ne}")
     print(f"tr rho = {np.trace(rho)}")
@@ -159,12 +165,12 @@ def mfscf_0(h0_0, U_0, Ne, maxiter=100):
             #es_occ_str = "[" + ", ".join(f"{x:.3f}" for x in es_occ) + "]"
             print(f"{it:4d} {E_total:12.8f} {DE:15.4e}") #{es_occ_str:>20s}
 
-        DE = abs(E - E0)
+        DE = abs(E_total - E0)
         if DE < threshold:
-            print(f"converged in {it} iterations")
+            print(f"converged in {it} iterations: E_total = {E_total}")
             break
         else:
-            E0 = E
+            E0 = E_total
 
         rho_new = get_rho(es, Vs, Ne)
         rho = alpha * rho_new + (1.0 - alpha) * rho

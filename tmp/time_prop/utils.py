@@ -215,8 +215,6 @@ def random_quench(NF):
 
 
 
-
-
 def h0_pump_t(t,pump,E0,omega_pump,sigma,t0=0):
     """
     Define a gaussian pulse of freq omega_pump,

@@ -66,7 +66,7 @@ def dmft_step(
     fit_method = "cost_minimization"
     #fit_method = "poles_reconstruction"
     eta_hyb = 0.01
-    eta_broad = 0.02
+    eta_broad = 0.03
     warp_kind = "none"
 
 
@@ -125,7 +125,7 @@ def dmft_step(
     # 3. RUN THE SOLVER
     # ==============================================================================
     # Create the settings object (using your existing Pydantic structures)
-    if n_bath_poles > 0:
+    if n_bath_poles > 1:
         if n_bath_poles > 3:
             basis_prep_method = "dbl_chain" # or "dbl_chain"
         else : 

@@ -26,10 +26,17 @@ from clic.model.create_generic_aim import *
 from clic.ops.ops import get_one_body_terms,get_two_body_terms, one_rdm, get_n_i_j
 
 from clic.solve.sci import *
+from clic.solve.fci import *
 
 from clic.results.postprocessing import StateAnalyzer
 
-from clic.green.gfs import green_function_block_lanczos_fixed_basis, lanczos_time_evolution
+from clic.green.gfs import (
+    green_function_block_lanczos_fixed_basis, 
+    lanczos_time_evolution, 
+    green_function_scalar_fixed_basis, 
+    scalar_lanczos,
+)
+
 from clic.green.green_sym import *
 from clic.green.green_utils import *
 
