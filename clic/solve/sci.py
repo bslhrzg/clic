@@ -47,9 +47,9 @@ def selective_ci(
     Parameters
     ----------
     h0 : (K,K) array_like
-        One-particle Hamiltonian (spin-orbital or spatial; your helpers decide).
+        One-particle Hamiltonian
     U  : (K,K,K,K) array_like
-        Two-particle Hamiltonian (spin-orbital convention matching `get_*_terms`).
+        Two-particle Hamiltonian 
     C : (K,K) array_like 
         Transformation matrix (we want to keep track of it)
     M  : int
@@ -297,12 +297,13 @@ def selective_ci(
     t_final = time()
     print(f"sci total time : {t_final - t_start}")
 
-    sci_res = results.NelecLowEnergySubspace(M_spatial=M,Nelec=Nelec,
-        energies=evals,
-        wavefunctions=psis,
-        basis=basis0,
-        transformation_matrix=C
-    )
+    sci_res = {
+            "Nelec": Nelec,
+            "energies": evals,
+            "wavefunctions": psis,
+            "C": C,                 # or None
+            "basis": basis0,         # only if needed by your wf object
+            }
 
     return sci_res
 

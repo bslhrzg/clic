@@ -1,0 +1,390 @@
+# clic/results.py
+import numpy as np
+import h5py
+import clic_clib as cc # for Wavefunction type hint
+
+# Use TYPE_CHECKING block to import for type hints only, preventing circular imports
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from .api import Model
+
+
+# We define the Boltzmann constant in eV/K.
+K_B_IN_EV_PER_K = 8.617333262e-5 # eV/K
+k_B_IN_RY_PER_K = 0.0000063336   # Ry/K 
+
+
+
+
+class ThermalGroundState:
+    """
+    Holds and manages a collection of low-energy eigenstates from different
+    particle number (Nelec) sectors to describe a system at a given temperature.
+
+    It is assumed that the chemical potential has already been absorbed into the
+    one-body part of the Hamiltonian used to generate these eigenstates.
+    """
+    def __init__(self,
+                 results_by_nelec: dict[int, 'NelecLowEnergySubspace'],
+                 base_model: 'Model',
+                 temperature: float = 300.0):
+        
+        if not isinstance(results_by_nelec, dict):
+            raise TypeError("`results_by_nelec` must be a dictionary.")
+
+        # --- Store base model information ---
+        self.base_h0 = base_model.h0
+        self.base_U = base_model.U
+        self.M_spatial = base_model.M_spatial
+        print(f"base_model.is_impurity_model = {base_model.is_impurity_model}")
+        self.is_impurity_model = base_model.is_impurity_model
+        self.imp_indices_spatial = base_model.imp_indices_spatial
+        
+        self.results_by_nelec = results_by_nelec
+        self._temperature = temperature
+        
+        self._all_states: list[tuple[float, int, cc.Wavefunction]] = []
+        for nelec, result in self.results_by_nelec.items():
+            for i, energy in enumerate(result.energies):
+                self._all_states.append((energy, nelec, result.wavefunctions[i]))
+
+        self._all_states.sort(key=lambda s: s[0])
+        self.boltzmann_weights: np.ndarray | None = None
+        self.partition_function: float | None = None
+        self._recalculate_thermal_properties()
+
+    @property
+    def temperature(self) -> float:
+        """The temperature of the system in Kelvin."""
+        return self._temperature
+
+    @temperature.setter
+    def temperature(self, value: float):
+        """Sets the temperature and recalculates thermal properties."""
+        if value <= 0:
+            raise ValueError("Temperature must be positive.")
+        self._temperature = value
+        self._recalculate_thermal_properties()
+        
+    def _recalculate_thermal_properties(self):
+        """
+        Internal method to update Boltzmann weights and partition function
+        whenever temperature changes.
+        """
+        if not self._all_states:
+            self.boltzmann_weights = np.array([])
+            self.partition_function = 0.0
+            return
+
+        # Assumes energies are in eV. Change k_B constant if units differ.
+        #beta = 1.0 / (K_B_IN_EV_PER_K * self._temperature)
+        beta = 1.0 / (k_B_IN_RY_PER_K * self._temperature)
+        
+        energies = np.array([s[0] for s in self._all_states])
+        
+        # Subtract the ground state energy to prevent numerical overflow in exp()
+        # This factor cancels out upon normalization.
+        ground_state_energy = energies[0] # Since the list is sorted
+        unnormalized_weights = np.exp(-beta * (energies - ground_state_energy))
+        
+        self.partition_function = np.sum(unnormalized_weights)
+        self.boltzmann_weights = unnormalized_weights / self.partition_function
+        
+        print(f"Recalculated thermal properties for T={self.temperature} K.")
+
+    def fit_mu_for_nelec_target(
+        self,
+        N_target: float,
+        mu_bounds=(-50.0, 50.0),
+        tol_N=1e-8,
+        max_iter=200
+        ):
+        mu, w, Z, avgN = fit_chemical_potential_for_target_N(
+            states=self._all_states,
+            temperature_K=self._temperature,
+            N_target=N_target,
+            k_B_in_energy_per_K=k_B_IN_RY_PER_K,
+            mu_bounds=mu_bounds,
+            tol_N=tol_N,
+            max_iter=max_iter,
+        )        
+        print(f"fit_mu_for_nelec_target: mu = {mu}")
+        for k, (E, n, wf) in enumerate(self._all_states):
+            self._all_states[k] = (E - mu*n, n, wf)
+        self._all_states.sort(key=lambda s: s[0])
+
+        return mu, w, Z, avgN
+
+    def prune(self, threshold: float = 1e-3):
+        """
+        Removes states whose Boltzmann weight is below a given threshold.
+        This method completely rebuilds the internal state of the object,
+        purging all information related to the pruned states.
+        """
+        print("*"*42)
+        print(f"DEBUG: PRUNING WITH threshold = {threshold}")
+        if self.boltzmann_weights is None:
+            self._recalculate_thermal_properties()
+
+        initial_count = len(self._all_states)
+        if initial_count == 0:
+            print("No states to prune.")
+            return
+
+        # 1. Identify which states to keep
+        indices_to_keep = np.where(self.boltzmann_weights >= threshold)[0]
+        
+        if len(indices_to_keep) == initial_count:
+            print(f"No states pruned with threshold {threshold:.1e}.")
+            return
+
+        # 2. Keep only the surviving states in the flattened list
+        self._all_states = [self._all_states[i] for i in indices_to_keep]
+        
+        # --- 3. CRUCIAL STEP: Rebuild the results_by_nelec dictionary from scratch ---
+        new_results_by_nelec = {}
+        
+        # Group surviving states by their Nelec
+        grouped_states = {}
+        for energy, nelec, wf in self._all_states:
+            if nelec not in grouped_states:
+                grouped_states[nelec] = []
+            grouped_states[nelec].append({"energy": energy, "wavefunction": wf})
+
+        # For each group, create a new, minimal NelecLowEnergySubspace object
+        for nelec, states_info in grouped_states.items():
+            states_info.sort(key=lambda x: x["energy"])
+            surviving_wfs = [s["wavefunction"] for s in states_info]
+            surviving_energies = [s["energy"] for s in states_info]
+            
+            # Create a minimal basis just for the surviving wavefunctions in this sector
+            new_basis_set = set()
+            for wf in surviving_wfs:
+                new_basis_set.update(wf.data().keys())
+            pruned_basis = sorted(list(new_basis_set))
+            
+            # Re-express the wavefunctions in this new minimal basis
+            new_wavefunctions = []
+            det_to_idx = {det: i for i, det in enumerate(pruned_basis)}
+            original_M_spatial = self.results_by_nelec[nelec].M_spatial
+            for wf in surviving_wfs:
+                new_coeffs = np.zeros(len(pruned_basis), dtype=np.complex128)
+                for det, coeff in wf.data().items():
+                    new_coeffs[det_to_idx[det]] = coeff
+                new_wavefunctions.append(cc.Wavefunction(original_M_spatial, pruned_basis, new_coeffs))
+            
+            # Get other metadata from the original object (this is the only time we need it)
+            original_transform = self.results_by_nelec[nelec].transformation_matrix
+
+            # Create the new, clean result object for this Nelec sector
+            new_results_by_nelec[nelec] = NelecLowEnergySubspace(
+                M_spatial=original_M_spatial,
+                Nelec=nelec,
+                energies=np.array(surviving_energies),
+                wavefunctions=new_wavefunctions,
+                basis=pruned_basis,
+                transformation_matrix=original_transform
+            )
+
+        # 4. Replace the old, complete dictionary with the new, pruned one
+        self.results_by_nelec = new_results_by_nelec
+
+        # 5. Finally, recalculate the Boltzmann weights for the pruned set
+        self._recalculate_thermal_properties()
+        final_count = len(self._all_states)
+        print(f"Pruned {initial_count - final_count} states. {final_count} states remaining.")
+
+    def find_absolute_ground_state(self) -> tuple[int, float, cc.Wavefunction]:
+        """
+        Finds the state with the lowest energy across all calculated Nelec sectors.
+
+        Returns:
+            A tuple of (Nelec, ground_state_energy, ground_state_wavefunction).
+        """
+        if not self._all_states:
+            raise ValueError("No states are stored.")
+
+        # Since _all_states is sorted by energy, the ground state is the first one.
+        gs_energy, gs_nelec, gs_wf = self._all_states[0]
+        return gs_nelec, gs_energy, gs_wf
+
+    def save(self, filename: str):
+        """Saves all contained results and model info into a single HDF5 file."""
+        print(f"Saving thermal state data to '{filename}'...")
+        with h5py.File(filename, 'w') as f:
+            f.attrs["file_type"] = "ThermalGroundState"
+            f.attrs["temperature"] = self.temperature
+            
+            # --- Save the base model context ---
+            f.attrs["M_spatial"] = self.M_spatial
+            f.attrs["is_impurity_model"] = self.is_impurity_model
+            if self.is_impurity_model:
+                f.attrs["imp_indices_spatial"] = self.imp_indices_spatial
+            f.create_dataset("base_h0", data=self.base_h0)
+            f.create_dataset("base_U", data=self.base_U)
+
+            for nelec, result in self.results_by_nelec.items():
+                nelec_group = f.create_group(f"nelec_{nelec}")
+                print(f"Saving Nelec={nelec} subspace to HDF5 group '{nelec_group.name}'...")
+                result.save(nelec_group)
+        print("Save complete.")
+
+
+    @classmethod
+    def load(cls, filename: str):
+        """Loads a thermal state result from a single HDF5 file."""
+        print(f"Loading thermal state data from '{filename}'...")
+        results = {}
+        with h5py.File(filename, 'r') as f:
+            if f.attrs.get("file_type") != "ThermalGroundState":
+                 print(f"Warning: File '{filename}' may not be a valid ThermalGroundState file.")
+            
+            temp = f.attrs.get("temperature", 300.0)
+            
+            # Import Model locally to avoid circular dependency at module level
+            from .api import Model
+
+            # --- Load the base model context ---
+            M_spatial = int(f.attrs["M_spatial"])
+            is_imp = bool(f.attrs["is_impurity_model"])
+            imp_indices_spatial = list(f.attrs.get("imp_indices_spatial", []))
+            base_h0 = f["base_h0"][:]
+            base_U = f["base_U"][:]
+            
+            # Reconstruct the model object. Nelec is just a placeholder here.
+            loaded_model = Model(h0=base_h0, U=base_U, M_spatial=M_spatial, Nelec=-1)
+            loaded_model.is_impurity_model = is_imp
+            loaded_model.imp_indices_spatial = imp_indices_spatial
+
+            for key in f.keys():
+                if key.startswith("nelec_"):
+                    nelec = int(key.split("_")[1])
+                    nelec_group = f[key]
+                    print(f"Loading Nelec={nelec} subspace from HDF5 group '{nelec_group.name}'...")
+                    results[nelec] = NelecLowEnergySubspace.load(nelec_group)
+        
+        print("Load complete.")
+        return cls(results, base_model=loaded_model, temperature=temp)
+
+
+def fit_chemical_potential_for_target_N(
+    states: list[tuple[float, int, "cc.Wavefunction"]],
+    temperature_K: float,
+    N_target: float,
+    k_B_in_energy_per_K: float,
+    mu_bounds: tuple[float, float] = (-10.0, 10.0),
+    tol_N: float = 1e-8,
+    max_iter: int = 200,
+):
+    """
+    Fit mu such that <N>_mu = N_target for the grand-canonical ensemble of
+    precomputed eigenstates.
+
+    Weights:
+        w_s(mu) ∝ exp(-beta * (E_s - mu * N_s))
+
+    Parameters
+    ----------
+    states : list of (energy, nelec, wavefunction)
+        Energies must be in the same energy unit as mu (e.g. Ry or eV).
+    temperature_K : float
+    N_target : float
+        Desired average particle number.
+    k_B_in_energy_per_K : float
+        Boltzmann constant in the same energy unit as energies and mu.
+        (You already have k_B_IN_RY_PER_K.)
+    mu_bounds : (mu_lo, mu_hi)
+        Bracketing interval for bisection.
+    tol_N : float
+        Converge when |<N>-N_target| < tol_N.
+    max_iter : int
+
+    Returns
+    -------
+    mu_star : float
+    weights : np.ndarray, shape (n_states,)
+        Normalized Boltzmann weights at mu_star.
+    Z_unnormalized : float
+        Sum of unnormalized weights (with the usual energy shift for stability).
+    avgN : float
+        Achieved <N> at mu_star.
+    """
+
+    beta = 1.0 / (k_B_in_energy_per_K * temperature_K)
+
+    E = np.asarray([s[0] for s in states], dtype=float)
+    E = E - np.mean(E)
+    N = np.asarray([s[1] for s in states], dtype=float)
+
+    def _weights_and_avgN(mu: float):
+        # x_s = E_s - sign * mu * N_s
+        x = E - mu * N
+        x0 = np.min(x)  # stability shift (depends on mu!)
+        w_unn = np.exp(-beta * (x - x0))
+        Z = np.sum(w_unn)
+        w = w_unn / Z
+        avgN = float(np.dot(w, N))
+        return w, Z, avgN
+
+    def _f(mu: float):
+        return _weights_and_avgN(mu)[2] - N_target
+
+    mu_lo, mu_hi = float(mu_bounds[0]), float(mu_bounds[1])
+
+    f_lo = _f(mu_lo)
+    f_hi = _f(mu_hi)
+
+    # Expand bracket if needed
+    if f_lo * f_hi > 0:
+        # Try geometric expansion a few times
+        span = mu_hi - mu_lo
+        for _ in range(30):
+            span *= 2.0
+            mu_lo_try = mu_lo - span
+            mu_hi_try = mu_hi + span
+            f_lo = _f(mu_lo_try)
+            f_hi = _f(mu_hi_try)
+            if f_lo * f_hi <= 0:
+                mu_lo, mu_hi = mu_lo_try, mu_hi_try
+                break
+        else:
+            # No bracket: target unreachable with provided states
+            # Return best endpoint with diagnostic.
+            w_lo, Z_lo, avgN_lo = _weights_and_avgN(mu_lo)
+            w_hi, Z_hi, avgN_hi = _weights_and_avgN(mu_hi)
+            if abs(avgN_lo - N_target) <= abs(avgN_hi - N_target):
+                raise RuntimeError(
+                    f"Could not bracket N_target. "
+                    f"With mu={mu_lo:.6g}, <N>={avgN_lo:.6g}; "
+                    f"with mu={mu_hi:.6g}, <N>={avgN_hi:.6g}. "
+                    f"Likely missing relevant N sectors / excited states."
+                )
+            else:
+                raise RuntimeError(
+                    f"Could not bracket N_target. "
+                    f"With mu={mu_hi:.6g}, <N>={avgN_hi:.6g}; "
+                    f"with mu={mu_lo:.6g}, <N>={avgN_lo:.6g}. "
+                    f"Likely missing relevant N sectors / excited states."
+                )
+
+    # Bisection (monotone at T>0 if spectrum coverage is adequate)
+    for _ in range(max_iter):
+        mu_mid = 0.5 * (mu_lo + mu_hi)
+        w_mid, Z_mid, avgN_mid = _weights_and_avgN(mu_mid)
+        f_mid = avgN_mid - N_target
+
+        if abs(f_mid) < tol_N:
+            return mu_mid, w_mid, Z_mid, avgN_mid
+
+        # keep the sign change interval
+        if f_lo * f_mid <= 0:
+            mu_hi, f_hi = mu_mid, f_mid
+        else:
+            mu_lo, f_lo = mu_mid, f_mid
+
+    # If not converged, return the midpoint result
+    mu_mid = 0.5 * (mu_lo + mu_hi)
+    w_mid, Z_mid, avgN_mid = _weights_and_avgN(mu_mid)
+
+    return mu_mid, w_mid, Z_mid, avgN_mid
+

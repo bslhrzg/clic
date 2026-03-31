@@ -23,12 +23,13 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=None,verbose=True):
     if len(basis) == 0 : 
         eigvals = [0]
         psis = [cc.Wavefunction(M, basis, [1.0])]
-        fci_res = results.NelecLowEnergySubspace(M_spatial=M,Nelec=Nelec,
-        energies=eigvals,
-        wavefunctions=psis,
-        basis=basis,
-        transformation_matrix=None
-        )
+        fci_res = {
+            "Nelec": Nelec,
+            "energies": eigvals,
+            "wavefunctions": psis,
+            "C": None,                 # or None
+            "basis": basis,         # only if needed by your wf object
+            }
         return fci_res
 
 
@@ -54,10 +55,11 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=None,verbose=True):
     
     psis = [cc.Wavefunction(M, basis, eigvecs[:,i]) for i in range(num_roots)]
 
-    fci_res = results.NelecLowEnergySubspace(M_spatial=M,Nelec=Nelec,
-        energies=eigvals,
-        wavefunctions=psis,
-        basis=basis,
-        transformation_matrix=None
-    )
+    fci_res = {
+            "Nelec": Nelec,
+            "energies": eigvals,
+            "wavefunctions": psis,
+            "C": None,                 # or None
+            "basis": basis,         # only if needed by your wf object
+            }
     return fci_res
