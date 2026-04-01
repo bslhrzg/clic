@@ -15,10 +15,10 @@ def dmft_step(
    
     clicvars = ClicVars.from_toml("input.toml")
 
-
     dirdump = "dump_"+rspt_clic_params["label"] 
 
     clicvars.M_imp = h_imp.shape[0] // 2
+    clicvars.imp_indices_spatial = [i for i in range(clicvars.M_imp)]
 
 
     clicvars.ws = ws 
@@ -34,8 +34,8 @@ def dmft_step(
     eta_broad = 0.03
     clicvars.eta_broad = eta_broad
 
-    warp_kind = "const"
-    clicvars.warp_kind = warp_kind
+    #warp_kind = "const"
+    #clicvars.warp_kind = warp_kind
 
     diag_fit = True 
     clicvars.windowing = False 
@@ -134,10 +134,6 @@ def dmft_step(
         print("<Im hyb_ij>")
         print(av_im_hyb)
 
-
-        dump(np.real(hyb),ws,'real-hyb',output_dir=dirdump)
-        dump(np.imag(hyb),ws,'imag-hyb',output_dir=dirdump)
-
         print("----------------------------------")
         print("FITTING DIAGONAL PART OF HYB ONLY")    
         hyb_to_fit = np.zeros_like(hyb)
@@ -150,7 +146,7 @@ def dmft_step(
             h_imp_to_fit[i,i] = h_imp[i,i]
         
         #########################################
-        h0_0,hyb_approx, mapping, hyb_approx_iw = discretize_hyb(
+        h0_0,delta_fit, hyb_approx, mapping, hyb_approx_iw = discretize_hyb(
             clicvars.ws,
             hyb_to_fit,           # (Nw, Nimp, Nimp)
             h_imp_to_fit,          # (Nimp, Nimp)
@@ -187,6 +183,10 @@ def dmft_step(
             h0_0_real = np.loadtxt("h0_0_real.txt")    
             h0_0_imag = np.loadtxt("h0_0_imag.txt")    
             h0_0 = h0_0_real + 1j*h0_0_imag
+            NF = np.shape(h0_0)[0]
+            M_spatial = NF // 2
+            iis = clicvars.imp_indices_spatial + [i+M_spatial for i in clicvars.imp_indices_spatial]
+            h0_0[np.ix_(iis,iis)] = h_imp
 
             norb = h_imp.shape[0]
             ws2, hyb_app_imag = load_3d("imag-hyb_app", shape_2d=(norb, norb), output_dir=dirdump)
@@ -197,7 +197,14 @@ def dmft_step(
             iws2, hyb_app_mats_real = load_3d("real-hyb-mats_app", shape_2d=(norb, norb), output_dir=dirdump)
             hyb_approx_iw = hyb_app_mats_real + 1j * hyb_app_mats_imag
 
+            hybdos = -np.trace(hyb, axis1=1, axis2=2).imag
+            hybappdos = -np.trace(hyb_approx,axis1=1, axis2=2).imag
 
+        dump(hybdos,ws,"imhyb_0_dos",output_dir=dirdump)
+
+
+    dump(np.real(hyb),ws,'real-hyb',output_dir=dirdump)
+    dump(np.imag(hyb),ws,'imag-hyb',output_dir=dirdump)
 
     # ==============================================================================
     # 3. RUN THE SOLVER
@@ -212,7 +219,6 @@ def dmft_step(
     clicvars.M_spatial = M_spatial
     clicvars.NF = NF 
     U_0 = np.zeros((NF,NF,NF,NF),dtype=complex)
-    clicvars.imp_indices_spatial = [i for i in range(clicvars.M_imp)]
     clicvars.imp_indices_spinfull = clicvars.imp_indices_spatial + [i+M_spatial for i in clicvars.imp_indices_spatial]
     iis =  clicvars.imp_indices_spinfull
 

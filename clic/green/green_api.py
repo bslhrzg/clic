@@ -103,13 +103,13 @@ def get_green(clicvars,Ne_dict,h0_0,U_0,thermal_gs,plot_sf = True):
     A_w_total = -(1 / np.pi) * np.imag(G_total_diag)
     
     # Save and plot the final, thermally-averaged results
-    dodump = True 
-    if dodump:
-        io_utils.dump(
-            A_w_total,
-            ws,
-            'A_w_thermal',
-        )
+    #dodump = True 
+    #if dodump:
+    #    io_utils.dump(
+    #        A_w_total,
+    #        ws,
+    #        'A_w_thermal',
+    #    )
         # Also dump the Green's function if needed for post-processing
         # io_utils.dump_complex(G_total, ws, 'G_w_thermal')
 

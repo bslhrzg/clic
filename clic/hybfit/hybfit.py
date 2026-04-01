@@ -342,6 +342,7 @@ def discretize_hyb(
     Vchk = H0[:Nimp, Nimp:]
     Hbck = H0[Nimp:, Nimp:]
     Delta_fit = delta_from_bath(omega, Hbck, Vchk, eta=eta_0 + broadening_Gamma)
+    hyb_app = delta_from_bath(omega, Hbck, Vchk, eta=eta_0)
 
     if i_omegas is not None:
         if i_omegas[0].imag == 0 :
@@ -351,7 +352,7 @@ def discretize_hyb(
     else : 
         Delta_mats_fit = None
 
-    return H_full, Delta_fit, mapping, Delta_mats_fit
+    return H_full, Delta_fit, hyb_app, mapping, Delta_mats_fit
 
 
 def delta_from_poles(z, eps, residues):

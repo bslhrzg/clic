@@ -29,7 +29,7 @@ class ClicVars:
         window_width=0.0, # with which width
         window_pos=0.0, # where
         diag_fit=True, # do we fit only the diagonal components of the hyb
-        freeze_bath=True, # if True, look for an existing fit and load that
+        freeze_bath=False, # if True, look for an existing fit and load that
 
         # SOLVER SETTINGS
         basis_prep_method="none", # do we rotate the initial basis 
