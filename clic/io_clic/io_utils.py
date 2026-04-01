@@ -84,6 +84,55 @@ def dump(
 
     print(f"Data saved to '{full_path}'")
 
+def load_3d(
+    filename: str,
+    shape_2d: tuple[int, int],
+    output_dir: str = "dump",
+    header_comment: str = "#"
+):
+    """
+    Load a file written by dump() for the 3D case.
+
+    Parameters
+    ----------
+    filename : str
+        File name inside output_dir.
+    shape_2d : tuple[int, int]
+        The original (p, q) shape of F, where dumped F had shape (len(x), p, q).
+    output_dir : str
+        Directory containing the file.
+    header_comment : str
+        Lines starting with this string are ignored.
+
+    Returns
+    -------
+    x : np.ndarray
+        1D grid array.
+    F : np.ndarray
+        Reconstructed array of shape (len(x), p, q).
+    """
+    import os
+    import numpy as np
+
+    p, q = shape_2d
+    full_path = os.path.join(output_dir, filename)
+
+    data = np.loadtxt(full_path, comments=header_comment)
+
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+
+    x = data[:, 0]
+    F_flat = data[:, 1:]
+
+    if F_flat.shape[1] != p * q:
+        raise ValueError(
+            f"File contains {F_flat.shape[1]} data columns, but expected {p*q} "
+            f"for shape_2d = {(p, q)}."
+        )
+
+    F = F_flat.reshape(len(x), p, q)
+    return x, F
 
 def print_header(str):
     print("\n")

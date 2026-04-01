@@ -1,82 +1,142 @@
 import numpy as np
-from .model.config_models import SolverParameters, CiMethodConfig, GreenFunctionConfig, LanczosParameters, OutputConfig
 
-from .model.model_api import Model
-from .solve.solver_api import FockSpaceSolver
-from .green.green_api import GreenFunctionCalculator
+from .clicvars import *
 from . import *
-
-
 
 def dmft_step(
         ws,
         iws,
-        hyb,h_imp,
+        hyb,
+        h_imp,
         U_imp,
-        clic_params
+        rspt_clic_params
         ):
+
+   
+    clicvars = ClicVars.from_toml("input.toml")
+
+
+    dirdump = "dump_"+rspt_clic_params["label"] 
+
+    clicvars.M_imp = h_imp.shape[0] // 2
+
+
+    clicvars.ws = ws 
+    clicvars.iws = iws
+
+    n_bath_poles = rspt_clic_params["n_bath_poles"]
+    clicvars.nb = n_bath_poles
+
+    fit_method = "cost_minimization"
+    eta_hyb = 0.01
+    clicvars.eta_hyb = eta_hyb
+
+    eta_broad = 0.03
+    clicvars.eta_broad = eta_broad
+
+    warp_kind = "const"
+    clicvars.warp_kind = warp_kind
+
+    diag_fit = True 
+    clicvars.windowing = False 
+    window_width = 0.1 
+    clicvars.window_width = window_width
+
+    window_pos = 0.0
+    clicvars.window_pos = window_pos 
+
+    Nelec_imp = rspt_clic_params["Nelec_imp"]
+    clicvars.Nelec_imp = Nelec_imp
+
+    if n_bath_poles > 0:
+        if n_bath_poles > 3:
+            basis_prep_method = "dbl_chain" # or "dbl_chain"
+        else : 
+            basis_prep_method = "none"
+        ci_type = "sci" # or "fci"
+        num_roots = rspt_clic_params["num_roots"]
+        do_hia = False
+    else : 
+        basis_prep_method = "none"
+        ci_type = "fci"
+        num_roots = 14
+        do_hia = True
+
+
+    clicvars.ci_type = ci_type
+    clicvars.basis_prep_method = basis_prep_method
+
+    max_iter = rspt_clic_params["num_roots"]
+    clicvars.max_iter = max_iter
+    
+    conv_tol = rspt_clic_params["conv_tol"]
+    clicvars.conv_tol = conv_tol
+
+    prune_thr = 1e-12
+    clicvars.prune_thr = prune_thr
+
+    Nmul = rspt_clic_params["Nmul"]
+    clicvars.Nmul = Nmul
+
+    temperature=rspt_clic_params["temperature"]
+    clicvars.temperature = temperature
+
+    L_lanczos = 150 
+    clicvars.L_lanczos = L_lanczos
+
+    NappH = rspt_clic_params["NappH"]
+    clicvars.NappH = NappH
+    coeff_thresh = rspt_clic_params["lanczos_thr"]
+    clicvars.coeff_thresh = coeff_thresh
+
+
 
 
     print("ENTERING DMFT STEP with params: ")
 
-    for key in clic_params: 
-        print(f"{key}: {clic_params[key]}")
+    for key in rspt_clic_params: 
+        print(f"{key}: {rspt_clic_params[key]}")
 
-    dirdump = "dump_"+clic_params["label"] 
-
-
-    ################################################
-    # Windowing the hybridization 
-    # 
-    def windowing_hyb(hyb, width, position):
-        print("----------------------------------")
-        print(f"APPLYING WINDOW ON HYB WITH WIDTH {width} AT {position}")
-        def gpd(mu,sigma,x):
-            C = 1 /(sigma * np.sqrt(2*np.pi))
-            return C * np.exp(-0.5*(x-mu)**2 / (sigma**2))
-        n_orb = hyb.shape[1]
-        for i in range(n_orb):
-            for j in range(n_orb):
-                hyb[:,i,j] *= gpd(position,width,ws)
-        
-        return hyb 
-    
-    window_width = 0.1 
-    window_pos = 0.0 
-    hyb = windowing_hyb(hyb,window_width,window_pos)
-    ##################################################
-
-
-    norb = hyb.shape[1]
-    print(f"hyb.shape = {hyb.shape}")
-    av_im_hyb = np.zeros((norb,norb))
-    for i in range(norb):
-        for j in range(norb):
-            av_im_hyb[i,j] = np.mean(np.abs(np.imag(hyb[:,i,j])))
-
-    print("<Im hyb_ij>")
-    print(av_im_hyb)
-    #assert 1 == 0
     # ==============================================================================
     # 2. DEFINE THE MODEL
     # ==============================================================================
 
-    n_bath_poles = clic_params["n_bath_poles"]
+    if not do_hia and not clicvars.freeze_bath :
 
-    fit_method = "cost_minimization"
-    #fit_method = "poles_reconstruction"
-    eta_hyb = 0.01
-    eta_broad = 0.03
-    warp_kind = "none"
+        ################################################
+        # Windowing the hybridization 
+        # 
+        def windowing_hyb(hyb, width, position):
+            print("----------------------------------")
+            print(f"APPLYING WINDOW ON HYB WITH WIDTH {width} AT {position}")
+            def gpd(mu,sigma,x):
+                C = 1 /(sigma * np.sqrt(2*np.pi))
+                return C * np.exp(-0.5*(x-mu)**2 / (sigma**2))
+            n_orb = hyb.shape[1]
+            for i in range(n_orb):
+                for j in range(n_orb):
+                    hyb[:,i,j] *= gpd(position,width,ws)
+            
+            return hyb 
+        
+        if clicvars.windowing:
+            hyb = windowing_hyb(hyb,clicvars.window_width,clicvars.window_pos)
+        ##################################################
 
 
-    dump(np.real(hyb),ws,'real-hyb',output_dir=dirdump)
-    dump(np.imag(hyb),ws,'imag-hyb',output_dir=dirdump)
+        norb = hyb.shape[1]
+        print(f"hyb.shape = {hyb.shape}")
+        av_im_hyb = np.zeros((norb,norb))
+        for i in range(norb):
+            for j in range(norb):
+                av_im_hyb[i,j] = np.mean(np.abs(np.imag(hyb[:,i,j])))
+
+        print("<Im hyb_ij>")
+        print(av_im_hyb)
 
 
-    diag_fit = True 
-
-    if diag_fit : 
+        dump(np.real(hyb),ws,'real-hyb',output_dir=dirdump)
+        dump(np.imag(hyb),ws,'imag-hyb',output_dir=dirdump)
 
         print("----------------------------------")
         print("FITTING DIAGONAL PART OF HYB ONLY")    
@@ -88,118 +148,99 @@ def dmft_step(
         h_imp_to_fit = np.zeros_like(h_imp)
         for i in range(norb):
             h_imp_to_fit[i,i] = h_imp[i,i]
-
-        model = Model.from_hybridization(h_imp_to_fit, U_imp, ws, hyb_to_fit, n_bath_poles, eta_hyb,
-                                fit_method=fit_method,
-                                warp_kind = warp_kind,
-                                warp_w0 = 0.01,
-                                eta_broad = eta_broad,
-                                iws = iws)
         
-        print("model.h0[:norb,:norb]:")
-        print(model.h0[:norb,:norb].real)
-        ind_imp = model.imp_indices_spinfull
-        model.h0[np.ix_(ind_imp,ind_imp)] = h_imp
+        #########################################
+        h0_0,hyb_approx, mapping, hyb_approx_iw = discretize_hyb(
+            clicvars.ws,
+            hyb_to_fit,           # (Nw, Nimp, Nimp)
+            h_imp_to_fit,          # (Nimp, Nimp)
+            clicvars.nb,
+            clicvars.eta_hyb, 
+            weight_func=clicvars.warp_kind,
+            broadening_Gamma=clicvars.eta_broad,
+            i_omegas=iws
+        )
+        np.savetxt("h0_0_real.txt",h0_0.real)
+        np.savetxt("h0_0_imag.txt",h0_0.imag)
 
-        print("model.h0[:norb,:norb]:")
-        print(model.h0[:norb,:norb].real)
+        #########################################
 
-        print(f"model.is_impurity_model : {model.is_impurity_model}")
-        print(f"model.imp_indices_spatial : {model.imp_indices_spatial}")
+        hybdos = -np.trace(hyb, axis1=1, axis2=2).imag
+        hybappdos = -np.trace(hyb_approx,axis1=1, axis2=2).imag
+
+        dump(hybdos,ws,"imhyb_0_dos",output_dir=dirdump)
+        dump(hybappdos,ws,"imhyb_fit_dos",output_dir=dirdump)
+        
+        dump(np.imag(hyb_approx),ws,'imag-hyb_app',output_dir=dirdump)
+        dump(np.real(hyb_approx),ws,'real-hyb_app',output_dir=dirdump)
+
+        dump(np.imag(hyb_approx_iw),iws,'imag-hyb-mats_app',output_dir=dirdump)
+        dump(np.real(hyb_approx_iw),iws,'real-hyb-mats_app',output_dir=dirdump)
 
     else : 
+        if do_hia:
+            h0_0 = h_imp.copy()
+            hyb_approx = None 
+            hyb_approx_iw = None
+        if clicvars.freeze_bath: 
+            print("USING FROZEN BATH IF CAN BE FOUND")
+            h0_0_real = np.loadtxt("h0_0_real.txt")    
+            h0_0_imag = np.loadtxt("h0_0_imag.txt")    
+            h0_0 = h0_0_real + 1j*h0_0_imag
 
-        model = Model.from_hybridization(h_imp, U_imp, ws, hyb, n_bath_poles, eta_hyb,
-                        fit_method=fit_method,
-                        warp_kind = "none",
-                        warp_w0 = 0.01,
-                        eta_broad = eta_broad,
-                        iws = iws)
+            norb = h_imp.shape[0]
+            ws2, hyb_app_imag = load_3d("imag-hyb_app", shape_2d=(norb, norb), output_dir=dirdump)
+            ws2, hyb_app_real = load_3d("real-hyb_app", shape_2d=(norb, norb), output_dir=dirdump)
+            hyb_approx = hyb_app_real + 1j * hyb_app_imag
 
-    h0n = model.h0.shape[0]
-    for i in range(h0n):
-        print(f"h0_ii({i}) = {model.h0[i,i]}")
+            iws2, hyb_app_mats_imag = load_3d("imag-hyb-mats_app", shape_2d=(norb, norb), output_dir=dirdump)
+            iws2, hyb_app_mats_real = load_3d("real-hyb-mats_app", shape_2d=(norb, norb), output_dir=dirdump)
+            hyb_approx_iw = hyb_app_mats_real + 1j * hyb_app_mats_imag
 
-    Nelec_imp = clic_params["Nelec_imp"]
+
+
     # ==============================================================================
     # 3. RUN THE SOLVER
     # ==============================================================================
     # Create the settings object (using your existing Pydantic structures)
-    if n_bath_poles > 1:
-        if n_bath_poles > 3:
-            basis_prep_method = "dbl_chain" # or "dbl_chain"
-        else : 
-            basis_prep_method = "none"
-        ci_type = "sci" # or "fci"
-        num_roots = clic_params["num_roots"]
-    else : 
-        basis_prep_method = "none"
-        ci_type = "fci"
-        num_roots = 14
-    max_iter = clic_params["num_roots"]
-    conv_tol = clic_params["conv_tol"]
-    prune_thr = 1e-12
-    Nmul = clic_params["Nmul"]
+   
+
+   
+    N_target = clicvars.Nelec_target #13.3
+    NF = np.shape(h0_0)[0]
+    M_spatial = NF // 2 
+    clicvars.M_spatial = M_spatial
+    clicvars.NF = NF 
+    U_0 = np.zeros((NF,NF,NF,NF),dtype=complex)
+    clicvars.imp_indices_spatial = [i for i in range(clicvars.M_imp)]
+    clicvars.imp_indices_spinfull = clicvars.imp_indices_spatial + [i+M_spatial for i in clicvars.imp_indices_spatial]
+    iis =  clicvars.imp_indices_spinfull
+
+    print(f"imp_spinorb_index = {clicvars.imp_indices_spinfull}")
+    U_0[np.ix_(iis,iis,iis,iis)] = U_imp
+
+    h0_0 = np.ascontiguousarray(h0_0, dtype=np.complex128)
+    U_0 = np.ascontiguousarray(U_0, dtype=np.complex128)
 
 
-    solver_settings = SolverParameters(
-        basis_prep_method=basis_prep_method, # or "dbl_chain" or "rhf"
-        ci_method=CiMethodConfig(
-            type=ci_type, 
-            num_roots=num_roots, 
-            max_iter=max_iter, 
-            conv_tol=conv_tol,
-            prune_thr=prune_thr,
-            Nmul=Nmul,
-        ),
-        temperature=clic_params["temperature"]
-    )
+    print(f"coucou, solve_fockspace")
+    nelecs_resuls = solve_fockspace(h0_0,U_0,clicvars)
+    print(f"coucou, building states")
+    thermal_gs, Ne_dict = build_state_list_and_ne_dict(nelecs_resuls)
+    k_B_IN_RY_PER_K = 0.0000063336   # Ry/K 
+    set_boltzmann_weights(thermal_gs, temperature, k_B_IN_RY_PER_K)
 
-    # Instantiate the Manager (FockSpaceSolver)
-    # We pass 'auto' so it finds the correct bath filling automatically
-    # We pass Nelec_imp so it knows how to calculate that filling
-    solver = FockSpaceSolver(
-        model=model, 
-        settings=solver_settings, 
-        nelec_range="auto", 
-        Nelec_imp=Nelec_imp
-    )
-
-    N_target = None #13.3
-    result = solver.solve(N_target=N_target)
+    prn_tgs_thr=1e-3
+    thermal_gs = prune_states(thermal_gs, prn_tgs_thr)
+    set_boltzmann_weights(thermal_gs, temperature, k_B_IN_RY_PER_K)
 
     print("\n--- Post-Solver Analysis ---")
-    analyzer = StateAnalyzer(result, model)
-    analyzer.do_analysis()
-    # ==============================================================================
-    # 4. CALCULATE GREEN'S FUNCTION
-    # ==============================================================================
-    L_lanczos = 150 
-    NappH = clic_params["NappH"]
-    coeff_thresh = clic_params["lanczos_thr"]
+    thermal_avgs = analyze_thermal_gs(thermal_gs, clicvars)
 
-    gf_config = GreenFunctionConfig(
-        omega_mesh=ws,
-        matsubara_mesh = iws,
-        eta=eta_hyb,
-        block_indices="impurity",
-        lanczos=LanczosParameters(L=L_lanczos, 
-                                NappH=NappH, 
-                                coeff_thresh=coeff_thresh)
-    )
+    clicvars.green_block_indices = clicvars.imp_indices_spinfull
 
-    out_config = OutputConfig(basename="my_script_run", plot_file="spectral.pdf")
-
-    gf_calc = GreenFunctionCalculator(
-        gf_config=gf_config,
-        output_config=out_config,
-        ground_state_filepath="" # Ignored because we pass result directly below
-    )
-
-    # Pass the result from the solver directly to the GF calculator
-    ws, G_imp, G_imp_iw, A_imp = gf_calc.run(ground_state_result=result)
-
-
+    ws, G_imp, G_imp_iw, A_imp = get_green(clicvars,Ne_dict,h0_0,U_0,thermal_gs,plot_sf = True)
+    
     dump(np.real(G_imp),ws,'real-G_real',output_dir=dirdump)
     dump(np.imag(G_imp),ws,'imag-G_real',output_dir=dirdump)
     dump(np.real(G_imp_iw),iws,'real-G_mats',output_dir=dirdump)
@@ -210,11 +251,6 @@ def dmft_step(
     # 4. CALCULATE SELF ENERGY
     # ==============================================================================
 
-    hyb_approx = model.hyb_data["fitted"]
-    hyb_approx_iw = model.hyb_data["fitted_iw"]
-
-    dump(np.imag(hyb_approx),ws,'imag-hyb_app_real')
-
 
     if n_bath_poles > 0:
         hyb_sig = hyb_approx 
@@ -224,26 +260,21 @@ def dmft_step(
         hyb_sig = None
         hyb_sig_iw = None
 
-    Sigma, G0 = gf_calc.calculate_self_energy( 
+    print(f"DEBUG: iws[0] = {iws[0]}, clicvars.iws[0] = {clicvars.iws[0]}")
+    Sigma, G0 = calculate_self_energy( 
+                                clicvars,
                                 ws, 
+                                h_imp,
                                 G_imp, 
                                 hyb_sig)
 
-    Sigma_iw, G0_iw = gf_calc.calculate_self_energy( 
+    Sigma_iw, G0_iw = calculate_self_energy( 
+                                clicvars,
                                 1j * iws, 
+                                h_imp,
                                 G_imp_iw, 
                                 hyb_sig_iw)
     
-
-    def check_imag_diag_negative_(Sigma, name="Sigma",eps_sigma=1e-12):
-        imag_diag = np.imag(np.diagonal(Sigma, axis1=1, axis2=2))
-        bad = imag_diag > eps_sigma
-        if np.any(bad):
-            idx = np.argwhere(bad)
-            print(f"{name}: Im Sigma_ii > 0 detected : Sigma[{idx[1::10]}] =  {Sigma[idx[::10]]}")
-            Sigma[idx] = np.real(Sigma[idx]) - 0.001 *1j
-        print(f"{name}: diagonal Im parts OK (<= 0 within tol)")
-
 
     def check_imag_diag_negative(Sigma, name="Sigma", eps_sigma=1e-12, clamp_im=-1e-3):
         # Sigma: (n_w, n, n)
@@ -279,7 +310,7 @@ def dmft_step(
     dump(np.imag(G0_iw),iws,'imag-G0_mats',output_dir=dirdump)
 
     # Compute static self energy 
-    avg_rdm_imp = analyzer.rho_imp_thermal
+    avg_rdm_imp = thermal_avgs["rho_imp_thermal"]
     sig_static = np.einsum('ikjl,ij->kl', U_imp, avg_rdm_imp) - \
                 np.einsum('iklj,ij->kl', U_imp, avg_rdm_imp)
 

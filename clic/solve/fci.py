@@ -2,8 +2,6 @@
 import clic_clib as cc
 import numpy as np
 from clic.basis import basis_Np
-from clic.results import results
-
 
 from time import time
 from clic.io_clic.io_utils import vprint 

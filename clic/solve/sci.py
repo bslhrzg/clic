@@ -4,7 +4,6 @@ from itertools import combinations
 import numpy as np
 from clic.basis import basis_Np
 from clic.ops import ops
-from clic.results import results
 from scipy.sparse.linalg import eigsh
 from scipy.sparse import csr_matrix
 

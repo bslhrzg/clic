@@ -17,6 +17,7 @@ class ClicVars:
         M_imp=1, # number of spatial impurity orbitals
         is_impurity_model=True,
         imp_indices_spatial = None,
+        imp_indices_spinfull = None,
 
         # HYBRIDIZATION FIT
         nb_fit=1, # how many states used to fit the hybridization per correlated orbital
@@ -28,6 +29,7 @@ class ClicVars:
         window_width=0.0, # with which width
         window_pos=0.0, # where
         diag_fit=True, # do we fit only the diagonal components of the hyb
+        freeze_bath=True, # if True, look for an existing fit and load that
 
         # SOLVER SETTINGS
         basis_prep_method="none", # do we rotate the initial basis 
@@ -42,13 +44,13 @@ class ClicVars:
         Nelec_imp=1, # how many electron do we expect in the impurity
         temperature=5.0, #  
         Nelec_target=None, # 
-        nelec_range=None,
+        nelec_range="auto",
 
         # GREEN FUNCTIONS
         ws=None,
         iws=None,
         eta=1e-2,
-        block_indices=None,
+        green_block_indices=None,
         L_lanczos=100,
         NappH=1,
         coeff_thresh=1e-12,
@@ -59,6 +61,7 @@ class ClicVars:
         self.M_imp = M_imp
         self.is_impurity_model = is_impurity_model
         self.imp_indices_spatial = imp_indices_spatial
+        self.imp_indices_spinfull = imp_indices_spinfull
 
         self.nb_fit = nb_fit
         self.warp_kind = warp_kind
@@ -69,6 +72,7 @@ class ClicVars:
         self.window_width = window_width
         self.window_pos = window_pos
         self.diag_fit = diag_fit
+        self.freeze_bath = freeze_bath
 
         self.basis_prep_method = basis_prep_method
         self.ci_type = ci_type
@@ -86,7 +90,7 @@ class ClicVars:
         self.ws = np.array([]) if ws is None else np.array(ws)
         self.iws = np.array([]) if iws is None else np.array(iws)
         self.eta = eta
-        self.block_indices = [] if block_indices is None else block_indices 
+        self.green_block_indices = [] if green_block_indices is None else green_block_indices 
         self.L_lanczos = L_lanczos
         self.NappH = NappH
         self.coeff_thresh = coeff_thresh
@@ -108,8 +112,8 @@ class ClicVars:
         print(self)
 
 
-vars = ClicVars()
-print(vars)
+#vars = ClicVars()
+#print(vars)
 
-vars2 = ClicVars.from_toml("input.toml")
-vars2.print()
+#vars2 = ClicVars.from_toml("input.toml")
+#vars2.print()
