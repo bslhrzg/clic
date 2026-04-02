@@ -27,23 +27,12 @@ def dmft_step(
     n_bath_poles = rspt_clic_params["n_bath_poles"]
     clicvars.nb = n_bath_poles
 
-    fit_method = "cost_minimization"
-    eta_hyb = 0.01
-    clicvars.eta_hyb = eta_hyb
 
-    eta_broad = 0.03
-    clicvars.eta_broad = eta_broad
-
-    #warp_kind = "const"
-    #clicvars.warp_kind = warp_kind
-
-    diag_fit = True 
-    clicvars.windowing = False 
-    window_width = 0.1 
-    clicvars.window_width = window_width
-
-    window_pos = 0.0
-    clicvars.window_pos = window_pos 
+    #clicvars.windowing = False 
+    #window_width = 0.1 
+    #clicvars.window_width = window_width
+    #window_pos = 0.0
+    #clicvars.window_pos = window_pos 
 
     Nelec_imp = rspt_clic_params["Nelec_imp"]
     clicvars.Nelec_imp = Nelec_imp
@@ -119,8 +108,8 @@ def dmft_step(
             
             return hyb 
         
-        if clicvars.windowing:
-            hyb = windowing_hyb(hyb,clicvars.window_width,clicvars.window_pos)
+        #if clicvars.windowing:
+        #    hyb = windowing_hyb(hyb,clicvars.window_width,clicvars.window_pos)
         ##################################################
 
 
@@ -146,6 +135,13 @@ def dmft_step(
             h_imp_to_fit[i,i] = h_imp[i,i]
         
         #########################################
+        if clicvars.windowing : 
+            e_min = clicvars.window_pos - clicvars.window_width / 2
+            e_max = clicvars.window_pos + clicvars.window_width / 2
+            bounds_e = [e_min,e_max]
+        else : 
+            bounds_e = None
+            
         h0_0,delta_fit, hyb_approx, mapping, hyb_approx_iw = discretize_hyb(
             clicvars.ws,
             hyb_to_fit,           # (Nw, Nimp, Nimp)
@@ -154,7 +150,8 @@ def dmft_step(
             clicvars.eta_hyb, 
             weight_func=clicvars.warp_kind,
             broadening_Gamma=clicvars.eta_broad,
-            i_omegas=iws
+            i_omegas=iws, 
+            bounds_e=bounds_e
         )
         np.savetxt("h0_0_real.txt",h0_0.real)
         np.savetxt("h0_0_imag.txt",h0_0.imag)

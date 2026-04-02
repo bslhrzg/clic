@@ -21,7 +21,7 @@ class ClicVars:
 
         # HYBRIDIZATION FIT
         nb_fit=1, # how many states used to fit the hybridization per correlated orbital
-        warp_kind="none", # do we emphasize low energy of not
+        warp_kind="const", # do we emphasize low energy of not
         nb=1, # how many states actually kepts per corr. orbital 
         eta_hyb=1e-2, # distance to the imag. axis used to produce the input hybridization
         eta_broad=1e-2, # broadening distance to the imag. to help the fit

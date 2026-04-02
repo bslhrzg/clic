@@ -1,9 +1,6 @@
-import sys
-import os
 import numpy as np
 import h5py
-from mpi4py import MPI # <--- The Magic
-
+from mpi4py import MPI 
 
 from clic import *
 
@@ -44,13 +41,17 @@ def prepare_from_rspt(
     print(f"n_orb = {n_orb}")
     print(f"corr_to_cf shape = {corr_to_cf.shape}")
 
+    h_imp = basis_change_h0(h_imp_rspt,corr_to_cf)
+    h_imp = np.ascontiguousarray(h_imp)
 
-    h_imp = np.ascontiguousarray(h_imp_rspt)
-    hyb = np.ascontiguousarray(np.moveaxis(hyb_rspt, -1, 0))
+    hyb = np.moveaxis(hyb_rspt, -1, 0)
+    hyb = basis_change_h0(hyb, corr_to_cf)
+    hyb = np.ascontiguousarray(hyb)
 
     U_imp = basis_change_U(U_imp_rspt,corr_to_cf)
+    U_imp = np.ascontiguousarray(U_imp)
 
-    return hyb,h_imp,U_imp
+    return hyb,h_imp,U_imp,corr_to_cf
  
 CALL_COUNT=0
 
@@ -121,13 +122,6 @@ def solve(label, solver_param_, dc_param, dc_flag,
         clic_params["Nmul"] = float(solver_param[6]) if len(solver_param) > 6 else None 
         clic_params["lanczos_thr"] = float(solver_param[7]) if len(solver_param) > 7 else 1e-5 
 
-
-
-
-# If you have NappH or more parameters, continue...
-        #n_bath_poles, Nelec_imp, num_roots, temperature, NappH = solver_param.strip()
-        #print(f"n_bath_poles = {n_bath_poles}, Nelec_imp = {Nelec_imp}, \
-        #      num_roots = {num_roots}, temperature = {temperature}, NappH = {NappH}")
         
         # 4-Index U Matrix (n_orb, n_orb, n_orb, n_orb)
         U_mat = np.frombuffer(U_mat_view, dtype=np.complex128)
@@ -209,7 +203,7 @@ def solve(label, solver_param_, dc_param, dc_flag,
         print(" [Python] ---------------------------------------------------\n")
 
 
-        hyb_clic,h_imp_clic,U_imp_clic = prepare_from_rspt(n_orb,
+        hyb_clic,h_imp_clic,U_imp_clic,corr_to_cf = prepare_from_rspt(n_orb,
             n_orb_full,
             hyb,
             h_dft,
@@ -220,6 +214,11 @@ def solve(label, solver_param_, dc_param, dc_flag,
         
         res_static,res_sigma,res_sigma_iw = dmft_step(
             w,iw,hyb_clic,h_imp_clic,U_imp_clic,clic_params)
+        
+        inv_C = corr_to_cf.conj().T
+        res_static = basis_change_h0(res_static,inv_C)
+        res_sigma = basis_change_h0(res_sigma, inv_C)
+        res_sigma_iw = basis_change_h0(res_sigma_iw, inv_C)
     
 
     # ------------------------------------------------------------------
