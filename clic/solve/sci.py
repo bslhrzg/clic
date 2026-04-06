@@ -98,22 +98,24 @@ def selective_ci(
     print("DEBUG: entering selective_ci()")
 
 
-    print("DEBUG HF : ")
+    #print("DEBUG HF : ")
     #hmf, es_final, Vs_final, rho = mfscf(h0, U, Nelec, maxiter=100, alpha=0.2, threshold=1e-7, spinsym_only=False)
-    hmf, es_hf, Vs_hf, rho_hf = mfscf_0(h0, U, Nelec, maxiter=100)
-    print("--------------------")
+    #hmf, es_hf, Vs_hf, rho_hf = mfscf_0(h0, U, Nelec, maxiter=100)
+    #print("--------------------")
     #h0,U = basis_change_h0_U(h0,U,Vs_final)
     #seed = get_rhf_determinant(Nelec,M)
 
 
     is_spin_sym = test_spin_sym(h0)
     print(f"DEBUG: is_spin_sym: {is_spin_sym}")
+    
+    if Nmul == -1 : Nmul = None
 
     t_start = time()
     basis0=seed
 
     print("DEBUG: constructing tables")
-    toltables = 1e-12
+    toltables = 1e-6
     tables = cc.build_hamiltonian_tables(h0,U,toltables)
     print("DEBUG: tables constructed")
 
@@ -136,7 +138,7 @@ def selective_ci(
     e0 = float(evals[0])
     #psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
     psi0 = cc.Wavefunction(M, basis0, 1/np.sqrt(dim0) * (np.sum(evecs,axis=1)))
-
+    psi0.normalize()
 
     if verbose:
         print(f"[init] dim={len(basis0)}  E0={e0:.12f}")
@@ -172,6 +174,7 @@ def selective_ci(
         #print(f"DEBUG, using cipsi with threshold {cipsi_thr}")
         selected_basis, Ept2, ranked = cipsi_select(ext, Hpsi_amp, e0, 2*M, h0, U,
                                             select_cutoff=cipsi_thr)
+        print(f"len(selected_basis) = {len(selected_basis)}, Nmul = {Nmul}")
         t4=time()
         #print(f"sel basis time = {t4-t3}")
 

@@ -101,10 +101,13 @@ class ClicVars:
             data = tomllib.load(f)
 
         return cls(**data)
-
+    
     def __str__(self):
+        excluded = {"ws", "iws"}
         lines = []
         for key, val in self.__dict__.items():
+            if key in excluded:
+                continue
             lines.append(f"{key:20s} : {val}")
         return "\n".join(lines)
 

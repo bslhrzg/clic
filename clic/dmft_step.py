@@ -50,13 +50,12 @@ def dmft_step(
         ci_type = "fci"
         num_roots = 14
         do_hia = True
+        print("----- GOING WITH HIA -----")
 
 
     clicvars.ci_type = ci_type
     clicvars.basis_prep_method = basis_prep_method
 
-    max_iter = rspt_clic_params["num_roots"]
-    clicvars.max_iter = max_iter
     
     conv_tol = rspt_clic_params["conv_tol"]
     clicvars.conv_tol = conv_tol
@@ -72,6 +71,7 @@ def dmft_step(
 
     L_lanczos = 150 
     clicvars.L_lanczos = L_lanczos
+    clicvars.eta = clicvars.eta_hyb
 
     NappH = rspt_clic_params["NappH"]
     clicvars.NappH = NappH
@@ -86,6 +86,8 @@ def dmft_step(
     for key in rspt_clic_params: 
         print(f"{key}: {rspt_clic_params[key]}")
 
+    print("CLICVARS : ")
+    clicvars.print()
     # ==============================================================================
     # 2. DEFINE THE MODEL
     # ==============================================================================
@@ -153,6 +155,12 @@ def dmft_step(
             i_omegas=iws, 
             bounds_e=bounds_e
         )
+
+        NF = np.shape(h0_0)[0]
+        M_spatial = NF // 2
+        iis = clicvars.imp_indices_spatial + [i+M_spatial for i in clicvars.imp_indices_spatial]
+        h0_0[np.ix_(iis,iis)] = h_imp
+        
         np.savetxt("h0_0_real.txt",h0_0.real)
         np.savetxt("h0_0_imag.txt",h0_0.imag)
 
@@ -175,29 +183,30 @@ def dmft_step(
             h0_0 = h_imp.copy()
             hyb_approx = None 
             hyb_approx_iw = None
-        if clicvars.freeze_bath: 
-            print("USING FROZEN BATH IF CAN BE FOUND")
-            h0_0_real = np.loadtxt("h0_0_real.txt")    
-            h0_0_imag = np.loadtxt("h0_0_imag.txt")    
-            h0_0 = h0_0_real + 1j*h0_0_imag
-            NF = np.shape(h0_0)[0]
-            M_spatial = NF // 2
-            iis = clicvars.imp_indices_spatial + [i+M_spatial for i in clicvars.imp_indices_spatial]
-            h0_0[np.ix_(iis,iis)] = h_imp
+        else : 
+            if clicvars.freeze_bath: 
+                print("USING FROZEN BATH IF CAN BE FOUND")
+                h0_0_real = np.loadtxt("h0_0_real.txt")    
+                h0_0_imag = np.loadtxt("h0_0_imag.txt")    
+                h0_0 = h0_0_real + 1j*h0_0_imag
+                NF = np.shape(h0_0)[0]
+                M_spatial = NF // 2
+                iis = clicvars.imp_indices_spatial + [i+M_spatial for i in clicvars.imp_indices_spatial]
+                h0_0[np.ix_(iis,iis)] = h_imp
 
-            norb = h_imp.shape[0]
-            ws2, hyb_app_imag = load_3d("imag-hyb_app", shape_2d=(norb, norb), output_dir=dirdump)
-            ws2, hyb_app_real = load_3d("real-hyb_app", shape_2d=(norb, norb), output_dir=dirdump)
-            hyb_approx = hyb_app_real + 1j * hyb_app_imag
+                norb = h_imp.shape[0]
+                ws2, hyb_app_imag = load_3d("imag-hyb_app", shape_2d=(norb, norb), output_dir=dirdump)
+                ws2, hyb_app_real = load_3d("real-hyb_app", shape_2d=(norb, norb), output_dir=dirdump)
+                hyb_approx = hyb_app_real + 1j * hyb_app_imag
 
-            iws2, hyb_app_mats_imag = load_3d("imag-hyb-mats_app", shape_2d=(norb, norb), output_dir=dirdump)
-            iws2, hyb_app_mats_real = load_3d("real-hyb-mats_app", shape_2d=(norb, norb), output_dir=dirdump)
-            hyb_approx_iw = hyb_app_mats_real + 1j * hyb_app_mats_imag
+                iws2, hyb_app_mats_imag = load_3d("imag-hyb-mats_app", shape_2d=(norb, norb), output_dir=dirdump)
+                iws2, hyb_app_mats_real = load_3d("real-hyb-mats_app", shape_2d=(norb, norb), output_dir=dirdump)
+                hyb_approx_iw = hyb_app_mats_real + 1j * hyb_app_mats_imag
 
-            hybdos = -np.trace(hyb, axis1=1, axis2=2).imag
-            hybappdos = -np.trace(hyb_approx,axis1=1, axis2=2).imag
+                hybdos = -np.trace(hyb, axis1=1, axis2=2).imag
+                hybappdos = -np.trace(hyb_approx,axis1=1, axis2=2).imag
 
-        dump(hybdos,ws,"imhyb_0_dos",output_dir=dirdump)
+            dump(hybdos,ws,"imhyb_0_dos",output_dir=dirdump)
 
 
     dump(np.real(hyb),ws,'real-hyb',output_dir=dirdump)
@@ -226,9 +235,7 @@ def dmft_step(
     U_0 = np.ascontiguousarray(U_0, dtype=np.complex128)
 
 
-    print(f"coucou, solve_fockspace")
     nelecs_resuls = solve_fockspace(h0_0,U_0,clicvars)
-    print(f"coucou, building states")
     thermal_gs, Ne_dict = build_state_list_and_ne_dict(nelecs_resuls)
     k_B_IN_RY_PER_K = 0.0000063336   # Ry/K 
     set_boltzmann_weights(thermal_gs, temperature, k_B_IN_RY_PER_K)
