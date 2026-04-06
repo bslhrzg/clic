@@ -152,7 +152,7 @@ def solve_fockspace(h0_0, U_0, clicvars):
         A dictionary {Nelec: sector_result}.
     """
 
-    print(f"coucou, here in solve_fockspace")
+    print(f"Entering solve_fockspace")
 
     def solve_single_nelec(nelec, cache):
         if nelec in cache:
@@ -180,6 +180,9 @@ def solve_fockspace(h0_0, U_0, clicvars):
                     f"INFO: 'auto' range. Estimated filling: "
                     f"{clicvars.Nelec_imp} (imp) + {nelec_bath} (bath) = {start}"
                 )
+                if clicvars.nelec_parity == 0 : 
+                    if start % 2 == 1 : 
+                        start += 1
                 return start
             else:
                 return int(clicvars.Nelec_imp)
@@ -202,7 +205,10 @@ def solve_fockspace(h0_0, U_0, clicvars):
         # Upward search
         nelec_curr = nelec_start
         while True:
-            nelec_next = nelec_curr + 1
+            if clicvars.nelec_parity == 0 :
+                nelec_next = nelec_curr + 2
+            else:
+                nelec_next = nelec_curr + 1
             if nelec_next > 2 * clicvars.M_spatial:
                 break
 

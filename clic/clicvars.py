@@ -38,13 +38,15 @@ class ClicVars:
         max_iter=3, # 
         conv_tol=1e-8, 
         prune_thr=1e-12,
-        Nmul=None, # 
+        Nmul=None, #
+
 
         # FOCK SPACE
         Nelec_imp=1, # how many electron do we expect in the impurity
         temperature=5.0, #  
         Nelec_target=None, # 
         nelec_range="auto",
+        nelec_parity=None,
 
         # GREEN FUNCTIONS
         ws=None,
@@ -86,7 +88,7 @@ class ClicVars:
         self.temperature = temperature
         self.Nelec_target = Nelec_target
         self.nelec_range = [] if nelec_range is None else nelec_range
-
+        self.nelec_parity = nelec_parity
         self.ws = np.array([]) if ws is None else np.array(ws)
         self.iws = np.array([]) if iws is None else np.array(iws)
         self.eta = eta
