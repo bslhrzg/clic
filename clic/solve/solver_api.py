@@ -226,7 +226,10 @@ def solve_fockspace(h0_0, U_0, clicvars):
         # Downward search
         nelec_curr = nelec_start
         while True:
-            nelec_next = nelec_curr - 1
+            if clicvars.nelec_parity == 0 :
+                nelec_next = nelec_curr - 2
+            else : 
+                nelec_next = nelec_curr - 1
             if nelec_next < 0:
                 break
 
