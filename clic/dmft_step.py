@@ -52,13 +52,19 @@ def dmft_step(
         clicvars.coeff_thresh = coeff_thresh
 
 
-
     clicvars.M_imp = h_imp.shape[0] // 2
     clicvars.imp_indices_spatial = [i for i in range(clicvars.M_imp)]
 
 
     clicvars.ws = ws 
     clicvars.iws = iws
+
+    if clicvars.spin_avg_sigma:
+        print("*"*42)
+        print(f"spin_avg_sigma = {clicvars.spin_avg_sigma}")
+        print("Spin averaging the problem")
+        h_imp = spin_average_one_particle(h_imp)
+        hyb = spin_average_one_particle(hyb)
 
     hybdos = -np.trace(hyb, axis1=1, axis2=2).imag
     dump(hybdos,ws,"imhyb_0_dos_test",output_dir=clicvars.dirdump)  
@@ -82,7 +88,6 @@ def dmft_step(
     else : 
         basis_prep_method = "none"
         ci_type = "fci"
-        num_roots = 14
         do_hia = True
         print("----- GOING WITH HIA -----")
 
