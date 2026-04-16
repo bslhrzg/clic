@@ -75,3 +75,23 @@ def get_sigma(inv_G0,inv_G):
     """
     return inv_G0 - inv_G
 
+
+
+
+def spin_average_one_particle(sigma_0):
+    sigma = sigma_0.copy()
+    NF = sigma.shape[-1]
+    M = NF // 2
+
+    up = sigma_0[..., :M, :M]
+    dn = sigma_0[..., M:, M:]
+    avg = 0.5 * (up + dn)
+
+    sigma[..., :M, :M] = avg
+    sigma[..., M:, M:] = avg
+
+    # enforce no spin mixing
+    sigma[..., :M, M:] = 0
+    sigma[..., M:, :M] = 0
+
+    return sigma

@@ -36,14 +36,14 @@ from clic.hybfit.hybfit import discretize_hyb
 from clic.io_clic.io_utils import dump, load_3d
 #from clic.results.postprocessing import StateAnalyzer
 
-#from clic.green.gfs import (
-#    green_function_block_lanczos_fixed_basis, 
-#    lanczos_time_evolution, 
-#    green_function_scalar_fixed_basis, 
-#    scalar_lanczos,
-#)
+from clic.green.gfs import (
+    green_function_block_lanczos_fixed_basis, 
+    lanczos_time_evolution, 
+    green_function_scalar_fixed_basis, 
+    scalar_lanczos,
+)
 
-#from clic.green.green_sym import *
+from clic.green.self_energy import spin_average_one_particle
 #from clic.green.green_utils import *
 
 from clic.io_clic.io_utils import *

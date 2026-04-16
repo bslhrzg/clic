@@ -5,19 +5,15 @@ import numpy.linalg as npl
 from clic.io_clic.io_utils import dump
 
 
-def cost_function(params, n_b, ws, target_delta, eta, weight_str, real_couplings=True):
+def cost_function(params, n_b, ws, target_delta, eta, weight_str):
     e = params[:n_b]
-    if real_couplings:
-        v = params[n_b:2*n_b]  # Purely real couplings
-    else:
-        v = params[n_b:2*n_b] + 1j * params[2*n_b:3*n_b]
+    v = params[n_b:2*n_b] + 1j * params[2*n_b:3*n_b]
     
     model_delta = hybridization_model(e, v, ws, eta)
     difference = target_delta - model_delta
     
     if weight_str == "const": weight = 1.0
     elif weight_str == "inv2": weight = 1.0 / (ws**2 + 1e-2)
-    elif weight_str == "inv" : weight = 1.0 / (np.abs(ws) + 1e-2)
     else: raise ValueError(f"Unknown weight: {weight_str}")
         
     return np.sum((weight * np.abs(difference))**2)
@@ -32,163 +28,92 @@ def lorentzian_convolution(ws, y, width):
         result[i] = np.trapezoid(y * kernel, ws)
     return result
 
-
 def scalar_fit(ws, hyb_scalar, 
             n_b,
             eta_0,
             weight_func = 'const',
             broadening_Gamma = 0.00,
-            bounds_e=None,
-            sym=False,
-            real_couplings=True):  
+            bounds_e=None):
         
-    hyb_scalar = np.asarray(hyb_scalar).squeeze()
-    if hyb_scalar.ndim != 1:
-        raise ValueError("hyb_scalar must be 1D")
 
-    if bounds_e is None:
-        bounds_e = [np.min(ws), np.max(ws)]
+        hyb_scalar = np.asarray(hyb_scalar).squeeze()
+        if hyb_scalar.ndim != 1:
+            raise ValueError("hyb_scalar must be 1D")
 
-    print("HybFitCost initialized:")
-    print(f"  Method: Global optimization (scalar only)")
-    print(f"  Number of target poles = {n_b}")
-    print(f"  Couplings restricted to real numbers = {real_couplings}")
-    if sym:
-        print("  Enforcing particle-hole symmetry around omega=0")
+        # Final results
+        eps_final = None
+        R_final = None
 
-    print("--- Fitting poles via Cost Minimization ---")
-    print(f"Using energy bounds for bath sites: [{bounds_e[0]:.2f}, {bounds_e[1]:.2f}]")
+        print("HybFitCost initialized:")
+        print(f"  Method: Global optimization (scalar only)")
+        print(f"  Number of target poles = {n_b}")
 
-    if broadening_Gamma > 0:
-        print(f"Applying Lorentzian broadening of width Gamma = {broadening_Gamma}")
-        target_delta = lorentzian_convolution(ws, hyb_scalar, broadening_Gamma)
-    else:
-        target_delta = hyb_scalar
-    
-    eta_fit = eta_0 + broadening_Gamma
-    print(f"Fit will be performed with effective broadening eta_fit = {eta_fit:.4f}, and weight function {weight_func}")
-    
-    opt_defaults = {'strategy': 'best1bin', 'maxiter': 1000, 'popsize': 15, 'tol': 1e-3, 'disp': False}
-    opt_settings = {**opt_defaults}
-    
-    if sym:
-        # For symmetric mode, optimize N_half positive poles, and optionally 1 zero pole
-        N_half = n_b // 2
-        has_zero = (n_b % 2 != 0)
-        e_max = max(abs(bounds_e[0]), abs(bounds_e[1]))
+        """
+        Execute the fitting by running the global optimization algorithm.
+        """
+
+        print("--- Fitting poles via Cost Minimization ---")
         
-        if real_couplings:
-            bounds_list = ([(0.0, e_max)] * N_half + [(-0.5, 0.5)] * N_half)
-            if has_zero: bounds_list += [(-0.5, 0.5)]
+        if bounds_e is None:
+            bounds_e = [np.min(ws), np.max(ws)]
+        print(f"Using energy bounds for bath sites: [{bounds_e[0]:.2f}, {bounds_e[1]:.2f}]")
 
-            def sym_cost(params):
-                e_half = params[:N_half]
-                v_half = params[N_half:2*N_half]
-                if has_zero:
-                    v_0 = params[-1:]
-                    e_full = np.concatenate([e_half, -e_half, [0.0]])
-                    v_full = np.concatenate([v_half, v_half, v_0])
-                else:
-                    e_full = np.concatenate([e_half, -e_half])
-                    v_full = np.concatenate([v_half, v_half])
-                
-                full_params = np.concatenate([e_full, v_full])
-                return cost_function(full_params, n_b, ws, target_delta, eta_fit, weight_func, real_couplings=True)
-
+        if broadening_Gamma > 0:
+            print(f"Applying Lorentzian broadening of width Gamma = {broadening_Gamma}")
+            target_delta = lorentzian_convolution(ws,hyb_scalar, broadening_Gamma)
         else:
-            bounds_list = ([(0.0, e_max)] * N_half + [(-0.5, 0.5)] * N_half + [(-0.5, 0.5)] * N_half)
-            if has_zero: bounds_list += [(-0.5, 0.5)] * 2
-                
-            def sym_cost(params):
-                e_half = params[:N_half]
-                idx = N_half
-                v_re_half = params[idx:idx+N_half]; idx += N_half
-                v_im_half = params[idx:idx+N_half]; idx += N_half
-                if has_zero:
-                    v_re_0 = params[idx:idx+1]
-                    v_im_0 = params[idx+1:idx+2]
-                    e_full = np.concatenate([e_half, -e_half, [0.0]])
-                    v_re_full = np.concatenate([v_re_half, v_re_half, v_re_0])
-                    v_im_full = np.concatenate([v_im_half, v_im_half, v_im_0])
-                else:
-                    e_full = np.concatenate([e_half, -e_half])
-                    v_re_full = np.concatenate([v_re_half, v_re_half])
-                    v_im_full = np.concatenate([v_im_half, v_im_half])
-                    
-                full_params = np.concatenate([e_full, v_re_full, v_im_full])
-                return cost_function(full_params, n_b, ws, target_delta, eta_fit, weight_func, real_couplings=False)
-            
-        print(f"Starting symmetric global optimization ({opt_settings['strategy']})...")
-        result = optimize.differential_evolution(sym_cost, bounds=bounds_list, **opt_settings)
+            target_delta = hyb_scalar
         
-        # Unpack optimal symmetric parameters
-        opt_params = result.x
-        e_half = opt_params[:N_half]
-        if real_couplings:
-            v_half = opt_params[N_half:2*N_half]
-            if has_zero:
-                v_0 = opt_params[-1:]
-                e = np.concatenate([e_half, -e_half, [0.0]])
-                v = np.concatenate([v_half, v_half, v_0])
-            else:
-                e = np.concatenate([e_half, -e_half])
-                v = np.concatenate([v_half, v_half])
-        else:
-            idx = N_half
-            v_re_half = opt_params[idx:idx+N_half]; idx += N_half
-            v_im_half = opt_params[idx:idx+N_half]; idx += N_half
-            if has_zero:
-                v_re_0 = opt_params[idx:idx+1]
-                v_im_0 = opt_params[idx+1:idx+2]
-                e = np.concatenate([e_half, -e_half, [0.0]])
-                v = np.concatenate([v_re_half, v_re_half, v_re_0]) + 1j * np.concatenate([v_im_half, v_im_half, v_im_0])
-            else:
-                e = np.concatenate([e_half, -e_half])
-                v = np.concatenate([v_re_half, v_re_half]) + 1j * np.concatenate([v_im_half, v_im_half])
+        eta_fit = eta_0 + broadening_Gamma
+        print(f"Fit will be performed with effective broadening eta_fit = {eta_fit:.4f}, and weight function {weight_func}")
+        
+        # Set optimizer defaults if not provided
+        opt_defaults = {'strategy': 'best1bin', 'maxiter': 1000, 'popsize': 15, 'tol': 1e-3, 'disp': False}
+        opt_settings = {**opt_defaults}
+        
+        bounds_list = ([(bounds_e[0], bounds_e[1])] * n_b +
+                       [(-0.1, 0.1)] * (2 * n_b))
 
-    else:
-        if real_couplings:
-            bounds_list = ([(bounds_e[0], bounds_e[1])] * n_b + [(-0.1, 0.1)] * n_b)
-        else:
-            bounds_list = ([(bounds_e[0], bounds_e[1])] * n_b + [(-0.1, 0.1)] * (2 * n_b))
+        #guess = np.random.normal(0.1,0.01,3*self.n_target_poles)
 
         print(f"Starting global optimization ({opt_settings['strategy']})...")
+
         result = optimize.differential_evolution(
-            cost_function, bounds=bounds_list,
-            args=(n_b, ws, target_delta, eta_fit, weight_func, real_couplings),
+            cost_function,
+            bounds=bounds_list,
+            args=(n_b, ws, target_delta, eta_fit, weight_func),
+            #x0 = guess,
             **opt_settings
         )
+
+        if result.success:
+            print(f"Optimization successful. Final cost (χ²): {result.fun:.6e}")
+        else:
+            print(f"WARNING: Optimization may not have converged. Final cost (χ²): {result.fun:.6e}")
         
+        # Unpack, sort, and store results
         opt_params = result.x
         e = opt_params[:n_b]
-        if real_couplings:
-            v = opt_params[n_b:2*n_b]
-        else:
-            v = opt_params[n_b:2*n_b] + 1j * opt_params[2*n_b:]
+        v = opt_params[n_b:2*n_b] + 1j * opt_params[2*n_b:]
+        
+        sort_idx = np.argsort(e)
+        eps_final = e[sort_idx]
+        v_final = v[sort_idx]
+        R_final = [np.array([[np.abs(vi)**2]]) for vi in v_final] # Store as standard residue matrix
+        
+        print("--- Cost Fit Done ---")
+        print("Final optimized poles:")
+        for i in range(len(eps_final)):
+            c = (np.abs(R_final[i][0,0]))
+            print(f"  pole {i}: e = {eps_final[i]:+.6f}, coupling |v|^2 = {c:.6f}")
 
-    if result.success:
-        print(f"Optimization successful. Final cost (χ²): {result.fun:.6e}")
-    else:
-        print(f"WARNING: Optimization may not have converged. Final cost (χ²): {result.fun:.6e}")
-    
-    # Sort out energies ascendingly for standard output
-    sort_idx = np.argsort(e)
-    eps_final = e[sort_idx]
-    v_final = v[sort_idx]
-    R_final = [np.array([[np.abs(vi)**2]]) for vi in v_final] 
-    
-    print("--- Cost Fit Done ---")
-    print("Final optimized poles:")
-    for i in range(len(eps_final)):
-        c = (np.abs(R_final[i][0,0]))
-        print(f"  pole {i}: e = {eps_final[i]:+.6f}, coupling |v|^2 = {c:.6f}")
-
-    return eps_final, R_final
+        return eps_final, R_final
 
 
 #######
 
 def residues_to_bath(eps, R_list, tol=1e-12):
+    """From pole energies eps and M×M residues R_list, build diagonal H_b and V (M×Nb)."""
     eps_out = []
     Vcols = []
     for e, R in zip(np.asarray(eps, float), R_list):
@@ -231,8 +156,23 @@ def discretize_hyb(
     verbose = False,
     i_omegas = None,
     sym = False,
-    real_couplings = True  #
 ):
+    """
+    Symmetry-aware fitting pipeline using HybFitCost on scalar blocks only.
+
+    Preconditions
+    -------------
+    Every non-equivalent leader block must be 1×1. If a leader block has size > 1,
+    this function raises a ValueError. Use your poles pipeline for non-scalar blocks.
+
+    Returns
+    -------
+    H_full : np.ndarray
+        Assembled Hamiltonian (Nimp+Nbath)×(Nimp+Nbath) with α first.
+    mapping : dict
+    """
+
+
     assert hyb.ndim == 3 and hyb.shape[1] == hyb.shape[2], "hyb must be (Nw, Nimp, Nimp)"
     assert himp.shape[0] == himp.shape[1] == hyb.shape[1], "himp must match hyb"
     
@@ -241,12 +181,12 @@ def discretize_hyb(
     M = Nimp // 2
     mid = Nw // 2
 
+    # 1) symmetry from reference one body
     Href = himp + hyb[mid]
     print(Href)
-    
-    sym_info = symmetries.analyze_symmetries(np.asarray(Href), tol=tol, verbose=verbose)
-    blocks = sym_info["blocks"]
-    identical_groups = sym_info["identical_groups"]
+    sym = symmetries.analyze_symmetries(np.asarray(Href), tol=tol, verbose=verbose)
+    blocks = sym["blocks"]
+    identical_groups = sym["identical_groups"]
 
     print(f"DEBUG: blocks = {blocks}")
     print(f"DEBUG: identical_groups = {identical_groups}")
@@ -269,25 +209,24 @@ def discretize_hyb(
         if verbose:
             print(f"\n[CostFit] Fitting leader block {leader} (orbital {i}) with {n_target_poles} poles.")
 
-        # Pass sym and real_couplings explicitly down to scalar_fit
         eps_poles, R_poles = scalar_fit(omega, hyb_blk, 
             n_target_poles,
             eta_0,
             weight_func = weight_func,
             broadening_Gamma = broadening_Gamma,
-            bounds_e=bounds_e,
-            sym=sym,
-            real_couplings=real_couplings)
+            bounds_e=bounds_e)
 
         # turn residues into bath; for scalar, this yields exactly one column per pole
         H_b, V_blk = residues_to_bath(eps_poles, R_poles)  # V_blk shape (1, Nb)
 
         leader_results[leader] = {
             "idx": idx,
+            # per-pole for analysis
             "eps_poles": np.asarray(eps_poles, float),
             "R_poles":   [np.asarray(R, np.complex128) for R in R_poles],
-            "eps_cols":  np.diag(H_b).copy(),       
-            "V":         V_blk.copy(),             
+            # per-column for assembly
+            "eps_cols":  np.diag(H_b).copy(),       # len == V_blk.shape[1]
+            "V":         V_blk.copy(),              # (1, Nb)
         }
 
     # 3) duplicate to all blocks and assemble V_full, H_b_full
@@ -295,6 +234,7 @@ def discretize_hyb(
     eps_all = []
     block_to_bath_cols = [[] for _ in range(len(blocks))]
 
+    # map any block to its leader
     leader_of_block = {}
     for group in identical_groups:
         L = group[0]
@@ -314,6 +254,7 @@ def discretize_hyb(
                 raise ValueError(f"Block {bidx}: eps_cols length {eps_block.shape[0]} vs V columns {Nb}")
 
         V_block_full = np.zeros((Nimp, Nb), dtype=np.complex128)
+        # place V on the single impurity index of this block
         V_block_full[idx[0], :] = res["V"][0, :]
 
         col_start = len(eps_all)
@@ -332,17 +273,21 @@ def discretize_hyb(
 
     for j in range(V_full.shape[1]):
         coupl = V_full[:, j]
+        # deterministic routing by coupling norms on α vs β
         norm_a = np.linalg.norm(coupl[:M])
         norm_b = np.linalg.norm(coupl[M:])
         if np.isclose(norm_a, norm_b, atol=1e-15):
+            # tie break to keep counts balanced
             (alpha_cols if len(alpha_cols) <= len(beta_cols) else beta_cols).append(j)
         elif norm_a > norm_b:
             alpha_cols.append(j)
         else:
             beta_cols.append(j)
 
+    # optional: enforce even dimension
     Nbath = V_full.shape[1]
     if enforce_even_total and ((Nimp + Nbath) % 2 == 1):
+        # drop globally smallest-weight column
         weights = np.sum(np.abs(V_full)**2, axis=0)
         drop_j = int(np.argmin(weights)) if Nbath > 0 else None
         if drop_j is not None:
@@ -351,6 +296,7 @@ def discretize_hyb(
             H_b_full = np.diag(np.asarray(eps_all, float)[keep])
             alpha_cols = [j for j in alpha_cols if j != drop_j]
             beta_cols  = [j for j in beta_cols  if j != drop_j]
+            # remap indices
             old_to_new = {}
             c = 0
             for j in range(Nbath):
@@ -381,7 +327,7 @@ def discretize_hyb(
     mapping = {
         "blocks": blocks,
         "identical_groups": identical_groups,
-        "leader_results": leader_results,             
+        "leader_results": leader_results,             # contains eps_poles, R_poles, eps_cols, V
         "block_to_bath_cols": block_to_bath_cols,
         "perm_full_to_spin_sorted": perm,
         "alpha_imp_idx": alpha_imp,
@@ -390,6 +336,8 @@ def discretize_hyb(
         "beta_bath_cols": beta_cols,
     }
 
+    # optional quick check at same eta as your input
+    # un-permute back to block form and compare Delta_fit vs input
     P = np.eye(H_full.shape[0], dtype=H_full.dtype)[perm]
     H0 = P.T @ H_full @ P
     Vchk = H0[:Nimp, Nimp:]
@@ -402,11 +350,10 @@ def discretize_hyb(
             Delta_mats_fit = delta_from_bath(i_omegas*1j, Hbck, Vchk, eta = 0)
         else:
             Delta_mats_fit = delta_from_bath(i_omegas, Hbck, Vchk, eta = 0)
-    else: 
+    else : 
         Delta_mats_fit = None
 
     return H_full, Delta_fit, hyb_app, mapping, Delta_mats_fit
-
 
 
 def delta_from_poles(z, eps, residues):
@@ -464,3 +411,34 @@ def create_dummy_delta(omega, n_poles, m_orb, e_range=(-1.0, 1.0), eta=0.01):
     delta = delta_from_poles(z, eps, R)
     return delta, eps, R
 
+
+
+if False:
+    ws = np.linspace(-5,5,301)
+
+    nimp = 2
+    nb = 3
+    eta=0.1
+    himp = np.diag([0,1])
+    hyb = np.zeros((len(ws),nimp,nimp),dtype=complex)
+    for i in range(nimp):
+        hyb_,eps,R = create_dummy_delta(ws,nb,1,eta=eta)
+        print(eps)
+        print(R)
+        hyb[:,i,i] = hyb_[:,0,0]
+
+
+
+    Hfull,delta_fit, mapping = discretize_hyb(
+        ws,
+        hyb,           # (Nw, Nimp, Nimp)
+        himp,          # (Nimp, Nimp)
+        nb,
+        eta
+    )
+
+    hybdos = -np.trace(hyb, axis1=1, axis2=2).imag
+    hybappdos = -np.trace(delta_fit,axis1=1, axis2=2).imag
+
+    dump(hybdos,ws,"hyb","./")
+    dump(hybappdos,ws,"hyb_app","./")

@@ -38,7 +38,7 @@ def get_double_chain_transform(h_spin, Nelec):
     #print(np.real(toto))
     # --- (ii) Natural Orbital Basis for the Bath ---
     e_mf, C_mf = eigh(h_mf)
-    rho_mf = C_mf[:, :Nelec] @ C_mf[:, :Nelec].T
+    rho_mf = C_mf[:, :Nelec] @ C_mf[:, :Nelec].conj().T
     rho_bath = rho_mf[1:, 1:]
     n_no, W = eigh(rho_bath)
     print(f"n_no = {n_no}")
@@ -59,7 +59,7 @@ def get_double_chain_transform(h_spin, Nelec):
     print("after bath no toto = ")
     print(np.real(toto))
     # --- (iii) Bonding/Anti-bonding Transformation ---
-    rho_no_basis = C1.T @ rho_mf @ C1
+    rho_no_basis = C1.conj().T @ rho_mf @ C1
     rho_ib = rho_no_basis[:2, :2]
     e_bond, U_bond = eigh(rho_ib)
     print(f"e_bond = {e_bond}")
@@ -73,7 +73,7 @@ def get_double_chain_transform(h_spin, Nelec):
     print(np.real(toto))
 
     # --- (iv) Lanczos Tridiagonalization (Chain Transformation) ---
-    h_decoupled = C_upto_decoupled.T @ h_mf @ C_upto_decoupled
+    h_decoupled = C_upto_decoupled.conj().T @ h_mf @ C_upto_decoupled
 
     num_filled = len(filled_indices)
     conduction_indices = [0] + list(range(2 + num_filled, M))
@@ -137,7 +137,7 @@ def get_double_chain_transform(h_spin, Nelec):
         C_total[:, v_chain_start_idx : v_chain_start_idx + len_v - 1] = C_to_chains[:, v_rest_indices_in_decoupled_basis]
 
     # --- Transform the Hamiltonian and correct for the mean-field shift ---
-    h_mf_final_basis = C_total.T @ h_mf @ C_total
+    h_mf_final_basis = C_total.conj().T @ h_mf @ C_total
     
     #mean_field_correction_term = np.zeros_like(h_spin)
     #mean_field_correction_term[0, 0] = u * 0.5
@@ -152,7 +152,7 @@ def get_double_chain_transform(h_spin, Nelec):
 # Multi-orbital 
 # ------------------------------------------------------------
 
-def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-8):
+def get_double_chain_transform_multi_(h, Nimp, Nelec, tol_occ=1e-2):
     """
     Multiorbital double-chain transform.
 
@@ -332,6 +332,161 @@ def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-8):
     return h_final, C_total, meta
 
 
+def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-2):
+    """
+    Multiorbital double-chain transform.
+
+    Steps
+      1) MF density from h
+      2) Rotate bath to NOs, split into active, filled, empty
+      3) Schmidt pairing between impurity and active bath (SVD)
+      4) Per-pair 2x2 rotation to get conduction and valence heads
+      5) Block Lanczos on conduction and valence halves
+      6) Restore the original impurity exactly
+
+    Returns
+      h_final, C_total, meta
+    """
+
+    M = h.shape[0]                                              # total one-body dimension
+    assert h.shape == (M, M) and 1 <= Nimp < M                  # sanity checks
+
+    # ---- small utilities ----
+    def classify_bath(rho_bb):
+        occ, W = eigh(rho_bb)                                   # bath density eigenbasis (NOs)
+        # split bath NOs by occupation: fractional = "active", ~1 = filled, ~0 = empty
+        filled = [i for i, n in enumerate(occ) if n > 1 - tol_occ]
+        empty  = [i for i, n in enumerate(occ) if n < tol_occ]
+        active = [i for i, n in enumerate(occ) if tol_occ <= n <= 1 - tol_occ]
+        return occ, W, active, filled, empty
+
+    def pad_with_unitary(Q, n):
+        m = Q.shape[1]                                          # Q is n×m with orthonormal columns
+        if m == n:                                              # already square/unitary in subspace
+            return Q
+        out = np.zeros((n, n), dtype=Q.dtype)                          
+        out[:, :m] = Q
+        
+        # Identify the orthogonal complement of Q to safely pad it to a unitary matrix
+        proj = np.eye(n, dtype=Q.dtype) - Q @ Q.conj().T
+        U, s, _ = svd(proj)
+        # SVD orders singular values descendingly. The orthogonal complement corresponds to singular value 1.0
+        out[:, m:] = U[:, :n-m]
+        return out
+    
+    # At the starting point, h can be in general dense
+    # ---- (1) MF density ----
+    es, vs = eigh(h)                                            # single-particle eigenpairs of h (Hermitian)
+    rho = vs[:, :Nelec] @ vs[:, :Nelec].conj().T                # ρ = Σ_{occ} |ψ⟩⟨ψ| (projector onto lowest Nelec)
+
+    # ---- (2) Bath NOs and deterministic order ----
+    occ_b, W, active_idx, filled_idx, empty_idx = classify_bath(rho[Nimp:, Nimp:])
+    na, nf, ne = len(active_idx), len(filled_idx), len(empty_idx)
+    assert na + nf + ne == M - Nimp                             # partition covers the bath
+
+    order_bath = active_idx + filled_idx + empty_idx            # fix an ordering: active first (to pair), then filled, empty
+    C1 = block_diag(np.eye(Nimp, dtype=h.dtype), W[:, order_bath])  # rotate only the bath by W (impurity untouched)
+    rho1 = C1.conj().T @ rho @ C1                               # transform density to bath-NO basis
+    h1   = C1.conj().T @ h   @ C1                               # transform Hamiltonian similarly
+
+    if na == 0:                                                 # no fractional bath states ⇒ nothing to pair or chain
+        return h1, C1, dict(r=0, na=0, nf=nf, ne=ne, order_bath=order_bath)
+
+    # ---- (3) Schmidt pairing on active block ----
+    a0 = Nimp                                                   # start index of bath in current basis
+    C = rho1[a0:a0+na, :Nimp]                                   # impurity–active-bath cross-block of ρ (na × Nimp)
+
+    # SVD gives matched impurity/bath Schmidt directions: C = Wa Σ Vimp†
+    # MUST use full_matrices=True to prevent dimensional mismatches in C2 when na != Nimp
+    Wa, svals, Vimp_dag = svd(C, full_matrices=True)            
+    Vimp = Vimp_dag.conj().T                                    # right singular vectors (impurity rotation)
+
+    r_svd = int(min(np.sum(svals > 1e-12), min(na, Nimp)))      # numerical rank capped by available pairs
+
+    # rotate impurity by Vimp and active bath by Wa; filled/empty bath unchanged
+    C2 = block_diag(Vimp, block_diag(Wa, np.eye(nf + ne, dtype=h.dtype)))
+    
+    rho2 = C2.conj().T @ rho1 @ C2
+    h2   = C2.conj().T @ h1   @ C2
+
+    # ---- (4) Per-pair 2×2 bonding/antibonding on the r_svd heads ----
+    Ub = np.eye(M, dtype=h.dtype)                               # accumulate pairwise 2×2 rotations
+    Ub_pairs = []                                                
+    for alpha in range(r_svd):
+        i_idx, a_idx = alpha, Nimp + alpha                      # indices of the impurity/bath Schmidt pair in current basis
+        rho2_pair = rho2[np.ix_([i_idx, a_idx], [i_idx, a_idx])]# 2×2 density restricted to that pair
+        evals, U2 = eigh(rho2_pair)                             # diagonalize ⇒ more/less occupied directions
+        U2 = U2[:, np.argsort(evals)[::-1]]                     # order so col 0 is the more filled ("valence-like")
+        Ub[np.ix_([i_idx, a_idx], [i_idx, a_idx])] = U2         # embed 2×2 into the big unitary
+        Ub_pairs.append(U2)
+
+    C3  = Ub                                                     # per-pair rotation unitary
+    rho3 = C3.conj().T @ rho2 @ C3                               # apply to ρ
+    h3   = C3.conj().T @ h2   @ C3                               # and to h
+
+    # ---- (5) Build halves and run block Lanczos ----
+    filled_block = list(range(Nimp + na, Nimp + na + nf))        # filled-bath tail of the valence half
+    empty_block  = list(range(Nimp + na + nf, M))                # empty-bath tail of the conduction half
+
+    valence_seeds    = [alpha for alpha in range(r_svd)]         # the "more filled" heads (col 0 of each pair)
+    conduction_seeds = [Nimp + alpha for alpha in range(r_svd)]  # the "less filled" heads
+
+    # leftover impurity directions (if Nimp > r_svd): send by diagonal occupation
+    for alpha in range(r_svd, Nimp):
+        if float(np.real(rho3[alpha, alpha])) > 0.5:
+            valence_seeds.append(alpha)                          # > 0.5 ⇒ valence half
+        else:
+            conduction_seeds.append(alpha)                       # ≤ 0.5 ⇒ conduction half
+
+    # leftover active bath directions (if na > r_svd): send by diagonal occupation 
+    for alpha in range(r_svd, na):
+        a_idx = Nimp + alpha
+        if float(np.real(rho3[a_idx, a_idx])) > 0.5:
+            valence_seeds.append(a_idx)                          
+        else:
+            conduction_seeds.append(a_idx)                       
+
+    val_indices  = valence_seeds + filled_block                  # full index list of valence half
+    cond_indices = conduction_seeds + empty_block                # full index list of conduction half
+
+    r_v, r_c = len(valence_seeds), len(conduction_seeds)         # initial block sizes for block Lanczos
+
+    Hv = h3[np.ix_(val_indices,  val_indices)]                   # project h to valence half
+    Hc = h3[np.ix_(cond_indices, cond_indices)]                  # project h to conduction half
+
+    # block Lanczos: returns block-tridiagonal factors (A,B) and the basis Q (orthonormal columns)
+    _, _, Qv, _ = clic.block_lanczos_matrix(Hv, r_v)                # Qv: valence chain basis (tall)
+    _, _, Qc, _ = clic.block_lanczos_matrix(Hc, r_c)                # Qc: conduction chain basis (tall)
+
+    Qv_embed = pad_with_unitary(Qv, len(val_indices))            # SAFELY embed each Q as a square unitary on its subspace
+    Qc_embed = pad_with_unitary(Qc, len(cond_indices))
+
+    C4 = np.eye(M, dtype=h.dtype)                                # assemble subspace unitaries
+    C4[np.ix_(val_indices,  val_indices )] = Qv_embed
+    C4[np.ix_(cond_indices, cond_indices)] = Qc_embed
+
+    C_total = C1 @ C2 @ C3 @ C4
+
+    # ---- (6) Exact restore of original impurity ----
+    # 6.a) Undo the Pairwise bonding/antibonding rotation 
+    C_total =  C_total @ C3.conj().T
+    
+    # 6.b) Undo the inner impurity Schmidt rotation invoked natively by the C2 process 
+    C_restore_imp = block_diag(Vimp_dag, np.eye(M - Nimp, dtype=h.dtype))
+    C_total = C_total @ C_restore_imp
+
+    h_final = C_total.conj().T @ h @ C_total                    # final Hamiltonian in double-chain basis (impurity restored)
+
+    meta = dict(                                                # bookkeeping for diagnostics/restarts
+        r=r_svd, na=na, nf=nf, ne=ne,
+        order_bath=order_bath,
+        conduction_seeds=conduction_seeds,
+        valence_seeds=valence_seeds,
+        cond_indices=cond_indices,
+        val_indices=val_indices
+    )
+    return h_final, C_total, meta
+
 # ------------------------------------------------------------
 # Block - Sym 
 # ------------------------------------------------------------
@@ -476,8 +631,12 @@ def double_chain_by_blocks(
     )
 
     ef,_ = np.linalg.eigh(h_final)
-    are_eige_equals = np.sum(np.abs(ef-e0)) < 1e-12
-    is_unitary = np.allclose(C_total @ C_total.T.conj(), np.eye(C_total.shape[0]))
+    #are_eige_equals = np.sum(np.abs(ef-e0)) < 1e-12
+    are_eige_equals = np.allclose(ef, e0, rtol=1e-10, atol=1e-12)
+    is_unitary = np.allclose(C_total @ C_total.conj().T, np.eye(C_total.shape[0]), rtol=1e-10, atol=1e-12)
+    if not  are_eige_equals : 
+        print(ef)
+        print(e0)
     assert are_eige_equals
     assert is_unitary
     print("is_unitary ok, are eige equals ok, in dbl chain transform")

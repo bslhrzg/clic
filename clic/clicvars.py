@@ -56,6 +56,9 @@ class ClicVars:
         L_lanczos=100,
         NappH=1,
         coeff_thresh=1e-12,
+        spin_avg_sigma = False,
+        #IO 
+        dirdump = "dump"
     ):
         
         self.M_spatial = M_spatial
@@ -96,6 +99,9 @@ class ClicVars:
         self.L_lanczos = L_lanczos
         self.NappH = NappH
         self.coeff_thresh = coeff_thresh
+        self.spin_avg_sigma = spin_avg_sigma
+        
+        self.dirdump = dirdump
 
     @classmethod
     def from_toml(cls, filename):
