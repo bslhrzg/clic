@@ -11,7 +11,7 @@ applyH=False
 dodavidson=False
 
 
-def do_fci(h0,U,M,Nelec,num_roots=1,Sz=None,verbose=True):
+def do_fci(h0,U,C,M,Nelec,num_roots=1,Sz=None,verbose=True):
 
     basis = basis_Np.get_fci_basis(M, Nelec)
 
@@ -42,7 +42,7 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=None,verbose=True):
     vprint(1,f"time to construct H : {t1-t0}")
     
     #eigvals, eigvecs = eigsh(H_sparse, k=num_roots, which='SA')
-    eigvals,eigvecs = diagH(H_sparse, num_roots, option="davidson")
+    eigvals,eigvecs = diagH(H_sparse, num_roots, option="arpack")
     #num_roots = np.min(num_roots,len(eigvals))
     #t2 = time()
     #vprint(1,f"time to diagonalize H : {t2-t1}")
@@ -57,7 +57,7 @@ def do_fci(h0,U,M,Nelec,num_roots=1,Sz=None,verbose=True):
             "Nelec": Nelec,
             "energies": eigvals,
             "wavefunctions": psis,
-            "C": None,                 # or None
+            "C": C,                 # or None
             "basis": basis,         # only if needed by your wf object
             }
     return fci_res

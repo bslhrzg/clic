@@ -20,6 +20,7 @@ class ClicVars:
         imp_indices_spinfull = None,
 
         # HYBRIDIZATION FIT
+        fit_type = "cost",
         nb_fit=1, # how many states used to fit the hybridization per correlated orbital
         warp_kind="const", # do we emphasize low energy of not
         nb=1, # how many states actually kepts per corr. orbital 
@@ -68,6 +69,7 @@ class ClicVars:
         self.imp_indices_spatial = imp_indices_spatial
         self.imp_indices_spinfull = imp_indices_spinfull
 
+        self.fit_type = fit_type
         self.nb_fit = nb_fit
         self.warp_kind = warp_kind
         self.nb = nb

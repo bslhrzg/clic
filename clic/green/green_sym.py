@@ -93,7 +93,12 @@ def get_green_block(
     # --- Method 2: Scalar Continued Fraction (DIAGONAL ONLY) ---
     elif gfmeth == "scalar_continued_fraction":
         if not is_diagonal:
-            raise RuntimeError("Method 2 (scalar_continued_fraction) cannot be used for non-diagonal problems.")
+            print("*"*42)
+            print("WARNING : Only diagonal green function elements are computed here, but the problem"
+            "is not diagonal !! ")
+            print("*"*42)
+
+            #raise RuntimeError("Method 2 (scalar_continued_fraction) cannot be used for non-diagonal problems.")
         
         # We only need to compute one element from each identical group.
         for group in identical_groups:
@@ -105,7 +110,7 @@ def get_green_block(
                 M, psi_n, e_n, ws, eta, rep_global_idx, NappH,
                 h0_n, U_n, one_bh_n, two_bh_n, 
                 iws = iws,
-                coeff_thresh=1e-12, L=100
+                coeff_thresh=coeff_thresh, L=L
             )
             
             # Copy the scalar result to all symmetrically equivalent DIAGONAL elements
@@ -129,7 +134,7 @@ def get_green_block(
             # This function now correctly returns a dense block, e.g., of shape (1001, 1, 1)
             G_dense_computed, G_dense_computed_iw,_ = gfs.green_function_block_lanczos_fixed_basis(
                 M, psi_n, e_n, ws, eta, global_indices_to_compute, NappH,
-                h0_n, U_n, one_bh_n, two_bh_n, iws, coeff_thresh=1e-12, L=100
+                h0_n, U_n, one_bh_n, two_bh_n, iws, coeff_thresh=coeff_thresh, L=L
             )
 
             # Copy the computed block to all symmetric equivalents

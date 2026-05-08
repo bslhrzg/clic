@@ -111,7 +111,7 @@ def solve_sector(h0_0,U_0,Nelec,clicvars):
 
     if clicvars.ci_type == "fci":
         result = fci.do_fci(
-            h0=h0, U=U, M=clicvars.M_spatial, 
+            h0=h0, U=U, C=C, M=clicvars.M_spatial, 
             Nelec=Nelec, num_roots=clicvars.num_roots, Sz=None, verbose=True
         )
 

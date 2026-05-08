@@ -66,7 +66,7 @@ def davidson(
     verbose=False,
 ):
     """
-    Block Davidson for Hermitian A with fast block orth and SpMM-friendly kernels.
+    Block Davidson for Hermitian A.
     Returns (eigvals, eigvecs) with eigvecs as columns.
     """
     LA = _build_linear_operator(A)

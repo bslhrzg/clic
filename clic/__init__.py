@@ -31,7 +31,7 @@ from clic.ops.ops import get_one_body_terms,get_two_body_terms, one_rdm, get_n_i
 
 
 
-from clic.hybfit.hybfit import discretize_hyb
+from clic.hybfit.hybfit import discretize_hyb, discretize_hyb_poles
 
 from clic.io_clic.io_utils import dump, load_3d
 #from clic.results.postprocessing import StateAnalyzer
@@ -41,6 +41,9 @@ from clic.green.gfs import (
     lanczos_time_evolution, 
     green_function_scalar_fixed_basis, 
     scalar_lanczos,
+    build_sector_basis_from_seeds,
+    build_H_in_basis,
+    wf_to_vec
 )
 
 from clic.green.self_energy import spin_average_one_particle
@@ -48,5 +51,6 @@ from clic.green.self_energy import spin_average_one_particle
 
 from clic.io_clic.io_utils import *
 
+from .clicvars import *
 
 from .dmft_step import dmft_step

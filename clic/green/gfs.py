@@ -8,6 +8,7 @@ from numpy.linalg import norm
 from .green_utils import *
 from ..lanczos.block_lanczos import * 
 from ..lanczos.scalar_lanczos import *
+from ..basis.basis_Np import get_fci_basis
 
 # -----------------------------
 # Continued fraction for top-left block
@@ -536,7 +537,8 @@ def green_function_scalar_fixed_basis(
     M, psi0_wf, e0, ws, eta, i, NappH,
     h0_clean, U_clean, one_body_terms, two_body_terms,
     iws = None, 
-    coeff_thresh=1e-12, L=100, reorth=False
+    coeff_thresh=1e-12, L=100, reorth=False, 
+    do_fci = False,
 ):
     """
     Compute the single-diagonal element G_ii(ω) using a specialized fixed-basis
@@ -565,7 +567,14 @@ def green_function_scalar_fixed_basis(
     # --- Addition (Particle) Sector ---
     have_g = False
     if wf_add.data():
-        basis_add = build_sector_basis_from_seeds([wf_add], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+        if not do_fci:
+            basis_add = build_sector_basis_from_seeds([wf_add], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+        else : 
+            b0 = wf_add.get_basis()[0]
+            occ = b0.get_occupied_spin_orbitals()
+            nelec_add = len(occ)
+            basis_add = get_fci_basis(M, nelec_add)
+
         if len(basis_add) > 0:
             print(f"DEBUG: len(basis_add) = {len(basis_add)}")
             H_add = build_H_in_basis(basis_add, h0_clean, U_clean)
@@ -590,7 +599,14 @@ def green_function_scalar_fixed_basis(
     # --- Removal (Hole) Sector ---
     have_l = False
     if wf_rem.data():
-        basis_rem = build_sector_basis_from_seeds([wf_rem], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+        if not do_fci:
+            basis_rem = build_sector_basis_from_seeds([wf_rem], one_body_terms, two_body_terms, NappH, coeff_thresh=coeff_thresh)
+        else : 
+            b0 = wf_rem.get_basis()[0]
+            occ = b0.get_occupied_spin_orbitals()
+            nelec_rem = len(occ)       
+            print(f"nelec_rem = {nelec_rem}")     
+            basis_rem = get_fci_basis(M, nelec_rem)
         if len(basis_rem) > 0:
             print(f"DEBUG: len(basis_rem) = {len(basis_rem)}")
             H_rem = build_H_in_basis(basis_rem, h0_clean, U_clean)

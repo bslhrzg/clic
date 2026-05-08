@@ -65,10 +65,11 @@ def test_h2o_iterative_ci():
     h_core, ee_mo, Enuc, M = load_spatial_integrals("my_data.hdf5")
     
     print("\nConverting spatial integrals to spin-orbital form (AlphaFirst)...")
-    h0 = double_h(h_core, M)
+    h0 = double_h(h_core , M)
     # Since C++ code and Julia code use same formula, and Julia uses physicist notation,
     # we just need to spin-adapt the physicist's notation integrals.
-    U_phys = umo2so(ee_mo, M)
+    U_phys = umo2so(ee_mo  , M)
+
     
     h0_clean = np.ascontiguousarray(h0, dtype=np.complex128)
     U_clean = np.ascontiguousarray(U_phys, dtype=np.complex128)
@@ -93,19 +94,30 @@ def test_h2o_iterative_ci():
         "CISDTQ": -76.12236,
     }
 
+
+    toltables = 1e-6
+    tables = cc.build_hamiltonian_tables(h0_clean,U_clean,toltables)
+
     # --- Iteration Loop ---
     current_basis = sorted([hf_det])
-    
+    eigvecs = np.array([1]).reshape(1,-1)
     for level in ["HF", "CISD", "CISDT", "CISDTQ"]:
         print(f"\n--- Calculating {level} Energy ---")
         
         if level != "HF":
             print(f"Expanding basis from {len(current_basis)} determinants...")
             t_start = time.time()
-            connected_by_H1 = cc.get_connections_one_body(current_basis, one_body_terms)
-            connected_by_H2 = cc.get_connections_two_body(current_basis, two_body_terms)
+            #wf = cc.Wavefunction(M, current_basis, eigvecs[:,0], keep_zeros=False)
+            wf.prune(1e-8)
+            #connected_by_H1 = cc.get_connections_one_body(current_basis, one_body_terms)
+            #connected_by_H2 = cc.get_connections_two_body(current_basis, two_body_terms)
             
-            new_basis_set = set(current_basis) | set(connected_by_H1) | set(connected_by_H2)
+            thr=1e-5
+            Hpsi = cc.apply_hamiltonian(wf, tables, h0_clean, U_clean, thr) # tol_element=0
+            # Extract amplitudes on determinants not in the current wf support
+            new_basis_set = Hpsi.get_basis()
+
+            new_basis_set = set(current_basis) | set(new_basis_set) 
             current_basis = sorted(list(new_basis_set))
             t_end = time.time()
             print(f"  New basis size = {len(current_basis)} (generated in {t_end - t_start:.2f}s)")
@@ -122,7 +134,7 @@ def test_h2o_iterative_ci():
         if len(current_basis) == 1:
             electronic_gs_energy = H_sparse[0, 0]
         else:
-            eigvals, _ = eigsh(H_sparse, k=1, which='SA')
+            eigvals, eigvecs = eigsh(H_sparse, k=1, which='SA')
             electronic_gs_energy = eigvals[0]
         total_gs_energy = electronic_gs_energy + Enuc
         t_end = time.time()

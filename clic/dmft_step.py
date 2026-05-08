@@ -64,6 +64,8 @@ def dmft_step(
         print(f"spin_avg_sigma = {clicvars.spin_avg_sigma}")
         print("Spin averaging the problem")
         h_imp = spin_average_one_particle(h_imp)
+        print("h_imp real = ")
+        print(h_imp.real)
         hyb = spin_average_one_particle(hyb)
 
     hybdos = -np.trace(hyb, axis1=1, axis2=2).imag
@@ -82,6 +84,7 @@ def dmft_step(
             basis_prep_method = "dbl_chain" # or "dbl_chain"
         else : 
             basis_prep_method = "none"
+        
         ci_type = "sci" # or "fci"
         
         do_hia = False
@@ -92,13 +95,13 @@ def dmft_step(
         print("----- GOING WITH HIA -----")
 
 
-    clicvars.ci_type = ci_type
+    #clicvars.ci_type = ci_type
     clicvars.basis_prep_method = basis_prep_method
 
     
 
-    prune_thr = 1e-12
-    clicvars.prune_thr = prune_thr
+    #prune_thr = 1e-12
+    #clicvars.prune_thr = prune_thr
 
 
 
@@ -123,21 +126,21 @@ def dmft_step(
         ################################################
         # Windowing the hybridization 
         # 
-        def windowing_hyb(hyb, width, position):
+        def windowing_hyb(hyb_0, width, position, sharp_cut=False):
             print("----------------------------------")
             print(f"APPLYING WINDOW ON HYB WITH WIDTH {width} AT {position}")
-            def gpd(mu,sigma,x):
-                C = 1 /(sigma * np.sqrt(2*np.pi))
-                return C * np.exp(-0.5*(x-mu)**2 / (sigma**2))
-            n_orb = hyb.shape[1]
-            for i in range(n_orb):
-                for j in range(n_orb):
-                    hyb[:,i,j] *= gpd(position,width,ws)
-            
+            hyb = hyb_0.copy()
+
+            if sharp_cut:
+                w = (np.abs(ws - position) <= width/2).astype(float)
+            else:
+                w = np.exp(-0.5 * ((ws - position) / width)**2)   # peak = 1
+
+            hyb *= w[:, None, None]
             return hyb 
         
-        #if clicvars.windowing:
-        #    hyb = windowing_hyb(hyb,clicvars.window_width,clicvars.window_pos)
+        if clicvars.windowing:
+            hyb = windowing_hyb(hyb,clicvars.window_width,clicvars.window_pos)
         ##################################################
 
 
@@ -170,17 +173,30 @@ def dmft_step(
         else : 
             bounds_e = None
             
-        h0_0,delta_fit, hyb_approx, mapping, hyb_approx_iw = discretize_hyb(
-            clicvars.ws,
-            hyb_to_fit,           # (Nw, Nimp, Nimp)
-            h_imp_to_fit,          # (Nimp, Nimp)
-            clicvars.nb,
-            clicvars.eta_hyb, 
-            weight_func=clicvars.warp_kind,
-            broadening_Gamma=clicvars.eta_broad,
-            i_omegas=iws, 
-            bounds_e=bounds_e
-        )
+        if clicvars.fit_type == "poles":
+            h0_0,delta_fit, hyb_approx, mapping, hyb_approx_iw = discretize_hyb_poles(
+                clicvars.ws,
+                hyb_to_fit,           # (Nw, Nimp, Nimp)
+                h_imp_to_fit,          # (Nimp, Nimp)
+                clicvars.nb,
+                clicvars.eta_hyb, 
+                weight_func=clicvars.warp_kind,
+                broadening_Gamma=clicvars.eta_broad,
+                i_omegas=iws, 
+                bounds_e=bounds_e
+            )
+        elif clicvars.fit_type == "cost":
+            h0_0,delta_fit, hyb_approx, mapping, hyb_approx_iw = discretize_hyb(
+                clicvars.ws,
+                hyb_to_fit,           # (Nw, Nimp, Nimp)
+                h_imp_to_fit,          # (Nimp, Nimp)
+                clicvars.nb,
+                clicvars.eta_hyb, 
+                weight_func=clicvars.warp_kind,
+                broadening_Gamma=clicvars.eta_broad,
+                i_omegas=iws, 
+                bounds_e=bounds_e
+            )
 
         NF = np.shape(h0_0)[0]
         M_spatial = NF // 2
@@ -238,6 +254,7 @@ def dmft_step(
     dump(np.real(hyb),ws,'real-hyb',output_dir=clicvars.dirdump)
     dump(np.imag(hyb),ws,'imag-hyb',output_dir=clicvars.dirdump)
 
+
     # ==============================================================================
     # 3. RUN THE SOLVER
     # ==============================================================================
@@ -261,6 +278,7 @@ def dmft_step(
     U_0 = np.ascontiguousarray(U_0, dtype=np.complex128)
 
 
+    print(f"DEBUG: NF = {NF}, h0_0.shape = {h0_0.shape}")
     nelecs_resuls = solve_fockspace(h0_0,U_0,clicvars)
     thermal_gs, Ne_dict = build_state_list_and_ne_dict(nelecs_resuls)
     k_B_IN_RY_PER_K = 0.0000063336   # Ry/K 

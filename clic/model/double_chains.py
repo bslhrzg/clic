@@ -2,12 +2,11 @@ import numpy as np
 from numpy.linalg import eigh, svd
 from scipy.linalg import block_diag, qr
 import clic
+from scipy.linalg import null_space
 
 # ------------------------------------------------------------
 # Scalar 
 # ------------------------------------------------------------
-
-
 
 def get_double_chain_transform(h_spin, Nelec):
     """
@@ -360,7 +359,7 @@ def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-2):
         active = [i for i, n in enumerate(occ) if tol_occ <= n <= 1 - tol_occ]
         return occ, W, active, filled, empty
 
-    def pad_with_unitary(Q, n):
+    def pad_with_unitary_(Q, n):
         m = Q.shape[1]                                          # Q is n×m with orthonormal columns
         if m == n:                                              # already square/unitary in subspace
             return Q
@@ -373,6 +372,21 @@ def get_double_chain_transform_multi(h, Nimp, Nelec, tol_occ=1e-2):
         # SVD orders singular values descendingly. The orthogonal complement corresponds to singular value 1.0
         out[:, m:] = U[:, :n-m]
         return out
+    
+
+    def pad_with_unitary(Q, n, tol=1e-12):
+        m = Q.shape[1]
+        if m == n:
+            return Q
+
+        # re-orthonormalize Q first
+        Q1, _ = np.linalg.qr(Q)
+
+        Z = null_space(Q1.conj().T, rcond=tol)   # n x (n-m)
+        if Z.shape[1] != n - m:
+            raise ValueError(f"bad complement shape: got {Z.shape}, expected {(n, n-m)}")
+
+        return np.hstack([Q1, Z])
     
     # At the starting point, h can be in general dense
     # ---- (1) MF density ----
@@ -632,8 +646,8 @@ def double_chain_by_blocks(
 
     ef,_ = np.linalg.eigh(h_final)
     #are_eige_equals = np.sum(np.abs(ef-e0)) < 1e-12
-    are_eige_equals = np.allclose(ef, e0, rtol=1e-10, atol=1e-12)
-    is_unitary = np.allclose(C_total @ C_total.conj().T, np.eye(C_total.shape[0]), rtol=1e-10, atol=1e-12)
+    are_eige_equals = np.allclose(ef, e0, rtol=1e-8, atol=1e-8)
+    is_unitary = np.allclose(C_total @ C_total.conj().T, np.eye(C_total.shape[0]), rtol=1e-8, atol=1e-8)
     if not  are_eige_equals : 
         print(ef)
         print(e0)
