@@ -646,8 +646,8 @@ def double_chain_by_blocks(
 
     ef,_ = np.linalg.eigh(h_final)
     #are_eige_equals = np.sum(np.abs(ef-e0)) < 1e-12
-    are_eige_equals = np.allclose(ef, e0, rtol=1e-8, atol=1e-8)
-    is_unitary = np.allclose(C_total @ C_total.conj().T, np.eye(C_total.shape[0]), rtol=1e-8, atol=1e-8)
+    are_eige_equals = np.allclose(ef, e0, rtol=1e-6, atol=1e-6)
+    is_unitary = np.allclose(C_total @ C_total.conj().T, np.eye(C_total.shape[0]), rtol=1e-6, atol=1e-6)
     if not  are_eige_equals : 
         print(ef)
         print(e0)

@@ -102,7 +102,7 @@ def get_one_body_terms(h0, M, thr=1e-12):
                 terms.append((orb_i, orb_j, spin_i, spin_j, complex(h0[i, j])))
     return terms
 
-def get_two_body_terms(U, M, thr=1e-12):
+def get_two_body_terms_(U, M, thr=1e-12):
     """
     The non-zeros (above threshold) elements of the two-body hamiltonian
     Args:
@@ -124,6 +124,49 @@ def get_two_body_terms(U, M, thr=1e-12):
                         terms.append((orbs[0], orbs[1], orbs[2], orbs[3],
                                       spins[0], spins[1], spins[2], spins[3],
                                       complex(U[i, j, k, l])))
+    return terms
+
+def get_one_body_terms(h0, M, thr=1e-12):
+    nz = np.argwhere(np.abs(h0) > thr)
+
+    terms = []
+    for i, j in nz:
+        spin_i = cc.Spin.Alpha if i < M else cc.Spin.Beta
+        spin_j = cc.Spin.Alpha if j < M else cc.Spin.Beta
+
+        terms.append((
+            int(i % M),
+            int(j % M),
+            spin_i,
+            spin_j,
+            complex(h0[i, j]),
+        ))
+
+    return terms
+
+def get_two_body_terms(U, M, thr=1e-12):
+    idx = np.argwhere(np.abs(U) > thr)
+
+    terms = []
+    for i, j, k, l in idx:
+        inds = np.array([i, j, k, l])
+
+        spins = [
+            cc.Spin.Alpha if x < M else cc.Spin.Beta
+            for x in inds
+        ]
+
+        orbs = [
+            int(x if x < M else x - M)
+            for x in inds
+        ]
+
+        terms.append((
+            orbs[0], orbs[1], orbs[2], orbs[3],
+            spins[0], spins[1], spins[2], spins[3],
+            complex(U[i, j, k, l])
+        ))
+
     return terms
 
 def expect_Sz_from_rdm(rdm, M, block):

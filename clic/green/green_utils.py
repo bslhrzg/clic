@@ -1,5 +1,4 @@
 # green_utils.py
-
 import numpy as np
 import clic_clib as cc
 import scipy.sparse as sp
@@ -84,7 +83,7 @@ def build_sector_basis_from_seeds(seeds_wf, one_body_terms, two_body_terms, Napp
 # Hamiltonian restricted to a fixed determinant basis
 # -----------------------------
 
-def build_H_in_basis(basis_dets, h0_clean, U_clean):
+def build_H_in_basis(basis_dets, h0_clean, U_clean, tables=None):
     """
     Use your fast OpenMP builder on the restricted basis.
     Returns a scipy.spmatrix (CSR).
@@ -92,6 +91,46 @@ def build_H_in_basis(basis_dets, h0_clean, U_clean):
     if len(basis_dets) == 0:
         return sp.csr_matrix((0,0), dtype=np.complex128)
     #H = cc.build_hamiltonian_openmp(basis_dets, h0_clean, U_clean)
-    H = get_ham(basis_dets,h0_clean,U_clean)
+    H = get_ham(basis_dets,h0_clean,U_clean, tables=tables)
 
     return H
+
+
+
+def occupation_from_green(ws, G_imp, beta=np.inf, mu=0.0):
+    """
+    Occupation from real-axis retarded Green function.
+
+    ws    : frequency mesh
+    G_imp : shape (Nw, Norb, Norb)
+    beta  : inverse temperature. 
+    mu    : chemical potential, 0 if ws is already omega-EF.
+
+    Returns:
+        n_orb  : occupation per spin-orbital
+        n_tot  : total occupation
+    """
+    ws = np.asarray(ws)
+    G_imp = np.asarray(G_imp)
+
+    A_diag = -np.imag(np.diagonal(G_imp, axis1=1, axis2=2)) / np.pi
+
+    if beta == np.inf:
+        f = (ws <= mu).astype(float)
+    else:
+        x = beta * (ws - mu)
+        f = np.empty_like(x, dtype=float)
+        f[x > 50] = 0.0
+        f[x < -50] = 1.0
+        mask = (x >= -50) & (x <= 50)
+        f[mask] = 1.0 / (np.exp(x[mask]) + 1.0)
+
+    n_orb = np.trapezoid(A_diag * f[:, None], ws, axis=0)
+    n_tot = np.sum(n_orb)
+
+    return n_orb, n_tot
+
+
+def wf_norm_sq(wf):
+    return sum(abs(c)**2 for c in wf.data().values())
+

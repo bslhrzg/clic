@@ -39,6 +39,7 @@ def selective_ci(
     min_size=513,
     max_size=1e5,
     verbose=True,
+    U_nz_ind = None,
 ):
     """
     Generic selective-CI driver.
@@ -95,7 +96,8 @@ def selective_ci(
     Note: called with generator=cipsi_one_iter, max_iter=1, Nmul=None, this is CISD
     """
 
-    print("DEBUG: entering selective_ci()")
+    print("DEBUG: entering selective_ci() with ")
+    print(f"Nmul = {Nmul}, prune_thr = {prune_thr} ")
 
 
     #print("DEBUG HF : ")
@@ -115,8 +117,12 @@ def selective_ci(
     basis0=seed
 
     print("DEBUG: constructing tables")
-    toltables = 1e-6
-    tables = cc.build_hamiltonian_tables(h0,U,toltables)
+    toltables = 1e-6 
+    #idx = np.argwhere(np.abs(U) > toltables)
+    #orbs = np.unique(idx)
+    #print(f"DEBUG : non zero U orbs = {orbs}")
+    #imp_ind = [0,M]
+    tables = cc.build_hamiltonian_tables(h0,U,toltables,U_nz_ind)
     print("DEBUG: tables constructed")
 
 
@@ -261,6 +267,7 @@ def selective_ci(
             #psi0 = cc.Wavefunction(M, basis0, 1/np.sqrt(2) * (evecs[:, 0] + evecs[:, 1] + evecs[:, 0]))
         else :
             psi0 = cc.Wavefunction(M, basis0, evecs[:, 0])
+
         psi0.prune(prune_thr)
         psi0.normalize()
 

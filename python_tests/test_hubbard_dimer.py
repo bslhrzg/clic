@@ -46,6 +46,25 @@ def test_hubbard_comparison():
 
     V = create_hubbard_V(M, U)
 
+    toto = 1
+    K = 2 * M
+    V = np.zeros((K, K, K, K), dtype=np.complex128)
+    #for i in range(M):
+    #    alpha_i = i
+    #    beta_i  = i + M
+    #    V[alpha_i, beta_i, alpha_i, beta_i] = 2.0 * U
+    V[0,2,0,2] = toto*U # 1up,1down --> 1up,1down
+    V[0,2,2,0] = -toto*U 
+    V[2,0,0,2] = -toto*U 
+    V[2,0,2,0] = -toto*U 
+
+    V[1,3,1,3] = toto*U # 2up,2down --> 2up,2down
+    V[3,1,1,3] = -toto*U 
+    V[1,3,3,1] = -toto*U 
+    V[3,1,3,1] = -toto*U
+
+    V = np.ascontiguousarray(V, dtype=np.complex128)
+
     print("\nBuilding Hamiltonian with Slater-Condon rules...")
     H_openmp = build_hamiltonian_openmp(basis, H1, V)
     eigvals_openmp, _ = eigh(H_openmp.toarray())

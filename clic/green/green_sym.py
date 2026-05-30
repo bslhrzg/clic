@@ -16,8 +16,10 @@ def get_green_block(
         iws,
         target_indices, # indexes for which we want G_{ij}
         one_bh_n,two_bh_n, # one and two body tables
+        tables_n, 
         coeff_thresh,  # threshold to prune states 
-        L   # number of lanczos iterations
+        L,   # number of lanczos iterations
+        green_diag_only = False,
     ): 
     
 
@@ -30,7 +32,7 @@ def get_green_block(
     identical_groups = symdict["identical_groups"]
     is_diagonal = symdict["is_diagonal"]
 
-    if is_diagonal:
+    if is_diagonal or green_diag_only:
         gfmeth = "scalar_continued_fraction"
     else : 
         gfmeth = "block"
@@ -43,6 +45,7 @@ def get_green_block(
     
     print(f" Founds blocks : {blocks}")
     print(f"  Symmetry: is_diagonal={is_diagonal}. Found {len(identical_groups)} unique group(s) of blocks.")
+    print(f"  identical groups: {identical_groups}")
 
     # This will store the full computed block for the current thermal state, using LOCAL indices.
     num_target = len(target_indices)
@@ -93,34 +96,49 @@ def get_green_block(
     # --- Method 2: Scalar Continued Fraction (DIAGONAL ONLY) ---
     elif gfmeth == "scalar_continued_fraction":
         if not is_diagonal:
-            print("*"*42)
-            print("WARNING : Only diagonal green function elements are computed here, but the problem"
-            "is not diagonal !! ")
-            print("*"*42)
-
-            #raise RuntimeError("Method 2 (scalar_continued_fraction) cannot be used for non-diagonal problems.")
-        
-        # We only need to compute one element from each identical group.
-        for group in identical_groups:
-            rep_local_idx = blocks[group[0]][0]
-            rep_global_idx = target_indices[rep_local_idx]
-            print(f"  Computing representative g_({rep_global_idx},{rep_global_idx}) via Scalar CF...")
-            
-            g_ii_n,g_ii_iw, _ = gfs.green_function_scalar_fixed_basis(
-                M, psi_n, e_n, ws, eta, rep_global_idx, NappH,
-                h0_n, U_n, one_bh_n, two_bh_n, 
-                iws = iws,
-                coeff_thresh=coeff_thresh, L=L
+            print("*" * 42)
+            print(
+                "WARNING: scalar_continued_fraction computes only diagonal Green's "
+                "function elements, but h0 has non-diagonal blocks."
             )
-            
-            # Copy the scalar result to all symmetrically equivalent DIAGONAL elements
-            for block_idx in group:
-                for local_idx_in_block in blocks[block_idx]:
-                    G_sub_block_n[:, local_idx_in_block, local_idx_in_block] = g_ii_n
-                    if iws is not None:
-                        G_sub_block_n_iw[:, local_idx_in_block, local_idx_in_block] = g_ii_iw
+            print("Diagonal elements inside one block are computed separately.")
+            print("*" * 42)
 
-            
+        for group in identical_groups:
+            rep_block_idx = group[0]
+            rep_block = blocks[rep_block_idx]
+
+            for pos_in_block, rep_local_idx in enumerate(rep_block):
+                rep_global_idx = target_indices[rep_local_idx]
+
+                print(
+                    f"  Computing representative g_({rep_global_idx},{rep_global_idx}) "
+                    "via Scalar CF..."
+                )
+
+                g_ii_n, g_ii_iw, _ = gfs.green_function_scalar_fixed_basis(
+                    M, psi_n, e_n, ws, eta, rep_global_idx, NappH,
+                    h0_n, U_n, one_bh_n, two_bh_n,
+                    tables_n,
+                    iws=iws,
+                    coeff_thresh=coeff_thresh, L=L
+                )
+
+                # Copy only to the same relative position in equivalent blocks.
+                for equiv_block_idx in group:
+                    equiv_block = blocks[equiv_block_idx]
+
+                    if len(equiv_block) != len(rep_block):
+                        raise RuntimeError(
+                            "Internal symmetry error: identical blocks have different sizes."
+                        )
+
+                    equiv_local_idx = equiv_block[pos_in_block]
+
+                    G_sub_block_n[:, equiv_local_idx, equiv_local_idx] = g_ii_n
+
+                    if iws is not None:
+                        G_sub_block_n_iw[:, equiv_local_idx, equiv_local_idx] = g_ii_iw      
 
     # --- Method 3: Block Continued Fraction (most efficient for blocks) ---
     elif gfmeth == "block":
@@ -134,7 +152,9 @@ def get_green_block(
             # This function now correctly returns a dense block, e.g., of shape (1001, 1, 1)
             G_dense_computed, G_dense_computed_iw,_ = gfs.green_function_block_lanczos_fixed_basis(
                 M, psi_n, e_n, ws, eta, global_indices_to_compute, NappH,
-                h0_n, U_n, one_bh_n, two_bh_n, iws, coeff_thresh=coeff_thresh, L=L
+                h0_n, U_n, one_bh_n, two_bh_n,
+                tables_n, 
+                iws, coeff_thresh=coeff_thresh, L=L
             )
 
             # Copy the computed block to all symmetric equivalents

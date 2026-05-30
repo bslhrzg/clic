@@ -4,6 +4,7 @@ import clic_clib as cc
 import scipy.sparse
 import h5py
 from clic.basis.basis_1p import double_h,umo2so,transform_integrals_interleaved_to_alphafirst
+from .soc import *
 
 # --- Integral Generation for Anderson Impurity Model ---
 def get_impurity_integrals(M, u, e_bath, V_bath, mu):

@@ -20,7 +20,7 @@ def cost_function(params, n_b, ws, target_delta, eta, weight_str, real_couplings
     elif weight_str == "inv" : weight = 1.0 / (np.abs(ws) + 1e-2)
     else: raise ValueError(f"Unknown weight: {weight_str}")
         
-    return np.sum((weight * np.abs(difference))**2)
+    return np.sum(weight * (np.abs(difference))**2)
 
 def hybridization_model(e, v, ws, eta):
     return np.sum(np.abs(v)**2 / (ws[:, None] + 1j * eta - e), axis=1)
@@ -148,9 +148,9 @@ def scalar_fit(ws, hyb_scalar,
 
     else:
         if real_couplings:
-            bounds_list = ([(bounds_e[0], bounds_e[1])] * n_b + [(-0.1, 0.1)] * n_b)
+            bounds_list = ([(bounds_e[0], bounds_e[1])] * n_b + [(-0.5, 0.5)] * n_b)
         else:
-            bounds_list = ([(bounds_e[0], bounds_e[1])] * n_b + [(-0.1, 0.1)] * (2 * n_b))
+            bounds_list = ([(bounds_e[0], bounds_e[1])] * n_b + [(-0.5, 0.5)] * (2 * n_b))
 
         print(f"Starting global optimization ({opt_settings['strategy']})...")
         result = optimize.differential_evolution(
@@ -490,6 +490,10 @@ def fit_poles(omega_grid, delta_complex, n_lanczos_blocks, n_target_poles, warp_
         delta_input = delta_in
     else:
         raise ValueError("delta_complex must be 1D or 3D")
+
+
+    #delta_input = lorentzian_convolution(omega, delta_input[:,0,0], 0.05)
+    #delta_input = delta_input[:,np.newaxis,np.newaxis]
 
     n_omega, m_orb, _ = delta_input.shape
     if omega.shape[0] != n_omega:

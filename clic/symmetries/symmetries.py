@@ -144,7 +144,6 @@ def analyze_symmetries(h0: np.ndarray, tol: float = 1e-6, verbose=False) -> Dict
 # ---------------------------------------------------------
 
 def construct_spin_only_symdict(NF):
-
     M = NF // 2
     block_a = list(range(M))
     block_b = list(range(M,NF))
@@ -153,6 +152,13 @@ def construct_spin_only_symdict(NF):
     diag = False
     return { "blocks": blocks, "identical_groups": identical, "is_diagonal": diag}
 
+def construct_diag_nosym_symdict(NF):
+    
+    M = NF // 2
+    blocks = [[i] for i in range(NF)]
+    identical = [[i] for i in range(NF)]
+    diag = False
+    return { "blocks": blocks, "identical_groups": identical, "is_diagonal": diag}
 
 
 def compare_symmetries(symdict1: Dict, symdict2: Dict) -> bool:

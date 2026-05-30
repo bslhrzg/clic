@@ -6,6 +6,7 @@ from collections import defaultdict
 import numpy as np
 from ..model.model_utils import test_spin_sym
 
+
 def get_fci_basis(num_spatial, num_electrons):
     """
     Return the Full Configuration Interaction (fci) basis 
@@ -68,41 +69,6 @@ def subbasis_by_Sz(basis, target_Sz):
     idxs = table.get(target_Sz, [])
     return [basis[i] for i in idxs], idxs
 
-
-def _extract_spatial_energies_(h0, order="AlphaFirst", tol=1e-12):
-    """
-    Return spatial orbital energies eps (length M) from either
-    spatial h0 (M×M) or spin-orbital h0 (2M×2M).
-    """
-    h0 = np.asarray(h0)
-    if h0.ndim != 2 or h0.shape[0] != h0.shape[1]:
-        raise ValueError("h0 must be square")
-
-    K = h0.shape[0]
-    diag = np.real_if_close(np.diag(h0).astype(float))
-
-    # Already spatial?
-    if K % 2 != 0:
-        return diag, K
-
-    M = K // 2
-    if order == "AlphaFirst":
-        d_a = diag[:M]
-        d_b = diag[M:]
-    elif order == "Interleaved":
-        d_a = diag[0::2]
-        d_b = diag[1::2]
-    else:
-        raise ValueError("order must be 'AlphaFirst' or 'Interleaved'")
-
-    if np.allclose(d_a, d_b, atol=tol, rtol=0):
-        # Consistent spin-orbital HF: same energies for α and β
-        return d_a, M
-    else:
-        # Just treat as spatial
-        #return diag, K
-        return d_a, M
-
 def _extract_spatial_energies(h0, order="AlphaFirst", tol=1e-12):
     """
     Return spatial orbital energies eps (length M) from either
@@ -143,7 +109,6 @@ def _extract_spatial_energies(h0, order="AlphaFirst", tol=1e-12):
         raise ValueError("Spin-broken case (eps_alpha != eps_beta) must be handled separately.")
     
 
-from itertools import combinations
 
 def _get_starting_basis_spin_orbital(h0, Nelec, order="AlphaFirst", tol=1e-12):
     """
@@ -240,93 +205,6 @@ def _get_starting_basis_spin_orbital(h0, Nelec, order="AlphaFirst", tol=1e-12):
     return sorted(dets)
 
 
-def get_starting_basis_(h0, Nelec, order="AlphaFirst", tol=1e-12):
-    """
-    Build a starting CI basis by filling lowest spatial orbital energies for the
-    GIVEN SUBSPACE h0. It creates SlaterDeterminant objects that are local to this subspace.
-    """
-    eps, M_subspace = _extract_spatial_energies(h0, order=order, tol=tol)
-    # The M for the determinant is ALWAYS the subspace M. This function is self-contained.
-    M_for_det = M_subspace
-
-    print(f"DEBUG, here in get_starting_basis : M_for_det = {M_for_det}")
-
-    if not (0 <= Nelec <= 2*M_subspace):
-        raise ValueError(f"Nelec ({Nelec}) cannot be between 0 and {2*M_subspace} for a subspace of size {M_subspace}.")
-
-    # sort orbitals by energy, stable to preserve degeneracies
-    order_idx = np.argsort(eps, kind="mergesort")
-    eps_sorted = eps[order_idx]
-
-    # group into degeneracy blocks
-    blocks = []
-    if M_subspace > 0:
-        s = 0
-        for i in range(1, M_subspace):
-            if abs(eps_sorted[i] - eps_sorted[s]) > tol:
-                blocks.append(order_idx[s:i].tolist())
-                s = i
-        blocks.append(order_idx[s:M_subspace].tolist())
-
-    # how many pairs (doubly occupied orbitals) and whether odd electron
-    pairs = Nelec // 2
-    has_single = (Nelec % 2 == 1)
-
-    # collect fully filled blocks and detect boundary
-    fixed_blocks, boundary_block = [], []
-    pairs_left = pairs
-    for blk in blocks:
-        if pairs_left >= len(blk):
-            fixed_blocks.append(blk)
-            pairs_left -= len(blk)
-        else:
-            boundary_block = blk
-            break
-
-    # all fixed paired orbitals
-    fixed_pairs = [i for blk in fixed_blocks for i in blk]
-
-    # choose pairs out of the boundary block if needed
-    pair_sets = []
-    if M_subspace > 0 and pairs_left > 0 and not boundary_block:
-        raise RuntimeError(f"Cannot place {pairs} pairs in {M_subspace} orbitals. Not enough low-energy states for Nelec={Nelec}.")
-        
-    if pairs_left == 0:
-        pair_sets.append(tuple(sorted(fixed_pairs)))
-    elif boundary_block:
-        for subset in combinations(boundary_block, pairs_left):
-            pair_sets.append(tuple(sorted(fixed_pairs + list(subset))))
-
-    dets = []
-    if not has_single:
-        # even number: fill pairs only
-        for P in pair_sets:
-            occ_a = sorted(list(P))
-            occ_b = sorted(list(P))
-            dets.append(cc.SlaterDeterminant(M_for_det, occ_a, occ_b))
-    else:
-        # odd number: put unpaired electron in lowest-energy remaining orbitals
-        for P in pair_sets:
-            Pset = set(P)
-            remaining = [i for i in order_idx if i not in Pset]
-            if not remaining:
-                continue
-            # lowest energy among remaining
-            e0 = eps[remaining[0]]
-            singles_block = [i for i in remaining if abs(eps[i]-e0) <= tol]
-
-            for s in singles_block:
-                # unpaired alpha
-                occ_a = sorted(list(Pset) + [s])
-                occ_b = sorted(list(Pset))
-                dets.append(cc.SlaterDeterminant(M_for_det, occ_a, occ_b))
-                # unpaired beta (comment out if you only want Ms >= 0)
-                occ_a2 = sorted(list(Pset))
-                occ_b2 = sorted(list(Pset) + [s])
-                dets.append(cc.SlaterDeterminant(M_for_det, occ_a2, occ_b2))
-
-    return sorted(dets)
-
 def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
     """
     Build a starting CI basis by filling lowest-energy states for the
@@ -422,7 +300,7 @@ def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
     # Spin-broken branch: use spin-orbital energies
     return _get_starting_basis_spin_orbital(h0, Nelec, order=order, tol=tol)
 
-def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst", tol=0.01):
+def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst", tol=1e-12):
     """
     Generates starting determinants with a fixed number of electrons on the impurity.
     It partitions the system, solves for ground states in each subspace, and then
@@ -545,7 +423,6 @@ def get_rhf_determinant(Nelec, M):
         b2 = cc.SlaterDeterminant(M, occ_p, occ_m)
 
         return [b1,b2]
-
 
 def expand_basis(current_basis,one_body_terms,two_body_terms):
     """Given a basis, return the basis accessible through the hamiltonian 

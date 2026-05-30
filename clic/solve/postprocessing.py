@@ -121,6 +121,11 @@ def analyze_thermal_gs(states, clicvars, save_rdm=True, thr_print=None):
             f"Sz: {stats['Sz']:10.4f}"
         )
 
+    print("-" * 50)
+    for i in range(clicvars.M_imp*2):
+        print(f"n_imp({i}) = {np.round(rho_imp_thermal[i,i].real,4)}" )
+
+
     if clicvars.is_impurity_model and save_rdm:
         print("Saving thermally-averaged impurity density matrix...")
         np.savetxt("real-imp-dens.dat", np.real(rho_imp_thermal), fmt="% 8.5f")

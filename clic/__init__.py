@@ -43,7 +43,8 @@ from clic.green.gfs import (
     scalar_lanczos,
     build_sector_basis_from_seeds,
     build_H_in_basis,
-    wf_to_vec
+    wf_to_vec, 
+    occupation_from_green,
 )
 
 from clic.green.self_energy import spin_average_one_particle

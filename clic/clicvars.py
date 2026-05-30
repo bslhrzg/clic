@@ -27,7 +27,7 @@ class ClicVars:
         eta_hyb=1e-2, # distance to the imag. axis used to produce the input hybridization
         eta_broad=1e-2, # broadening distance to the imag. to help the fit
         windowing=False, # do we window the hybridization
-        window_width=0.0, # with which width
+        window_width=0.2, # with which width
         window_pos=0.0, # where
         diag_fit=True, # do we fit only the diagonal components of the hyb
         freeze_bath=False, # if True, look for an existing fit and load that
@@ -58,6 +58,7 @@ class ClicVars:
         NappH=1,
         coeff_thresh=1e-12,
         spin_avg_sigma = False,
+        green_diag_only = False,
         #IO 
         dirdump = "dump"
     ):
@@ -68,7 +69,7 @@ class ClicVars:
         self.is_impurity_model = is_impurity_model
         self.imp_indices_spatial = imp_indices_spatial
         self.imp_indices_spinfull = imp_indices_spinfull
-
+        
         self.fit_type = fit_type
         self.nb_fit = nb_fit
         self.warp_kind = warp_kind
@@ -102,7 +103,8 @@ class ClicVars:
         self.NappH = NappH
         self.coeff_thresh = coeff_thresh
         self.spin_avg_sigma = spin_avg_sigma
-        
+        self.green_diag_only = green_diag_only
+
         self.dirdump = dirdump
 
     @classmethod

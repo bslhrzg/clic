@@ -52,6 +52,11 @@ def dmft_step(
         clicvars.coeff_thresh = coeff_thresh
 
 
+    print(f" Local hamiltonian with shape {h_imp.shape}: Real part")
+    print(np.round(h_imp.real,6))
+    print("Imaginary part:")
+    print(np.round(h_imp.imag,6))
+
     clicvars.M_imp = h_imp.shape[0] // 2
     clicvars.imp_indices_spatial = [i for i in range(clicvars.M_imp)]
 
@@ -80,10 +85,10 @@ def dmft_step(
 
 
     if clicvars.nb > 0:
-        if clicvars.nb > 3:
-            basis_prep_method = "dbl_chain" # or "dbl_chain"
-        else : 
-            basis_prep_method = "none"
+        #if clicvars.nb > 3:
+        #    basis_prep_method = "dbl_chain" # or "dbl_chain"
+        #else : 
+        #    basis_prep_method = "none"
         
         ci_type = "sci" # or "fci"
         
@@ -96,7 +101,7 @@ def dmft_step(
 
 
     #clicvars.ci_type = ci_type
-    clicvars.basis_prep_method = basis_prep_method
+    #clicvars.basis_prep_method = basis_prep_method
 
     
 
@@ -120,7 +125,6 @@ def dmft_step(
     # ==============================================================================
     # 2. DEFINE THE MODEL
     # ==============================================================================
-
     if not do_hia and not clicvars.freeze_bath :
 
         ################################################
@@ -250,11 +254,18 @@ def dmft_step(
 
             dump(hybdos,ws,"imhyb_0_dos",output_dir=clicvars.dirdump)
 
-
     dump(np.real(hyb),ws,'real-hyb',output_dir=clicvars.dirdump)
     dump(np.imag(hyb),ws,'imag-hyb',output_dir=clicvars.dirdump)
 
 
+    #######
+    # EXPERIMENTAL: FOR fd in CeCiI only
+    #d_idx = [0,1,2,3,4]
+    #f_idx = [5,6,7,8,9,10,11]
+    #d_idx += [12,13,14,15,16]
+    #f_idx += [17,18,19,20,21,22,23]
+    #print(mapping)
+    #assert 1 == 0
     # ==============================================================================
     # 3. RUN THE SOLVER
     # ==============================================================================
@@ -294,11 +305,20 @@ def dmft_step(
     clicvars.green_block_indices = clicvars.imp_indices_spinfull
 
     ws, G_imp, G_imp_iw, A_imp = get_green(clicvars,Ne_dict,h0_0,U_0,thermal_gs,plot_sf = True)
-    
+
+    n_orb, n_tot = occupation_from_green(ws, G_imp, beta=np.inf, mu=0.0)
+    print("Occupation from Green function:")
+    for i, n in enumerate(n_orb):
+        print(f"  orb {i:3d}: {n:.8f}")
+    print(f"Total occupation from G: {n_tot:.8f}")
+
     dump(np.real(G_imp),ws,'real-G_real',output_dir=clicvars.dirdump)
     dump(np.imag(G_imp),ws,'imag-G_real',output_dir=clicvars.dirdump)
     dump(np.real(G_imp_iw),iws,'real-G_mats',output_dir=clicvars.dirdump)
     dump(np.imag(G_imp_iw),iws,'imag-G_mats',output_dir=clicvars.dirdump)
+
+
+
 
 
     # ==============================================================================
@@ -328,7 +348,6 @@ def dmft_step(
                                 h_imp,
                                 G_imp_iw, 
                                 hyb_sig_iw)
-    
 
     def check_imag_diag_negative(Sigma, name="Sigma", eps_sigma=1e-12, clamp_im=-1e-3):
         # Sigma: (n_w, n, n)
@@ -367,6 +386,7 @@ def dmft_step(
     avg_rdm_imp = thermal_avgs["rho_imp_thermal"]
     sig_static = np.einsum('ikjl,ij->kl', U_imp, avg_rdm_imp) - \
                 np.einsum('iklj,ij->kl', U_imp, avg_rdm_imp)
+
 
     np.savetxt("real-sig_static.dat", np.real(sig_static), fmt="% 8.5f")
     np.savetxt("imag-sig_static.dat", np.imag(sig_static), fmt="% 8.5f")

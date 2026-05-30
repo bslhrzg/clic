@@ -12,6 +12,7 @@ from clic.green import plotting, green_sym, self_energy as se
 from clic.io_clic import io_utils
 from clic.symmetries import symmetries
 
+import clic_clib as cc
 
 def get_green(clicvars,Ne_dict,h0_0,U_0,thermal_gs,plot_sf = True):
     """
@@ -81,9 +82,12 @@ def get_green(clicvars,Ne_dict,h0_0,U_0,thermal_gs,plot_sf = True):
         # gfmeth = "time_prop"
 
         # G_sub_block_n has shape (nw, num_target, num_target)
+        toltables = 1e-6
+        tables = cc.build_hamiltonian_tables(h0_n,U_n,toltables,target_indices)
         G_sub_block_n, G_sub_block_n_iw = green_sym.get_green_block(M, psi_n, e_n, clicvars.NappH, clicvars.eta, 
                                                     h0_n, U_n, ws, iws,  target_indices, 
-                                                    one_bh_n, two_bh_n, clicvars.coeff_thresh, clicvars.L_lanczos
+                                                    one_bh_n, two_bh_n, tables, clicvars.coeff_thresh, clicvars.L_lanczos,
+                                                    clicvars.green_diag_only
                                                     )
 
         # Add the weighted contribution to the total Green's function matrix

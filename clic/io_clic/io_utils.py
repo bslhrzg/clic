@@ -15,9 +15,6 @@ def dump(
     """
     Writes the array `x` and array `F` to a file.
 
-    This is a direct Python port of the provided Julia function. The key
-    difference is that the dependent axis in `F` is the FIRST axis (F.shape[0]).
-
     - `x`: 1D array to be the first column in the output.
     - `F`: Array that can be a scalar, 1D, 2D, or 3D.
     - `filename`: String specifying the path to the output file.
