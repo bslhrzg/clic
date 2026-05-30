@@ -31,7 +31,7 @@ from clic.ops.ops import get_one_body_terms,get_two_body_terms, one_rdm, get_n_i
 
 
 
-from clic.hybfit.hybfit import discretize_hyb, discretize_hyb_poles
+from clic.hybfit.hybfit import discretize_hyb, discretize_hyb_matsubara, discretize_hyb_poles
 
 from clic.io_clic.io_utils import dump, load_3d
 #from clic.results.postprocessing import StateAnalyzer

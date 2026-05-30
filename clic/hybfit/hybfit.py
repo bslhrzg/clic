@@ -25,6 +25,24 @@ def cost_function(params, n_b, ws, target_delta, eta, weight_str, real_couplings
 def hybridization_model(e, v, ws, eta):
     return np.sum(np.abs(v)**2 / (ws[:, None] + 1j * eta - e), axis=1)
 
+def cost_function_matsubara(params, n_b, iws, target_delta, weight_str, real_couplings=True):
+    e = params[:n_b]
+    if real_couplings:
+        v = params[n_b:2*n_b]
+    else:
+        v = params[n_b:2*n_b] + 1j * params[2*n_b:3*n_b]
+
+    z = 1j * iws
+    model_delta = np.sum(np.abs(v)**2 / (z[:, None] - e), axis=1)
+    difference = target_delta - model_delta
+
+    if weight_str == "const": weight = 1.0
+    elif weight_str == "inv2": weight = 1.0 / (iws ** 2 + 1e-2)
+    elif weight_str == "inv" : weight = 1.0 / (np.abs(iws) + 1e-2)
+    else: raise ValueError(f"Unknown weight: {weight_str}")
+
+    return np.sum(weight * (np.abs(difference))**2)
+
 def lorentzian_convolution(ws, y, width):
     result = np.zeros_like(y, dtype=np.complex128)
     for i, omega_i in enumerate(ws):
@@ -178,6 +196,148 @@ def scalar_fit(ws, hyb_scalar,
     R_final = [np.array([[np.abs(vi)**2]]) for vi in v_final] 
     
     print("--- Cost Fit Done ---")
+    print("Final optimized poles:")
+    for i in range(len(eps_final)):
+        c = (np.abs(R_final[i][0,0]))
+        print(f"  pole {i}: e = {eps_final[i]:+.6f}, coupling |v|^2 = {c:.6f}")
+
+    return eps_final, R_final
+
+
+def scalar_fit_matsubara(iws, hyb_scalar,
+            n_b,
+            weight_func = 'const',
+            bounds_e=None,
+            sym=False,
+            real_couplings=True):
+
+    iws = np.asarray(iws, dtype=float)
+    hyb_scalar = np.asarray(hyb_scalar).squeeze()
+    if hyb_scalar.ndim != 1:
+        raise ValueError("hyb_scalar must be 1D")
+
+    if bounds_e is None:
+        bounds_e = [-1.0, 1.0]
+
+    print("HybFitCost initialized:")
+    print(f"  Method: Global optimization on Matsubara axis (scalar only)")
+    print(f"  Number of target poles = {n_b}")
+    print(f"  Couplings restricted to real numbers = {real_couplings}")
+    if sym:
+        print("  Enforcing particle-hole symmetry around omega=0")
+
+    print("--- Fitting Matsubara hybridization via Cost Minimization ---")
+    print(f"Using energy bounds for bath sites: [{bounds_e[0]:.2f}, {bounds_e[1]:.2f}]")
+    print(f"Fit will be performed with z = 1j * iws, and weight function {weight_func}")
+
+    target_delta = hyb_scalar
+    opt_defaults = {'strategy': 'best1bin', 'maxiter': 1000, 'popsize': 15, 'tol': 1e-3, 'disp': False}
+    opt_settings = {**opt_defaults}
+
+    if sym:
+        N_half = n_b // 2
+        has_zero = (n_b % 2 != 0)
+        e_max = max(abs(bounds_e[0]), abs(bounds_e[1]))
+
+        if real_couplings:
+            bounds_list = ([(0.0, e_max)] * N_half + [(-0.5, 0.5)] * N_half)
+            if has_zero: bounds_list += [(-0.5, 0.5)]
+
+            def sym_cost(params):
+                e_half = params[:N_half]
+                v_half = params[N_half:2*N_half]
+                if has_zero:
+                    v_0 = params[-1:]
+                    e_full = np.concatenate([e_half, -e_half, [0.0]])
+                    v_full = np.concatenate([v_half, v_half, v_0])
+                else:
+                    e_full = np.concatenate([e_half, -e_half])
+                    v_full = np.concatenate([v_half, v_half])
+
+                full_params = np.concatenate([e_full, v_full])
+                return cost_function_matsubara(full_params, n_b, iws, target_delta, weight_func, real_couplings=True)
+
+        else:
+            bounds_list = ([(0.0, e_max)] * N_half + [(-0.5, 0.5)] * N_half + [(-0.5, 0.5)] * N_half)
+            if has_zero: bounds_list += [(-0.5, 0.5)] * 2
+
+            def sym_cost(params):
+                e_half = params[:N_half]
+                idx = N_half
+                v_re_half = params[idx:idx+N_half]; idx += N_half
+                v_im_half = params[idx:idx+N_half]; idx += N_half
+                if has_zero:
+                    v_re_0 = params[idx:idx+1]
+                    v_im_0 = params[idx+1:idx+2]
+                    e_full = np.concatenate([e_half, -e_half, [0.0]])
+                    v_re_full = np.concatenate([v_re_half, v_re_half, v_re_0])
+                    v_im_full = np.concatenate([v_im_half, v_im_half, v_im_0])
+                else:
+                    e_full = np.concatenate([e_half, -e_half])
+                    v_re_full = np.concatenate([v_re_half, v_re_half])
+                    v_im_full = np.concatenate([v_im_half, v_im_half])
+
+                full_params = np.concatenate([e_full, v_re_full, v_im_full])
+                return cost_function_matsubara(full_params, n_b, iws, target_delta, weight_func, real_couplings=False)
+
+        print(f"Starting symmetric global optimization ({opt_settings['strategy']})...")
+        result = optimize.differential_evolution(sym_cost, bounds=bounds_list, **opt_settings)
+
+        opt_params = result.x
+        e_half = opt_params[:N_half]
+        if real_couplings:
+            v_half = opt_params[N_half:2*N_half]
+            if has_zero:
+                v_0 = opt_params[-1:]
+                e = np.concatenate([e_half, -e_half, [0.0]])
+                v = np.concatenate([v_half, v_half, v_0])
+            else:
+                e = np.concatenate([e_half, -e_half])
+                v = np.concatenate([v_half, v_half])
+        else:
+            idx = N_half
+            v_re_half = opt_params[idx:idx+N_half]; idx += N_half
+            v_im_half = opt_params[idx:idx+N_half]; idx += N_half
+            if has_zero:
+                v_re_0 = opt_params[idx:idx+1]
+                v_im_0 = opt_params[idx+1:idx+2]
+                e = np.concatenate([e_half, -e_half, [0.0]])
+                v = np.concatenate([v_re_half, v_re_half, v_re_0]) + 1j * np.concatenate([v_im_half, v_im_half, v_im_0])
+            else:
+                e = np.concatenate([e_half, -e_half])
+                v = np.concatenate([v_re_half, v_re_half]) + 1j * np.concatenate([v_im_half, v_im_half])
+
+    else:
+        if real_couplings:
+            bounds_list = ([(bounds_e[0], bounds_e[1])] * n_b + [(-0.5, 0.5)] * n_b)
+        else:
+            bounds_list = ([(bounds_e[0], bounds_e[1])] * n_b + [(-0.5, 0.5)] * (2 * n_b))
+
+        print(f"Starting global optimization ({opt_settings['strategy']})...")
+        result = optimize.differential_evolution(
+            cost_function_matsubara, bounds=bounds_list,
+            args=(n_b, iws, target_delta, weight_func, real_couplings),
+            **opt_settings
+        )
+
+        opt_params = result.x
+        e = opt_params[:n_b]
+        if real_couplings:
+            v = opt_params[n_b:2*n_b]
+        else:
+            v = opt_params[n_b:2*n_b] + 1j * opt_params[2*n_b:]
+
+    if result.success:
+        print(f"Optimization successful. Final cost (χ²): {result.fun:.6e}")
+    else:
+        print(f"WARNING: Optimization may not have converged. Final cost (χ²): {result.fun:.6e}")
+
+    sort_idx = np.argsort(e)
+    eps_final = e[sort_idx]
+    v_final = v[sort_idx]
+    R_final = [np.array([[np.abs(vi)**2]]) for vi in v_final]
+
+    print("--- Matsubara Cost Fit Done ---")
     print("Final optimized poles:")
     for i in range(len(eps_final)):
         c = (np.abs(R_final[i][0,0]))
@@ -406,6 +566,189 @@ def discretize_hyb(
         Delta_mats_fit = None
 
     return H_full, Delta_fit, hyb_app, mapping, Delta_mats_fit
+
+
+def discretize_hyb_matsubara(
+    omega,
+    i_omegas,
+    hyb,           # (Niw, Nimp, Nimp)
+    himp,          # (Nimp, Nimp)
+    n_target_poles,
+    bounds_e = None,
+    weight_func = 'const',
+    tol = 1e-6,
+    enforce_even_total = False,
+    verbose = False,
+    sym = False,
+    real_couplings = False
+):
+    assert hyb.ndim == 3 and hyb.shape[1] == hyb.shape[2], "hyb must be (Niw, Nimp, Nimp)"
+    assert himp.shape[0] == himp.shape[1] == hyb.shape[1], "himp must match hyb"
+
+    i_omegas = np.asarray(i_omegas, dtype=float)
+    omega = np.asarray(omega, dtype=float)
+    if hyb.shape[0] != len(i_omegas):
+        raise ValueError(
+            f"hyb first dimension ({hyb.shape[0]}) must match i_omegas length ({len(i_omegas)})"
+        )
+    if bounds_e is None:
+        bounds_e = [np.min(omega), np.max(omega)]
+
+    Niw, Nimp, _ = hyb.shape
+
+    M = Nimp // 2
+    mid = Niw // 2
+
+    Href = himp + hyb[mid]
+    print(Href)
+
+    sym_info = symmetries.analyze_symmetries(np.asarray(Href), tol=tol, verbose=verbose)
+    blocks = sym_info["blocks"]
+    identical_groups = sym_info["identical_groups"]
+
+    print(f"DEBUG: blocks = {blocks}")
+    print(f"DEBUG: identical_groups = {identical_groups}")
+
+    leaders = [g[0] for g in identical_groups]
+    for leader in leaders:
+        if len(blocks[leader]) != 1:
+            raise ValueError(
+                f"process_hyb_cost requires 1×1 leader blocks, but block {leader} has size {len(blocks[leader])}."
+            )
+
+    leader_results = {}
+    for leader in leaders:
+        idx = blocks[leader]
+        i = idx[0]
+        hyb_blk = hyb[:, idx, :][:, :, idx]
+
+        if verbose:
+            print(f"\n[MatsubaraCostFit] Fitting leader block {leader} (orbital {i}) with {n_target_poles} poles.")
+
+        eps_poles, R_poles = scalar_fit_matsubara(
+            i_omegas,
+            hyb_blk,
+            n_target_poles,
+            weight_func=weight_func,
+            bounds_e=bounds_e,
+            sym=sym,
+            real_couplings=real_couplings)
+
+        H_b, V_blk = residues_to_bath(eps_poles, R_poles)
+
+        leader_results[leader] = {
+            "idx": idx,
+            "eps_poles": np.asarray(eps_poles, float),
+            "R_poles":   [np.asarray(R, np.complex128) for R in R_poles],
+            "eps_cols":  np.diag(H_b).copy(),
+            "V":         V_blk.copy(),
+        }
+
+    V_cols = []
+    eps_all = []
+    block_to_bath_cols = [[] for _ in range(len(blocks))]
+
+    leader_of_block = {}
+    for group in identical_groups:
+        L = group[0]
+        for b in group:
+            leader_of_block[b] = L
+
+    for bidx, idx in enumerate(blocks):
+        L = leader_of_block[bidx]
+        res = leader_results[L]
+
+        Nb = res["V"].shape[1]
+        eps_block = np.asarray(res["eps_cols"], float)
+        if eps_block.shape[0] != Nb:
+            if eps_block.shape[0] == 1:
+                eps_block = np.full(Nb, float(eps_block[0]))
+            else:
+                raise ValueError(f"Block {bidx}: eps_cols length {eps_block.shape[0]} vs V columns {Nb}")
+
+        V_block_full = np.zeros((Nimp, Nb), dtype=np.complex128)
+        V_block_full[idx[0], :] = res["V"][0, :]
+
+        col_start = len(eps_all)
+        V_cols.append(V_block_full)
+        eps_all.extend(eps_block.tolist())
+        block_to_bath_cols[bidx] = list(range(col_start, col_start + Nb))
+
+    V_full = np.hstack(V_cols) if V_cols else np.zeros((Nimp, 0), np.complex128)
+    H_b_full = np.diag(np.asarray(eps_all, float)) if eps_all else np.zeros((0, 0), float)
+
+    alpha_imp = np.arange(0, M)
+    beta_imp  = np.arange(M, 2*M)
+    alpha_cols= []
+    beta_cols = []
+
+    for j in range(V_full.shape[1]):
+        coupl = V_full[:, j]
+        norm_a = np.linalg.norm(coupl[:M])
+        norm_b = np.linalg.norm(coupl[M:])
+        if np.isclose(norm_a, norm_b, atol=1e-15):
+            (alpha_cols if len(alpha_cols) <= len(beta_cols) else beta_cols).append(j)
+        elif norm_a > norm_b:
+            alpha_cols.append(j)
+        else:
+            beta_cols.append(j)
+
+    Nbath = V_full.shape[1]
+    if enforce_even_total and ((Nimp + Nbath) % 2 == 1):
+        weights = np.sum(np.abs(V_full)**2, axis=0)
+        drop_j = int(np.argmin(weights)) if Nbath > 0 else None
+        if drop_j is not None:
+            keep = np.ones(Nbath, dtype=bool); keep[drop_j] = False
+            V_full = V_full[:, keep]
+            H_b_full = np.diag(np.asarray(eps_all, float)[keep])
+            alpha_cols = [j for j in alpha_cols if j != drop_j]
+            beta_cols  = [j for j in beta_cols  if j != drop_j]
+            old_to_new = {}
+            c = 0
+            for j in range(Nbath):
+                if keep[j]:
+                    old_to_new[j] = c; c += 1
+            alpha_cols = [old_to_new[j] for j in alpha_cols]
+            beta_cols  = [old_to_new[j] for j in beta_cols]
+            for b in range(len(block_to_bath_cols)):
+                block_to_bath_cols[b] = [old_to_new[j] for j in block_to_bath_cols[b] if j in old_to_new]
+
+    imp_alpha = list(alpha_imp)
+    imp_beta  = list(beta_imp)
+    bath_offset = Nimp
+    old_order = (
+        imp_alpha
+        + [bath_offset + j for j in alpha_cols]
+        + imp_beta
+        + [bath_offset + j for j in beta_cols]
+    )
+    perm = np.array(old_order, dtype=int)
+
+    top    = np.hstack([himp, V_full])
+    bottom = np.hstack([V_full.conj().T, H_b_full])
+    H_full0 = np.vstack([top, bottom])
+    H_full  = H_full0[np.ix_(perm, perm)]
+
+    mapping = {
+        "blocks": blocks,
+        "identical_groups": identical_groups,
+        "leader_results": leader_results,
+        "block_to_bath_cols": block_to_bath_cols,
+        "perm_full_to_spin_sorted": perm,
+        "alpha_imp_idx": alpha_imp,
+        "beta_imp_idx": beta_imp,
+        "alpha_bath_cols": alpha_cols,
+        "beta_bath_cols": beta_cols,
+    }
+
+    P = np.eye(H_full.shape[0], dtype=H_full.dtype)[perm]
+    H0 = P.T @ H_full @ P
+    Vchk = H0[:Nimp, Nimp:]
+    Hbck = H0[Nimp:, Nimp:]
+    hyb_app = delta_from_bath(omega, Hbck, Vchk, eta=0.0)
+    Delta_mats_fit = delta_from_bath(1j * i_omegas, Hbck, Vchk, eta=0.0)
+
+    return H_full, Delta_mats_fit, hyb_app, mapping, Delta_mats_fit
 
 
 
@@ -1164,4 +1507,3 @@ def discretize_hyb_poles(
         Delta_mats_fit = None
 
     return H_full, Delta_fit, hyb_app, mapping, Delta_mats_fit
-

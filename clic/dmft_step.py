@@ -15,8 +15,18 @@ def dmft_step(
 
 
 
-   
+
     clicvars = ClicVars.from_toml("input.toml")
+
+    ws = np.asarray(ws, dtype=float)
+    iws = np.asarray(iws, dtype=float)
+    hyb_mesh = ws
+    matsubara_fit = ws.shape == iws.shape and np.allclose(ws, iws)
+    if matsubara_fit:
+        print("Detected Matsubara-axis hybridization input: ws and iws are identical.")
+        hyb_mesh = iws
+        ws = np.linspace(-1.0, 1.0, 1001)
+        print(f"Using default real-frequency mesh internally: np.linspace(-1, 1, 1001)")
 
     if rspt_clic_params is not None:
         print("ENTERING DMFT STEP with params: ")
@@ -74,7 +84,7 @@ def dmft_step(
         hyb = spin_average_one_particle(hyb)
 
     hybdos = -np.trace(hyb, axis1=1, axis2=2).imag
-    dump(hybdos,ws,"imhyb_0_dos_test",output_dir=clicvars.dirdump)  
+    dump(hybdos,hyb_mesh,"imhyb_0_dos_test",output_dir=clicvars.dirdump)
 
 
     #clicvars.windowing = False 
@@ -131,6 +141,8 @@ def dmft_step(
         # Windowing the hybridization 
         # 
         def windowing_hyb(hyb_0, width, position, sharp_cut=False):
+            if matsubara_fit:
+                raise ValueError("Hybridization windowing is only available for real-frequency input.")
             print("----------------------------------")
             print(f"APPLYING WINDOW ON HYB WITH WIDTH {width} AT {position}")
             hyb = hyb_0.copy()
@@ -177,7 +189,19 @@ def dmft_step(
         else : 
             bounds_e = None
             
-        if clicvars.fit_type == "poles":
+        if matsubara_fit:
+            if clicvars.fit_type != "cost":
+                raise ValueError("Matsubara-axis hybridization fitting supports only fit_type='cost'.")
+            h0_0,delta_fit, hyb_approx, mapping, hyb_approx_iw = discretize_hyb_matsubara(
+                clicvars.ws,
+                iws,
+                hyb_to_fit,           # (Niw, Nimp, Nimp)
+                h_imp_to_fit,          # (Nimp, Nimp)
+                clicvars.nb,
+                weight_func=clicvars.warp_kind,
+                bounds_e=bounds_e
+            )
+        elif clicvars.fit_type == "poles":
             h0_0,delta_fit, hyb_approx, mapping, hyb_approx_iw = discretize_hyb_poles(
                 clicvars.ws,
                 hyb_to_fit,           # (Nw, Nimp, Nimp)
@@ -212,14 +236,15 @@ def dmft_step(
 
         #########################################
 
+        hyb_approx_dump = hyb_approx_iw if matsubara_fit else hyb_approx
         hybdos = -np.trace(hyb, axis1=1, axis2=2).imag
-        hybappdos = -np.trace(hyb_approx,axis1=1, axis2=2).imag
+        hybappdos = -np.trace(hyb_approx_dump,axis1=1, axis2=2).imag
 
-        dump(hybdos,ws,"imhyb_0_dos",output_dir=clicvars.dirdump)
-        dump(hybappdos,ws,"imhyb_fit_dos",output_dir=clicvars.dirdump)
+        dump(hybdos,hyb_mesh,"imhyb_0_dos",output_dir=clicvars.dirdump)
+        dump(hybappdos,hyb_mesh,"imhyb_fit_dos",output_dir=clicvars.dirdump)
         
-        dump(np.imag(hyb_approx),ws,'imag-hyb_app',output_dir=clicvars.dirdump)
-        dump(np.real(hyb_approx),ws,'real-hyb_app',output_dir=clicvars.dirdump)
+        dump(np.imag(hyb_approx_dump),hyb_mesh,'imag-hyb_app',output_dir=clicvars.dirdump)
+        dump(np.real(hyb_approx_dump),hyb_mesh,'real-hyb_app',output_dir=clicvars.dirdump)
 
         dump(np.imag(hyb_approx_iw),iws,'imag-hyb-mats_app',output_dir=clicvars.dirdump)
         dump(np.real(hyb_approx_iw),iws,'real-hyb-mats_app',output_dir=clicvars.dirdump)
@@ -252,10 +277,10 @@ def dmft_step(
                 hybdos = -np.trace(hyb, axis1=1, axis2=2).imag
                 hybappdos = -np.trace(hyb_approx,axis1=1, axis2=2).imag
 
-            dump(hybdos,ws,"imhyb_0_dos",output_dir=clicvars.dirdump)
+            dump(hybdos,hyb_mesh,"imhyb_0_dos",output_dir=clicvars.dirdump)
 
-    dump(np.real(hyb),ws,'real-hyb',output_dir=clicvars.dirdump)
-    dump(np.imag(hyb),ws,'imag-hyb',output_dir=clicvars.dirdump)
+    dump(np.real(hyb),hyb_mesh,'real-hyb',output_dir=clicvars.dirdump)
+    dump(np.imag(hyb),hyb_mesh,'imag-hyb',output_dir=clicvars.dirdump)
 
 
     #######
@@ -398,5 +423,9 @@ def dmft_step(
         Sigma = spin_average_one_particle(Sigma)
         Sigma_iw = spin_average_one_particle(Sigma_iw)
 
+    print(f"shapes of : ")
+    print(f"sig_static : {sig_static.shape}")
+    print(f"Sigma : {Sigma.shape}")
+    print(f"Sigma_iw : {Sigma_iw.shape}")
 
     return sig_static,Sigma,Sigma_iw
