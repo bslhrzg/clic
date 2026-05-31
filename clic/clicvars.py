@@ -24,8 +24,8 @@ class ClicVars:
         nb_fit=1, # how many states used to fit the hybridization per correlated orbital
         warp_kind="const", # do we emphasize low energy of not
         nb=1, # how many states actually kepts per corr. orbital 
-        eta_hyb=1e-2, # distance to the imag. axis used to produce the input hybridization
-        eta_broad=1e-2, # broadening distance to the imag. to help the fit
+        eta_hyb=2e-3, # distance to the imag. axis used to produce the input hybridization
+        eta_broad=0, # broadening distance to the imag. to help the fit
         windowing=False, # do we window the hybridization
         window_width=0.2, # with which width
         window_pos=0.0, # where
@@ -52,7 +52,7 @@ class ClicVars:
         # GREEN FUNCTIONS
         ws=None,
         iws=None,
-        eta=1e-2,
+        eta=2e-3,
         green_block_indices=None,
         L_lanczos=100,
         NappH=1,

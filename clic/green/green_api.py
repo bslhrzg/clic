@@ -201,7 +201,7 @@ def calculate_self_energy(clicvars,
         
         # G^{-1} calculation
         #if is_diagonal:
-        if len(group) == 1:
+        if 1==0:#len(group) == 1:
             # Optimized path for diagonal blocks (1x1 or diagonal matrices)
             # Avoids linalg.inv numerical noise completely
             inv_G_sub = np.zeros_like(G_sub)
