@@ -60,11 +60,13 @@ def solve(label, solver_param_, dc_param, dc_flag,
           sig_real_view, sig_static_view, sig_dc_view,
           iw_view, w_view, 
           corr_to_sph_view, corr_to_cf_view,
-          n_orb, n_rot, n_orb_full, n_iw, n_w, eim, tau, verbosity):
+          n_orb, n_rot, n_orb_full, n_iw, n_hyb, n_w, eim, tau, verbosity):
 
     global CALL_COUNT
     CALL_COUNT += 1
     print(f"\n[Python] ENTER solve(), CALL_COUNT={CALL_COUNT}")
+
+    print(f"n_hyb = {n_hyb}")
 
     # Get the Communicator from the host application
     comm = MPI.COMM_WORLD
@@ -89,6 +91,13 @@ def solve(label, solver_param_, dc_param, dc_flag,
 
     iw = np.frombuffer(iw_view, dtype=np.float64)
     w  = np.frombuffer(w_view,  dtype=np.float64)
+
+    mats_mode = (
+            n_iw == n_w
+            and iw.shape[0] >= n_iw
+            and w.shape[0] >= n_w
+            and np.allclose(iw[:n_iw], w[:n_w], rtol=0.0, atol=1e-14)
+        )
 
     # Placeholders for results (will be filled on rank 0)
     res_static = None
@@ -129,7 +138,7 @@ def solve(label, solver_param_, dc_param, dc_flag,
 
         # Hybridization (n_orb, n_orb, n_w)
         hyb = np.frombuffer(hyb_view, dtype=np.complex128)
-        hyb = hyb.reshape((n_orb, n_orb, n_w), order='F')
+        hyb = hyb.reshape((n_orb, n_orb, n_hyb), order='F')
 
         # Local Hamiltonian (n_orb, n_orb)
         h_dft = np.frombuffer(h_dft_view, dtype=np.complex128)
@@ -153,6 +162,8 @@ def solve(label, solver_param_, dc_param, dc_flag,
         # Frequency Meshes
         iw = np.frombuffer(iw_view, dtype=np.float64)
         w = np.frombuffer(w_view, dtype=np.float64)
+
+        
 
         # Basis Transformation Matrices
         c2s = np.frombuffer(corr_to_sph_view, dtype=np.complex128)
@@ -212,6 +223,7 @@ def solve(label, solver_param_, dc_param, dc_flag,
             c2s,
             c2cf)
         
+        
         res_static,res_sigma,res_sigma_iw = dmft_step(
             w,iw,hyb_clic,h_imp_clic,U_imp_clic,clic_params)
         
@@ -235,22 +247,24 @@ def solve(label, solver_param_, dc_param, dc_flag,
     # 1. Static Self Energy: (n_orb, n_orb)
     sig_static[:] = res_static[:]
 
-    # 2. Real Axis Self Energy
-    if res_sigma.shape[0] == n_w:
-        # (w, orb, orb) -> (orb, orb, w)
-        print("Coucou, on modifie sig_real")
-        sig_real[:] = np.moveaxis(res_sigma, 0, -1)
-    else:
-        # Already (orb, orb, w)
-        sig_real[:] = res_sigma[:]
 
-    # 3. Matsubara Self Energy
+    if mats_mode:
+    #if 1 == 0:
+        print("[Python] Matsubara mode: not writing physical sig_real")
+        #sig_real[:] = 0.0
+    else:
+        if res_sigma.shape[0] == n_w:
+            print("Coucou, on modifie sig_real")
+            sig_real[:] = np.moveaxis(res_sigma, 0, -1)
+        else:
+            sig_real[:] = res_sigma[:]
+
     if res_sigma_iw.shape[0] == n_iw:
-        # (iw, orb, orb) -> (orb, orb, iw)
         print("Coucou, on modifie sig")
         sig[:] = np.moveaxis(res_sigma_iw, 0, -1)
     else:
         sig[:] = res_sigma_iw[:]
+
 
     er = 0
     print(f"coucou, returning {er} here")

@@ -135,7 +135,7 @@ def solve_sector(h0_0,U_0,Nelec,clicvars):
             initial_seed = basis_Np.get_rhf_determinant(Nelec, clicvars.M_spatial)
 
         else:
-            fill_thr = 1e-1
+            fill_thr = 1e-2
             if clicvars.Nelec_imp is not None \
                 and clicvars.M_spatial > clicvars.M_imp: # Not HIA right ? Else regular starting basis
 

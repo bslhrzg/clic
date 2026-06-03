@@ -20,8 +20,10 @@ def dmft_step(
 
     ws = np.asarray(ws, dtype=float)
     iws = np.asarray(iws, dtype=float)
+    N_hyb_freq = hyb.shape[0]
     hyb_mesh = ws
-    matsubara_fit = ws.shape == iws.shape and np.allclose(ws, iws)
+    
+    matsubara_fit = N_hyb_freq == len(iws) 
     if matsubara_fit:
         print("Detected Matsubara-axis hybridization input: ws and iws are identical.")
         hyb_mesh = iws
@@ -56,7 +58,10 @@ def dmft_step(
         print(h_imp.real)
         hyb = spin_average_one_particle(hyb)
 
+    print(f"shape of hyb = {hyb.shape}, shape of hyb_mesh = {hyb_mesh.shape}")
+    print(f"w : {ws.shape}, iw : {iws.shape}")
     hybdos = -np.trace(hyb, axis1=1, axis2=2).imag
+    print("hybdos shape = {hybdos.shape}")
     dump(hybdos,hyb_mesh,"imhyb_0_dos_test",output_dir=clicvars.dirdump)
 
 
@@ -366,6 +371,12 @@ def dmft_step(
     dump(np.imag(Sigma),ws,'imag-sig_real',output_dir=clicvars.dirdump)
     dump(np.real(Sigma_iw),iws,'real-sig_mats',output_dir=clicvars.dirdump)
     dump(np.imag(Sigma_iw),iws,'imag-sig_mats',output_dir=clicvars.dirdump)
+
+
+    print("*"*42)
+    print("DEBUG: Im(∑[-1])")
+    print(np.round(Sigma_iw.imag[-1],4))
+    print("*"*42)
 
     dump(np.real(G0),ws,'real-G0_real',output_dir=clicvars.dirdump)
     dump(np.imag(G0),ws,'imag-G0_real',output_dir=clicvars.dirdump)
