@@ -10,13 +10,16 @@ def dmft_step(
         h_imp,
         U_imp,
         rspt_clic_params=None,
+        eim = None,
         ):
 
 
 
 
-
     clicvars = ClicVars.from_sources("input.toml", rspt_clic_params)
+    if eim is not None:
+        clicvars.eta = eim 
+        clicvars.eta_hyb = eim 
 
     ws = np.asarray(ws, dtype=float)
     iws = np.asarray(iws, dtype=float)
@@ -25,10 +28,10 @@ def dmft_step(
     
     matsubara_fit = N_hyb_freq == len(iws) 
     if matsubara_fit:
-        print("Detected Matsubara-axis hybridization input: ws and iws are identical.")
+        print("Detected Matsubara-axis hybridization input.")
         hyb_mesh = iws
-        ws = np.linspace(-1.0, 1.0, 1001)
-        print(f"Using default real-frequency mesh internally: np.linspace(-1, 1, 1001)")
+        #ws = np.linspace(-1.0, 1.0, 1001)
+        #print(f"Using default real-frequency mesh internally: np.linspace(-1, 1, 1001)")
 
     if rspt_clic_params is not None:
         print("ENTERING DMFT STEP with params: ")
