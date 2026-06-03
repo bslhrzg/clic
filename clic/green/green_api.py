@@ -165,8 +165,11 @@ def calculate_self_energy(clicvars,
     G0_total = np.zeros_like(G_imp)
 
     if np.imag(ws[0]) == 0:
+        print(f"found real freq: real self energy calculation")
+        print(f"setting eta = {clicvars.eta}")
         eta = clicvars.eta
     else:
+        print(f"found imag freq: matsubara self energy calculation")
         eta = 0
 
     # 5. Loop over symmetry groups (Compute Leader -> Copy to Followers)

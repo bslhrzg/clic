@@ -256,7 +256,7 @@ def green_function_block_lanczos_fixed_basis(
             G00_l = block_cf_top_left(As_l, Bs_l, z_l)
             if G00_l.size != 0 and not np.isnan(G00_l).any():
                 G_rem_seed = D_rem.conj().T @ G00_l @ D_rem
-                accumulate_seed_block(G, iw, G_rem_seed, rem_src_idx, sign=-1.0)
+                accumulate_seed_block(G, iw, G_rem_seed.T, rem_src_idx, sign=-1.0)
 
     # --- 7. Matsubara frequencies ---
     if iws is not None:
@@ -274,7 +274,7 @@ def green_function_block_lanczos_fixed_basis(
                 G00_l = block_cf_top_left(As_l, Bs_l, z_l)
                 if G00_l.size != 0 and not np.isnan(G00_l).any():
                     G_rem_seed = D_rem.conj().T @ G00_l @ D_rem
-                    accumulate_seed_block(G_iws, iiw, G_rem_seed, rem_src_idx, sign=-1.0)
+                    accumulate_seed_block(G_iws, iiw, G_rem_seed.T, rem_src_idx, sign=-1.0)
 
     return G, G_iws, dict(
         basis_add_size=len(basis_add),
@@ -839,4 +839,3 @@ def lanczos_time_evolution(
 
     # return as (Nt, dim)
     return psis.T
-

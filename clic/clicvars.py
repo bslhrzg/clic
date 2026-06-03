@@ -3,6 +3,18 @@ import tomllib
 import numpy as np
 
 
+RSPT_TO_CLICVARS = {
+    "n_bath_poles": "nb",
+    "Nelec_imp": "Nelec_imp",
+    "num_roots": "num_roots",
+    "conv_tol": "conv_tol",
+    "Nmul": "Nmul",
+    "temperature": "temperature",
+    "NappH": "NappH",
+    "lanczos_thr": "coeff_thresh",
+}
+
+
 class ClicVars:
     """
     Holds all relevant parameters.
@@ -109,10 +121,66 @@ class ClicVars:
 
     @classmethod
     def from_toml(cls, filename):
-        with open(filename, "rb") as f:
-            data = tomllib.load(f)
+        try:
+            with open(filename, "rb") as f:
+                data = tomllib.load(f)
+        except FileNotFoundError:
+            print(f"WARNING: CLIC input file '{filename}' not found. Using default ClicVars.")
+            return cls()
 
         return cls(**data)
+
+    @classmethod
+    def from_sources(cls, filename="input.toml", rspt_clic_params=None):
+        clicvars = cls()
+        rspt_overrides = cls._translate_rspt_params(rspt_clic_params)
+        clicvars._apply_overrides(rspt_overrides, "rspt_clic_params")
+
+        try:
+            with open(filename, "rb") as f:
+                toml_overrides = tomllib.load(f)
+        except FileNotFoundError:
+            if rspt_clic_params is None:
+                print(f"WARNING: CLIC input file '{filename}' not found. Using default ClicVars.")
+            else:
+                print(f"WARNING: CLIC input file '{filename}' not found. Using defaults and RSPT parameters.")
+            return clicvars
+
+        overlap = sorted(set(rspt_overrides) & set(toml_overrides))
+        if overlap:
+            print(
+                f"WARNING: CLIC input file '{filename}' overrides RSPT parameters for: "
+                + ", ".join(overlap)
+            )
+
+        clicvars._apply_overrides(toml_overrides, filename)
+        return clicvars
+
+    @classmethod
+    def _translate_rspt_params(cls, rspt_clic_params):
+        if rspt_clic_params is None:
+            return {}
+
+        params = {}
+        for rspt_key, clic_key in RSPT_TO_CLICVARS.items():
+            if rspt_key in rspt_clic_params:
+                params[clic_key] = rspt_clic_params[rspt_key]
+
+        if "label" in rspt_clic_params:
+            params["dirdump"] = "dump_" + rspt_clic_params["label"]
+
+        return params
+
+    def _apply_overrides(self, overrides, source):
+        valid_keys = set(self.__dict__)
+        unknown = sorted(set(overrides) - valid_keys)
+        if unknown:
+            raise TypeError(
+                f"Unknown ClicVars option(s) in {source}: " + ", ".join(unknown)
+            )
+
+        for key, val in overrides.items():
+            setattr(self, key, val)
     
     def __str__(self):
         excluded = {"ws", "iws"}

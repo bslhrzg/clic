@@ -135,11 +135,11 @@ def solve_sector(h0_0,U_0,Nelec,clicvars):
             initial_seed = basis_Np.get_rhf_determinant(Nelec, clicvars.M_spatial)
 
         else:
-
+            fill_thr = 1e-1
             if clicvars.Nelec_imp is not None \
                 and clicvars.M_spatial > clicvars.M_imp: # Not HIA right ? Else regular starting basis
 
-                fill_thr = 1e-3
+                
                 imp_indices_spatial = [i for i in range(M_imp)]            
                 initial_seed = basis_Np.get_imp_starting_basis(
                     np.real(h0), 
@@ -149,7 +149,7 @@ def solve_sector(h0_0,U_0,Nelec,clicvars):
                     tol = fill_thr,
                 )
             else: 
-                initial_seed = basis_Np.get_starting_basis(np.real(h0), Nelec)
+                initial_seed = basis_Np.get_starting_basis(np.real(h0), Nelec,tol=fill_thr)
 
         # --- Run SCI ---
         result = run_sci(h0,U,C,seed=initial_seed)
@@ -190,7 +190,7 @@ def solve_fockspace(h0_0, U_0, clicvars):
             M_imp = clicvars.M_imp
 
             if clicvars.M_spatial > M_imp:
-                fill_thr = 1e-12
+                fill_thr = 1e-3
                 nelec_bath = hamiltonians.calculate_bath_filling(h0, M_imp, fill_thr)
                 start = int(clicvars.Nelec_imp + nelec_bath)
                 print(

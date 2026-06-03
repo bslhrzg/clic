@@ -16,7 +16,7 @@ def dmft_step(
 
 
 
-    clicvars = ClicVars.from_toml("input.toml")
+    clicvars = ClicVars.from_sources("input.toml", rspt_clic_params)
 
     ws = np.asarray(ws, dtype=float)
     iws = np.asarray(iws, dtype=float)
@@ -33,33 +33,6 @@ def dmft_step(
 
         for key in rspt_clic_params: 
             print(f"{key}: {rspt_clic_params[key]}")
-
-        dirdump = "dump_"+rspt_clic_params["label"] 
-        clicvars.dirdump = dirdump
-
-        n_bath_poles = rspt_clic_params["n_bath_poles"]
-        clicvars.nb = n_bath_poles
-
-        Nelec_imp = rspt_clic_params["Nelec_imp"]
-        clicvars.Nelec_imp = Nelec_imp
-
-        num_roots = rspt_clic_params["num_roots"]
-
-        conv_tol = rspt_clic_params["conv_tol"]
-        clicvars.conv_tol = conv_tol
-
-
-        Nmul = rspt_clic_params["Nmul"]
-        clicvars.Nmul = Nmul
-
-        temperature=rspt_clic_params["temperature"]
-        clicvars.temperature = temperature
-
-        NappH = rspt_clic_params["NappH"]
-        clicvars.NappH = NappH
-
-        coeff_thresh = rspt_clic_params["lanczos_thr"]
-        clicvars.coeff_thresh = coeff_thresh
 
 
     print(f" Local hamiltonian with shape {h_imp.shape}: Real part")
@@ -113,15 +86,7 @@ def dmft_step(
     #clicvars.ci_type = ci_type
     #clicvars.basis_prep_method = basis_prep_method
 
-    
 
-    #prune_thr = 1e-12
-    #clicvars.prune_thr = prune_thr
-
-
-
-    L_lanczos = 150 
-    clicvars.L_lanczos = L_lanczos
     clicvars.eta = clicvars.eta_hyb
 
 
