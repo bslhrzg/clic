@@ -18,8 +18,11 @@ def dmft_step(
 
     clicvars = ClicVars.from_sources("input.toml", rspt_clic_params)
     if eim is not None:
+        if clicvars.eta != eim:
+            print(f"eim override: replacing configured eta={clicvars.eta} with physical eim={eim}")
+        else:
+            print(f"eim override: configured eta already matches physical eim={eim}")
         clicvars.eta = eim 
-        clicvars.eta_hyb = eim 
 
     ws = np.asarray(ws, dtype=float)
     iws = np.asarray(iws, dtype=float)
@@ -93,14 +96,6 @@ def dmft_step(
 
     #clicvars.ci_type = ci_type
     #clicvars.basis_prep_method = basis_prep_method
-
-
-    clicvars.eta = clicvars.eta_hyb
-
-
-
-
-
 
 
     print("CLICVARS : ")
@@ -180,7 +175,7 @@ def dmft_step(
                 hyb_to_fit,           # (Nw, Nimp, Nimp)
                 h_imp_to_fit,          # (Nimp, Nimp)
                 clicvars.nb,
-                clicvars.eta_hyb, 
+                clicvars.eta, 
                 weight_func=clicvars.warp_kind,
                 broadening_Gamma=clicvars.eta_broad,
                 i_omegas=iws, 
@@ -192,7 +187,7 @@ def dmft_step(
                 hyb_to_fit,           # (Nw, Nimp, Nimp)
                 h_imp_to_fit,          # (Nimp, Nimp)
                 clicvars.nb,
-                clicvars.eta_hyb, 
+                clicvars.eta, 
                 weight_func=clicvars.warp_kind,
                 broadening_Gamma=clicvars.eta_broad,
                 i_omegas=iws, 

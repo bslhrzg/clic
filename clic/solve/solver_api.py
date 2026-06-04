@@ -190,7 +190,7 @@ def solve_fockspace(h0_0, U_0, clicvars):
             M_imp = clicvars.M_imp
 
             if clicvars.M_spatial > M_imp:
-                fill_thr = 1e-3
+                fill_thr = 1e-2
                 nelec_bath = hamiltonians.calculate_bath_filling(h0, M_imp, fill_thr)
                 start = int(clicvars.Nelec_imp + nelec_bath)
                 print(
