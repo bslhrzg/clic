@@ -377,6 +377,37 @@ def delta_from_bath(omega, H_b, V, eta=0.0):
         Delta[i] = V @ np.diag(g) @ V.conj().T
     return Delta
 
+def _prepare_restricted_fit(blocks, identical_groups, Nimp, fit_indices):
+    if fit_indices is None:
+        selected = set(range(Nimp))
+    else:
+        selected = {int(i) for i in fit_indices}
+        bad = sorted(i for i in selected if i < 0 or i >= Nimp)
+        if bad:
+            raise ValueError(
+                f"fit_indices contains out-of-range spin-full impurity indices {bad}; "
+                f"valid range is 0..{Nimp - 1}."
+            )
+
+    leaders = [g[0] for g in identical_groups]
+    for leader in leaders:
+        if len(blocks[leader]) != 1:
+            raise ValueError(
+                f"process_hyb_cost requires 1x1 leader blocks, but block {leader} has size {len(blocks[leader])}."
+            )
+
+    leader_of_block = {}
+    source_block_by_leader = {}
+    for group in identical_groups:
+        leader = group[0]
+        for b in group:
+            leader_of_block[b] = leader
+            idx = blocks[b]
+            if idx[0] in selected and leader not in source_block_by_leader:
+                source_block_by_leader[leader] = b
+
+    return selected, leader_of_block, source_block_by_leader
+
 def discretize_hyb(
     omega,
     hyb,           # (Nw, Nimp, Nimp)
@@ -391,7 +422,8 @@ def discretize_hyb(
     verbose = False,
     i_omegas = None,
     sym = False,
-    real_couplings = False  #
+    real_couplings = False,
+    fit_indices = None
 ):
     assert hyb.ndim == 3 and hyb.shape[1] == hyb.shape[2], "hyb must be (Nw, Nimp, Nimp)"
     assert himp.shape[0] == himp.shape[1] == hyb.shape[1], "himp must match hyb"
@@ -411,18 +443,14 @@ def discretize_hyb(
     print(f"DEBUG: blocks = {blocks}")
     print(f"DEBUG: identical_groups = {identical_groups}")
 
-    # enforce scalar leaders
-    leaders = [g[0] for g in identical_groups]
-    for leader in leaders:
-        if len(blocks[leader]) != 1:
-            raise ValueError(
-                f"process_hyb_cost requires 1×1 leader blocks, but block {leader} has size {len(blocks[leader])}."
-            )
+    selected, leader_of_block, source_block_by_leader = _prepare_restricted_fit(
+        blocks, identical_groups, Nimp, fit_indices
+    )
 
     # 2) fit each 1×1 leader block with cost minimization
     leader_results = {}
-    for leader in leaders:
-        idx = blocks[leader]  # single index [i]
+    for leader, source_block in source_block_by_leader.items():
+        idx = blocks[source_block]  # single index [i]
         i = idx[0]
         hyb_blk = hyb[:, idx, :][:, :, idx]    # shape (Nw,1,1)
 
@@ -455,13 +483,9 @@ def discretize_hyb(
     eps_all = []
     block_to_bath_cols = [[] for _ in range(len(blocks))]
 
-    leader_of_block = {}
-    for group in identical_groups:
-        L = group[0]
-        for b in group:
-            leader_of_block[b] = L
-
     for bidx, idx in enumerate(blocks):
+        if idx[0] not in selected:
+            continue
         L = leader_of_block[bidx]
         res = leader_results[L]
 
@@ -543,6 +567,7 @@ def discretize_hyb(
         "identical_groups": identical_groups,
         "leader_results": leader_results,             
         "block_to_bath_cols": block_to_bath_cols,
+        "hyb_fit_indices": sorted(selected),
         "perm_full_to_spin_sorted": perm,
         "alpha_imp_idx": alpha_imp,
         "beta_imp_idx": beta_imp,
@@ -580,7 +605,8 @@ def discretize_hyb_matsubara(
     enforce_even_total = False,
     verbose = False,
     sym = False,
-    real_couplings = False
+    real_couplings = False,
+    fit_indices = None
 ):
     assert hyb.ndim == 3 and hyb.shape[1] == hyb.shape[2], "hyb must be (Niw, Nimp, Nimp)"
     assert himp.shape[0] == himp.shape[1] == hyb.shape[1], "himp must match hyb"
@@ -609,16 +635,13 @@ def discretize_hyb_matsubara(
     print(f"DEBUG: blocks = {blocks}")
     print(f"DEBUG: identical_groups = {identical_groups}")
 
-    leaders = [g[0] for g in identical_groups]
-    for leader in leaders:
-        if len(blocks[leader]) != 1:
-            raise ValueError(
-                f"process_hyb_cost requires 1×1 leader blocks, but block {leader} has size {len(blocks[leader])}."
-            )
+    selected, leader_of_block, source_block_by_leader = _prepare_restricted_fit(
+        blocks, identical_groups, Nimp, fit_indices
+    )
 
     leader_results = {}
-    for leader in leaders:
-        idx = blocks[leader]
+    for leader, source_block in source_block_by_leader.items():
+        idx = blocks[source_block]
         i = idx[0]
         hyb_blk = hyb[:, idx, :][:, :, idx]
 
@@ -648,13 +671,9 @@ def discretize_hyb_matsubara(
     eps_all = []
     block_to_bath_cols = [[] for _ in range(len(blocks))]
 
-    leader_of_block = {}
-    for group in identical_groups:
-        L = group[0]
-        for b in group:
-            leader_of_block[b] = L
-
     for bidx, idx in enumerate(blocks):
+        if idx[0] not in selected:
+            continue
         L = leader_of_block[bidx]
         res = leader_results[L]
 
@@ -734,6 +753,7 @@ def discretize_hyb_matsubara(
         "identical_groups": identical_groups,
         "leader_results": leader_results,
         "block_to_bath_cols": block_to_bath_cols,
+        "hyb_fit_indices": sorted(selected),
         "perm_full_to_spin_sorted": perm,
         "alpha_imp_idx": alpha_imp,
         "beta_imp_idx": beta_imp,
@@ -1336,7 +1356,8 @@ def discretize_hyb_poles(
     verbose = False,
     i_omegas = None,
     sym = False,
-    real_couplings = False  #
+    real_couplings = False,
+    fit_indices = None
 ):
     assert hyb.ndim == 3 and hyb.shape[1] == hyb.shape[2], "hyb must be (Nw, Nimp, Nimp)"
     assert himp.shape[0] == himp.shape[1] == hyb.shape[1], "himp must match hyb"
@@ -1356,18 +1377,14 @@ def discretize_hyb_poles(
     print(f"DEBUG: blocks = {blocks}")
     print(f"DEBUG: identical_groups = {identical_groups}")
 
-    # enforce scalar leaders
-    leaders = [g[0] for g in identical_groups]
-    for leader in leaders:
-        if len(blocks[leader]) != 1:
-            raise ValueError(
-                f"process_hyb_cost requires 1×1 leader blocks, but block {leader} has size {len(blocks[leader])}."
-            )
+    selected, leader_of_block, source_block_by_leader = _prepare_restricted_fit(
+        blocks, identical_groups, Nimp, fit_indices
+    )
 
     # 2) fit each 1×1 leader block with cost minimization
     leader_results = {}
-    for leader in leaders:
-        idx = blocks[leader]  # single index [i]
+    for leader, source_block in source_block_by_leader.items():
+        idx = blocks[source_block]  # single index [i]
         i = idx[0]
         hyb_blk = hyb[:, idx, :][:, :, idx]    # shape (Nw,1,1)
 
@@ -1396,13 +1413,9 @@ def discretize_hyb_poles(
     eps_all = []
     block_to_bath_cols = [[] for _ in range(len(blocks))]
 
-    leader_of_block = {}
-    for group in identical_groups:
-        L = group[0]
-        for b in group:
-            leader_of_block[b] = L
-
     for bidx, idx in enumerate(blocks):
+        if idx[0] not in selected:
+            continue
         L = leader_of_block[bidx]
         res = leader_results[L]
 
@@ -1484,6 +1497,7 @@ def discretize_hyb_poles(
         "identical_groups": identical_groups,
         "leader_results": leader_results,             
         "block_to_bath_cols": block_to_bath_cols,
+        "hyb_fit_indices": sorted(selected),
         "perm_full_to_spin_sorted": perm,
         "alpha_imp_idx": alpha_imp,
         "beta_imp_idx": beta_imp,

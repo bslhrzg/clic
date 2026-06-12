@@ -142,11 +142,27 @@ def dmft_step(
         print("FITTING DIAGONAL PART OF HYB ONLY")    
         hyb_to_fit = np.zeros_like(hyb)
         norb = hyb.shape[1]
-        for i in range(norb):
+        if clicvars.hyb_fit_indices is None:
+            hyb_fit_indices = list(range(norb))
+        else:
+            hyb_fit_indices = [int(i) for i in clicvars.hyb_fit_indices]
+            if not hyb_fit_indices:
+                raise ValueError("hyb_fit_indices must not be empty; use nb=0 for HIA.")
+            if len(set(hyb_fit_indices)) != len(hyb_fit_indices):
+                raise ValueError(f"hyb_fit_indices contains duplicates: {hyb_fit_indices}")
+            bad = [i for i in hyb_fit_indices if i < 0 or i >= norb]
+            if bad:
+                raise ValueError(
+                    f"hyb_fit_indices contains out-of-range spin-full impurity indices {bad}; "
+                    f"valid range is 0..{norb - 1}."
+                )
+
+        print(f"Hybridization fit spin-full impurity indices: {hyb_fit_indices}")
+        for i in hyb_fit_indices:
             hyb_to_fit[:,i,i] = hyb[:,i,i]
 
         h_imp_to_fit = np.zeros_like(h_imp)
-        for i in range(norb):
+        for i in hyb_fit_indices:
             h_imp_to_fit[i,i] = h_imp[i,i]
         
         #########################################
@@ -167,7 +183,8 @@ def dmft_step(
                 h_imp_to_fit,          # (Nimp, Nimp)
                 clicvars.nb,
                 weight_func=clicvars.warp_kind,
-                bounds_e=bounds_e
+                bounds_e=bounds_e,
+                fit_indices=hyb_fit_indices
             )
         elif clicvars.fit_type == "poles":
             h0_0,delta_fit, hyb_approx, mapping, hyb_approx_iw = discretize_hyb_poles(
@@ -179,7 +196,8 @@ def dmft_step(
                 weight_func=clicvars.warp_kind,
                 broadening_Gamma=clicvars.eta_broad,
                 i_omegas=iws, 
-                bounds_e=bounds_e
+                bounds_e=bounds_e,
+                fit_indices=hyb_fit_indices
             )
         elif clicvars.fit_type == "cost":
             h0_0,delta_fit, hyb_approx, mapping, hyb_approx_iw = discretize_hyb(
@@ -191,7 +209,8 @@ def dmft_step(
                 weight_func=clicvars.warp_kind,
                 broadening_Gamma=clicvars.eta_broad,
                 i_omegas=iws, 
-                bounds_e=bounds_e
+                bounds_e=bounds_e,
+                fit_indices=hyb_fit_indices
             )
 
         NF = np.shape(h0_0)[0]

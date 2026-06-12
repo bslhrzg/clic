@@ -222,11 +222,10 @@ def get_starting_basis(h0, Nelec, order="AlphaFirst", tol=1e-12):
     # Try spatial / spin-symmetric path first
     try:
         eps, M_subspace = _extract_spatial_energies(h0, order=order, tol=tol)
-        # Spatial or restricted spin case; keep your old logic here
         M_for_det = M_subspace
 
         if not (0 <= Nelec <= 2*M_subspace):
-            raise ValueError(f"Nelec ({Nelec}) cannot be between 0 and {2*M_subspace} for a subspace of size {M_subspace}.")
+            raise ValueError(f"Nelec ({Nelec}) must be between 0 and {2*M_subspace} for a subspace of size {M_subspace}.")
 
         order_idx = np.argsort(eps, kind="mergesort")
         eps_sorted = eps[order_idx]
@@ -345,6 +344,16 @@ def get_imp_starting_basis(h0, Nelec, Nelec_imp, imp_indices, order="AlphaFirst"
         Nelec_imp = Nelec
         Nelec_bath = 0
 
+    bath_capacity = 2 * M_bath
+    if Nelec_bath > bath_capacity:
+        excess = Nelec_bath - bath_capacity
+        print(
+            f"WARNING: Nelec_bath ({Nelec_bath}) exceeds bath capacity ({bath_capacity}); "
+            f"increasing Nelec_imp from {Nelec_imp} to {Nelec_imp + excess}."
+        )
+        Nelec_imp += excess
+        Nelec_bath = bath_capacity
+
     print(f"Generating basis for {Nelec_imp} electrons on impurity and {Nelec_bath} on bath.")
 
     # --- 2. Call worker function on subspaces ---
@@ -435,6 +444,4 @@ def expand_basis(current_basis,one_body_terms,two_body_terms):
     
     new_basis_set = set(current_basis) | set(connected_by_H1) | set(connected_by_H2)
     return sorted(list(new_basis_set))
-
-
 

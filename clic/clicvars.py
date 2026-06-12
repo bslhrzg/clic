@@ -36,6 +36,7 @@ class ClicVars:
         nb_fit=1, # how many states used to fit the hybridization per correlated orbital
         warp_kind="const", # do we emphasize low energy of not
         nb=1, # how many states actually kepts per corr. orbital 
+        hyb_fit_indices=None, # spin-full impurity indices to receive fitted bath states
         eta_broad=0, # broadening distance to the imag. to help the fit
         windowing=False, # do we window the hybridization
         window_width=0.2, # with which width
@@ -48,8 +49,8 @@ class ClicVars:
         ci_type="sci", # which kind of ci  
         num_roots=14, # how many states computed in each electron sector
         max_iter=3, # 
-        conv_tol=1e-8, 
-        prune_thr=1e-12,
+        conv_tol=1e-5, 
+        prune_thr=1e-6,
         Nmul=None, #
 
 
@@ -67,7 +68,7 @@ class ClicVars:
         green_block_indices=None,
         L_lanczos=100,
         NappH=1,
-        coeff_thresh=1e-12,
+        coeff_thresh=1e-7,
         spin_avg_sigma = False,
         green_diag_only = False,
         #IO 
@@ -85,6 +86,7 @@ class ClicVars:
         self.nb_fit = nb_fit
         self.warp_kind = warp_kind
         self.nb = nb
+        self.hyb_fit_indices = hyb_fit_indices
         self.eta_broad = eta_broad
         self.windowing = windowing
         self.window_width = window_width
