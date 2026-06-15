@@ -10,6 +10,8 @@ dist/
 
 howto.md
 
+from_rspt/
+
 # Virtual environment
 venv/
 

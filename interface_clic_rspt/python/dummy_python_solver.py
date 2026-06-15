@@ -12,22 +12,15 @@ np.set_printoptions(precision=3, suppress=True, linewidth=300)
 
 def prepare_from_rspt(
         n_orb,
-        n_orb_full,
         hyb_rspt, h_imp_rspt, U_imp_rspt,
         n_rot_cols,
-        rspt_corr_to_spherical_arr,
-        rspt_corr_to_cf_arr):
+        rspt_corr_to_cf_arr,
+        angular_operators_corr):
 
-    if n_rot_cols == n_orb_full and n_orb == n_orb_full:
-        corr_to_spherical = rspt_corr_to_spherical_arr
+    if n_rot_cols == n_orb:
         corr_to_cf = rspt_corr_to_cf_arr
     else:
-        corr_to_spherical = np.empty((n_orb, 2 * n_orb_full), dtype=complex)
         corr_to_cf = np.empty((n_orb, n_orb), dtype=complex)
-        corr_to_spherical[:, :n_orb_full] = rspt_corr_to_spherical_arr
-        corr_to_spherical[:, n_orb_full:] = np.roll(
-            rspt_corr_to_spherical_arr, n_orb_full, axis=0
-        )
         corr_to_cf[:, :n_rot_cols] = rspt_corr_to_cf_arr
         corr_to_cf[:, n_rot_cols:] = np.roll(rspt_corr_to_cf_arr, n_rot_cols, axis=0)
 
@@ -48,17 +41,12 @@ def prepare_from_rspt(
 
     U_imp = np.ascontiguousarray(basis_change_U(U_imp_rspt, corr_to_cf))
 
-    # RSPT stores the two spherical spin blocks in the opposite order to CLIC's
-    # canonical (+1/2 first, -1/2 second) convention.
-    raw_cf_to_spherical = corr_to_spherical.conj().T @ corr_to_cf
-    n_spherical = raw_cf_to_spherical.shape[0] // 2
-    spin_swap = np.block([
-        [np.zeros((n_spherical, n_spherical)), np.eye(n_spherical)],
-        [np.eye(n_spherical), np.zeros((n_spherical, n_spherical))],
-    ])
-    cf_to_spherical = spin_swap @ raw_cf_to_spherical
+    angular_operators_cf = {
+        name: np.ascontiguousarray(basis_change_h0(op, corr_to_cf))
+        for name, op in angular_operators_corr.items()
+    }
 
-    return hyb, h_imp, U_imp, corr_to_cf, cf_to_spherical
+    return hyb, h_imp, U_imp, corr_to_cf, angular_operators_cf
  
 CALL_COUNT=0
 
@@ -67,6 +55,8 @@ def solve(label, solver_param_, dc_param, dc_flag,
           sig_real_view, sig_static_view, sig_dc_view,
           iw_view, w_view, 
           corr_to_sph_view, corr_to_cf_view,
+          observable_ml_view, observable_mlp_view,
+          observable_ms_view, observable_msp_view,
           n_orb, n_rot, n_orb_full, n_iw, n_hyb, n_w, eim, tau, verbosity):
 
     global CALL_COUNT
@@ -179,6 +169,21 @@ def solve(label, solver_param_, dc_param, dc_flag,
         c2cf = np.frombuffer(corr_to_cf_view, dtype=np.complex128)
         c2cf = c2cf.reshape((n_orb, n_rot), order='F')
 
+        angular_operators_corr = {
+            "Lz": np.frombuffer(observable_ml_view, dtype=np.complex128).reshape(
+                (n_orb, n_orb), order="F"
+            ),
+            "Lplus": np.frombuffer(observable_mlp_view, dtype=np.complex128).reshape(
+                (n_orb, n_orb), order="F"
+            ),
+            "Sz": np.frombuffer(observable_ms_view, dtype=np.complex128).reshape(
+                (n_orb, n_orb), order="F"
+            ),
+            "Splus": np.frombuffer(observable_msp_view, dtype=np.complex128).reshape(
+                (n_orb, n_orb), order="F"
+            ),
+        }
+
         # --- 3. Write to HDF5 ---
         filename = f"debug_solver_{lbl}.h5" # Removed Rank/PID since only Rank 0 writes
         
@@ -212,6 +217,8 @@ def solve(label, solver_param_, dc_param, dc_flag,
                 g_data.create_dataset("w", data=w)
                 g_data.create_dataset("corr_to_spherical", data=c2s)
                 g_data.create_dataset("corr_to_cf", data=c2cf)
+                for name, operator in angular_operators_corr.items():
+                    g_data.create_dataset(f"observable_{name}", data=operator)
             
             print(f" [Python] Successfully wrote: {filename}")
             
@@ -226,16 +233,15 @@ def solve(label, solver_param_, dc_param, dc_flag,
             h_imp_clic,
             U_imp_clic,
             corr_to_cf,
-            cf_to_spherical,
+            angular_operators_cf,
         ) = prepare_from_rspt(
             n_orb,
-            n_orb_full,
             hyb,
             h_dft,
             U_mat,
             n_rot,
-            c2s,
             c2cf,
+            angular_operators_corr,
         )
         
         
@@ -247,7 +253,7 @@ def solve(label, solver_param_, dc_param, dc_flag,
             U_imp_clic,
             clic_params,
             eim=eim,
-            impurity_to_spherical=cf_to_spherical,
+            impurity_angular_operators=angular_operators_cf,
         )
         
         cf_to_corr = corr_to_cf.conj().T

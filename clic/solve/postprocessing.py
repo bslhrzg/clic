@@ -60,12 +60,35 @@ def _expect_vector_squared(wf, M, components, block):
     return float(sum(np.real(phi.dot(phi)) for phi in applied))
 
 
-def analyze_spin_and_orbital(wf, M, block, to_spherical=None):
+def _components_from_z_and_plus(z, plus, name, dim):
+    z = np.asarray(z, dtype=np.complex128)
+    plus = np.asarray(plus, dtype=np.complex128)
+    if z.shape != (dim, dim) or plus.shape != (dim, dim):
+        raise ValueError(
+            f"{name} operators must have shape {(dim, dim)}; "
+            f"got {z.shape} and {plus.shape}"
+        )
+    minus = plus.conj().T
+    return 0.5 * (plus + minus), -0.5j * (plus - minus), z
+
+
+def analyze_spin_and_orbital(
+    wf, M, block, to_spherical=None, angular_operators=None
+):
     n_orbitals = len(block) // 2
-    l_ops = _transform_components(
-        get_1p_angular_momentum_matrices(n_orbitals), to_spherical
-    )
-    s_ops = _transform_components(get_1p_spin_matrices(n_orbitals), to_spherical)
+    if angular_operators is None:
+        l_ops = _transform_components(
+            get_1p_angular_momentum_matrices(n_orbitals), to_spherical
+        )
+        s_ops = _transform_components(get_1p_spin_matrices(n_orbitals), to_spherical)
+    else:
+        dim = len(block)
+        l_ops = _components_from_z_and_plus(
+            angular_operators["Lz"], angular_operators["Lplus"], "orbital", dim
+        )
+        s_ops = _components_from_z_and_plus(
+            angular_operators["Sz"], angular_operators["Splus"], "spin", dim
+        )
     j_ops = tuple(l_op + s_op for l_op, s_op in zip(l_ops, s_ops))
 
     L2 = _expect_vector_squared(wf, M, l_ops, block)
@@ -116,6 +139,9 @@ def analyze_state(state, clicvars):
                 M,
                 imp_spinfull,
                 to_spherical=getattr(clicvars, "impurity_to_spherical", None),
+                angular_operators=getattr(
+                    clicvars, "impurity_angular_operators", None
+                ),
             )
         )
     else:

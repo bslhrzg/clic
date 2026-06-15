@@ -5,6 +5,7 @@ from clic.solve.postprocessing import (
     analyze_spin_and_orbital,
     angular_quantum_number,
     get_1p_angular_momentum_matrices,
+    get_1p_spin_matrices,
 )
 
 
@@ -100,3 +101,33 @@ def test_reversed_rspt_spin_blocks_preserve_f1_j_quantum_number():
     assert np.isclose(stats["J2"], 8.75)
     assert np.isclose(stats["Jz"], 2.5)
     assert np.isclose(stats["LdotS"], -2.0)
+
+
+def test_direct_angular_operators_preserve_global_components_after_rotation():
+    rng = np.random.default_rng(19)
+    raw = rng.normal(size=(6, 6)) + 1j * rng.normal(size=(6, 6))
+    corr_to_solver, _ = np.linalg.qr(raw)
+
+    l_ops = get_1p_angular_momentum_matrices(3)
+    s_ops = get_1p_spin_matrices(3)
+    angular_operators = {
+        "Lz": corr_to_solver.conj().T @ l_ops[2] @ corr_to_solver,
+        "Lplus": corr_to_solver.conj().T @ (l_ops[0] + 1j * l_ops[1]) @ corr_to_solver,
+        "Sz": corr_to_solver.conj().T @ s_ops[2] @ corr_to_solver,
+        "Splus": corr_to_solver.conj().T @ (s_ops[0] + 1j * s_ops[1]) @ corr_to_solver,
+    }
+
+    solver_coefficients = corr_to_solver.conj().T[:, 0]
+    wf = cc.Wavefunction(3)
+    for index, coefficient in enumerate(solver_coefficients):
+        alpha = [index] if index < 3 else []
+        beta = [index - 3] if index >= 3 else []
+        wf.add_term(cc.SlaterDeterminant(3, alpha, beta), coefficient)
+
+    stats = analyze_spin_and_orbital(
+        wf, 3, list(range(6)), angular_operators=angular_operators
+    )
+
+    expected = {"S2": 0.75, "Sz": 0.5, "L2": 2.0, "Lz": -1.0, "Jz": -0.5}
+    for key, value in expected.items():
+        assert np.isclose(stats[key], value)

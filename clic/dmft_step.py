@@ -12,6 +12,7 @@ def dmft_step(
         rspt_clic_params=None,
         eim = None,
         impurity_to_spherical = None,
+        impurity_angular_operators = None,
         ):
 
 
@@ -52,6 +53,7 @@ def dmft_step(
     clicvars.M_imp = h_imp.shape[0] // 2
     clicvars.imp_indices_spatial = [i for i in range(clicvars.M_imp)]
     clicvars.impurity_to_spherical = impurity_to_spherical
+    clicvars.impurity_angular_operators = impurity_angular_operators
 
 
     clicvars.ws = ws 

@@ -16,20 +16,22 @@ int run_impmod_ed(
     double complex* sig, double complex* sig_real, double complex* sig_static, double complex* sig_dc,
     double* iw, double* w,
     double complex* corr_to_spherical, double complex* corr_to_cf,
+    double complex* observable_ml, double complex* observable_mlp,
+    double complex* observable_ms, double complex* observable_msp,
     size_t n_orb, size_t n_rot_cols, size_t n_orb_full, 
     size_t n_iw, size_t n_hyb, size_t n_w,
     double eim, double tau, int verbosity,
     size_t size_real, size_t size_complex
 ) {
 
+    const int bridge_abi = 2;
+
     static int call_id = 0;
     static int depth   = 0;
     call_id++;
     depth++;
-    fprintf(stderr, "[C] PID=%d run_impmod_ed: call_id=%d depth=%d\n",
-            (int)getpid(), call_id, depth);
-
-    fprintf(stderr, "[C] run_impmod_ed: call_id=%d depth=%d\n", call_id, depth);
+    fprintf(stderr, "[C] PID=%d run_impmod_ed: ABI=%d call_id=%d depth=%d\n",
+            (int)getpid(), bridge_abi, call_id, depth);
 
     PyObject *pName, *pModule, *pFunc;
     PyObject *pArgs, *pValue;
@@ -56,8 +58,8 @@ int run_impmod_ed(
 
         if (pFunc && PyCallable_Check(pFunc)) {
             
-            // 4. Prepare Arguments (Tuple of 23 arguments)
-            pArgs = PyTuple_New(24);
+            // 4. Prepare Arguments
+            pArgs = PyTuple_New(28);
 
             // Handle Strings (Fortran strings aren't null-terminated, be careful)
             // We assume 'label' is char[18] from Fortran.
@@ -91,17 +93,21 @@ int run_impmod_ed(
             // Transform matrices
             PyTuple_SetItem(pArgs, 13, wrap_array(corr_to_spherical, n_orb*n_orb_full * size_complex));
             PyTuple_SetItem(pArgs, 14, wrap_array(corr_to_cf, n_orb*n_rot_cols * size_complex));
+            PyTuple_SetItem(pArgs, 15, wrap_array(observable_ml, n_orb*n_orb * size_complex));
+            PyTuple_SetItem(pArgs, 16, wrap_array(observable_mlp, n_orb*n_orb * size_complex));
+            PyTuple_SetItem(pArgs, 17, wrap_array(observable_ms, n_orb*n_orb * size_complex));
+            PyTuple_SetItem(pArgs, 18, wrap_array(observable_msp, n_orb*n_orb * size_complex));
 
             // Scalars
-            PyTuple_SetItem(pArgs, 15, PyLong_FromSize_t(n_orb));
-            PyTuple_SetItem(pArgs, 16, PyLong_FromSize_t(n_rot_cols));
-            PyTuple_SetItem(pArgs, 17, PyLong_FromSize_t(n_orb_full));
-            PyTuple_SetItem(pArgs, 18, PyLong_FromSize_t(n_iw));
-            PyTuple_SetItem(pArgs, 19, PyLong_FromSize_t(n_hyb));
-            PyTuple_SetItem(pArgs, 20, PyLong_FromSize_t(n_w));
-            PyTuple_SetItem(pArgs, 21, PyFloat_FromDouble(eim));
-            PyTuple_SetItem(pArgs, 22, PyFloat_FromDouble(tau));
-            PyTuple_SetItem(pArgs, 23, PyLong_FromLong(verbosity));
+            PyTuple_SetItem(pArgs, 19, PyLong_FromSize_t(n_orb));
+            PyTuple_SetItem(pArgs, 20, PyLong_FromSize_t(n_rot_cols));
+            PyTuple_SetItem(pArgs, 21, PyLong_FromSize_t(n_orb_full));
+            PyTuple_SetItem(pArgs, 22, PyLong_FromSize_t(n_iw));
+            PyTuple_SetItem(pArgs, 23, PyLong_FromSize_t(n_hyb));
+            PyTuple_SetItem(pArgs, 24, PyLong_FromSize_t(n_w));
+            PyTuple_SetItem(pArgs, 25, PyFloat_FromDouble(eim));
+            PyTuple_SetItem(pArgs, 26, PyFloat_FromDouble(tau));
+            PyTuple_SetItem(pArgs, 27, PyLong_FromLong(verbosity));
 
             // 5. Call Python
             pValue = PyObject_CallObject(pFunc, pArgs);

@@ -31,6 +31,7 @@ class ClicVars:
         imp_indices_spatial = None,
         imp_indices_spinfull = None,
         impurity_to_spherical = None,
+        impurity_angular_operators = None,
 
         # HYBRIDIZATION FIT
         fit_type = "cost",
@@ -83,6 +84,7 @@ class ClicVars:
         self.imp_indices_spatial = imp_indices_spatial
         self.imp_indices_spinfull = imp_indices_spinfull
         self.impurity_to_spherical = impurity_to_spherical
+        self.impurity_angular_operators = impurity_angular_operators
         
         self.fit_type = fit_type
         self.nb_fit = nb_fit
