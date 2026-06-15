@@ -222,6 +222,32 @@ def _apply_sum_terms(wf, terms):
             acc = acc + cc.apply_one_body_operator(wf, [t])
         return acc
 
+def apply_one_body_matrix(wf, M, matrix, block=None, thr=1e-12):
+    """Apply a one-body matrix defined on a spin-orbital block."""
+    matrix = np.asarray(matrix)
+    if block is None:
+        block = list(range(2 * M))
+    if matrix.shape != (len(block), len(block)):
+        raise ValueError("matrix shape must match the selected spin-orbital block")
+
+    terms = []
+    for i, j in np.argwhere(np.abs(matrix) > thr):
+        ib = block[i]
+        jb = block[j]
+        spin_i = cc.Spin.Alpha if ib < M else cc.Spin.Beta
+        spin_j = cc.Spin.Alpha if jb < M else cc.Spin.Beta
+        orb_i = int(ib if ib < M else ib - M)
+        orb_j = int(jb if jb < M else jb - M)
+        terms.append((orb_i, orb_j, spin_i, spin_j, complex(matrix[i, j])))
+    if not terms:
+        return wf.zero_like()
+    return _apply_sum_terms(wf, terms)
+
+def expect_one_body_matrix(wf, M, matrix, block=None):
+    """Return <O> and <O^2> for a Hermitian one-body operator O."""
+    phi = apply_one_body_matrix(wf, M, matrix, block=block)
+    return np.real(wf.dot(phi)), np.real(phi.dot(phi))
+
 def expect_Splus_Sminus(wf, M):
     # ⟨Ψ| S+ S- |Ψ⟩ = ⟨Ψ| S+ (S- |Ψ⟩)⟩
     psi1 = _apply_sum_terms(wf, _terms_Sminus(M))
@@ -234,17 +260,28 @@ def expect_Sminus_Splus(wf, M):
     return np.real(wf.dot(psi2))
 
 def expect_S2(wf, M, block=None):
-    # ⟨S_z⟩ and ⟨S_z^2⟩
     if block is None:
         block = list(range(2*M))
-    Sz = expect_Sz(wf, M, block)
-    #phi = apply_Sz(wf, M, block)
-    #Sz2 = np.real(phi.dot(phi))
-    # ladder pieces
-    #SpSm = expect_Splus_Sminus(wf, M)
-    #SmSp = expect_Sminus_Splus(wf, M)
-    #S2 = Sz2 + 0.5*(SpSm + SmSp)
-    return None, Sz
 
+    spatial = sorted({ib if ib < M else ib - M for ib in block})
+    index = {ib: i for i, ib in enumerate(block)}
+    sz = np.zeros((len(block), len(block)), dtype=np.complex128)
+    sp = np.zeros_like(sz)
+    sm = np.zeros_like(sz)
+    for p in spatial:
+        alpha = p
+        beta = p + M
+        if alpha in index:
+            sz[index[alpha], index[alpha]] = 0.5
+        if beta in index:
+            sz[index[beta], index[beta]] = -0.5
+        if alpha in index and beta in index:
+            sp[index[alpha], index[beta]] = 1.0
+            sm[index[beta], index[alpha]] = 1.0
 
+    Sz, Sz2 = expect_one_body_matrix(wf, M, sz, block=block)
+    psi_sp = apply_one_body_matrix(wf, M, sp, block=block)
+    psi_sm = apply_one_body_matrix(wf, M, sm, block=block)
+    S2 = Sz2 + 0.5 * (np.real(psi_sp.dot(psi_sp)) + np.real(psi_sm.dot(psi_sm)))
+    return S2, Sz
 

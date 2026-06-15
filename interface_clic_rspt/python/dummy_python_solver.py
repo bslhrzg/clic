@@ -32,6 +32,7 @@ def prepare_from_rspt(
         corr_to_cf[:, n_rot_cols:] = np.roll(rspt_corr_to_cf_arr, n_rot_cols, axis=0)
 
 
+
     print(f"h_imp shape = {h_imp_rspt.shape}")
     print(f"U_imp.shape = {U_imp_rspt.shape}")
 
@@ -42,6 +43,8 @@ def prepare_from_rspt(
     print(f"corr_to_cf shape = {corr_to_cf.shape}")
 
     h_imp = basis_change_h0(h_imp_rspt,corr_to_cf)
+    #h_imp = h_imp_rspt
+
     h_imp = np.ascontiguousarray(h_imp)
 
     hyb = np.moveaxis(hyb_rspt, -1, 0)
@@ -49,9 +52,13 @@ def prepare_from_rspt(
     hyb = np.ascontiguousarray(hyb)
 
     U_imp = basis_change_U(U_imp_rspt,corr_to_cf)
+    #U_imp = U_imp_rspt
     U_imp = np.ascontiguousarray(U_imp)
 
-    return hyb,h_imp,U_imp,corr_to_cf
+    # Coefficients transform as v_spherical = cf_to_spherical @ v_cf.
+    cf_to_spherical = corr_to_spherical.conj().T @ corr_to_cf
+
+    return hyb,h_imp,U_imp,corr_to_cf,cf_to_spherical
  
 CALL_COUNT=0
 
@@ -66,7 +73,7 @@ def solve(label, solver_param_, dc_param, dc_flag,
     CALL_COUNT += 1
     print(f"\n[Python] ENTER solve(), CALL_COUNT={CALL_COUNT}")
 
-    print(f"n_hyb = {n_hyb}")
+    print(f"n_hyb = {n_hyb}, eim = {eim}")
 
     # Get the Communicator from the host application
     comm = MPI.COMM_WORLD
@@ -214,7 +221,7 @@ def solve(label, solver_param_, dc_param, dc_flag,
         print(" [Python] ---------------------------------------------------\n")
 
 
-        hyb_clic,h_imp_clic,U_imp_clic,corr_to_cf = prepare_from_rspt(n_orb,
+        hyb_clic,h_imp_clic,U_imp_clic,corr_to_cf,cf_to_spherical = prepare_from_rspt(n_orb,
             n_orb_full,
             hyb,
             h_dft,
@@ -225,12 +232,20 @@ def solve(label, solver_param_, dc_param, dc_flag,
         
         
         res_static,res_sigma,res_sigma_iw = dmft_step(
-            w,iw,hyb_clic,h_imp_clic,U_imp_clic,clic_params)
+            w,
+            iw,
+            hyb_clic,
+            h_imp_clic,
+            U_imp_clic,
+            clic_params,
+            eim=eim,
+            impurity_to_spherical=cf_to_spherical,
+        )
         
         inv_C = corr_to_cf.conj().T
-        res_static = basis_change_h0(res_static,inv_C)
-        res_sigma = basis_change_h0(res_sigma, inv_C)
-        res_sigma_iw = basis_change_h0(res_sigma_iw, inv_C)
+        #res_static = basis_change_h0(res_static,inv_C)
+        #res_sigma = basis_change_h0(res_sigma, inv_C)
+        #res_sigma_iw = basis_change_h0(res_sigma_iw, inv_C)
     
 
     # ------------------------------------------------------------------
