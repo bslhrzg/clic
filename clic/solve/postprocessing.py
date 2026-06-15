@@ -5,15 +5,6 @@ import numpy as np
 from clic.ops import ops
 
 
-def get_1p_Sz_matrix(M_imp):
-    """
-    One-particle Sz operator on the impurity spinful space:
-    [up block, down block] with eigenvalues +1/2, -1/2.
-    """
-    sz_diag = np.concatenate([np.full(M_imp, 0.5), np.full(M_imp, -0.5)])
-    return np.diag(sz_diag)
-
-
 def get_1p_angular_momentum_matrices(n_orbitals):
     """Return Lx, Ly, and Lz in the spherical AlphaFirst basis."""
     l = (n_orbitals - 1) / 2
@@ -83,6 +74,7 @@ def analyze_spin_and_orbital(wf, M, block, to_spherical=None):
     Lz, _ = ops.expect_one_body_matrix(wf, M, l_ops[2], block=block)
     Sz, _ = ops.expect_one_body_matrix(wf, M, s_ops[2], block=block)
     Jz, _ = ops.expect_one_body_matrix(wf, M, j_ops[2], block=block)
+
     return {
         "S2": float(S2),
         "S": float(angular_quantum_number(S2)),
@@ -93,6 +85,7 @@ def analyze_spin_and_orbital(wf, M, block, to_spherical=None):
         "J2": float(J2),
         "J": float(angular_quantum_number(J2)),
         "Jz": float(Jz),
+        "LdotS": float(0.5 * (J2 - L2 - S2)),
     }
 
 
@@ -225,15 +218,16 @@ def analyze_thermal_gs(states, clicvars, save_rdm=True, thr_print=None):
             f"Sz: {stats['Sz']:10.4f}, "
             f"L: {stats['L']:10.4f}, "
             f"Lz: {stats['Lz']:10.4f}, "
-            f"J: {stats['J']:10.4f}, "
-            f"Jz: {stats['Jz']:10.4f}"
+            f"Jz: {stats['Jz']:10.4f}, "
+            f"J_eff: {stats['J']:10.4f}, "
+            f"<J2>: {stats['J2']:10.4f}, "
+            f"<L.S>: {stats['LdotS']:10.4f}"
         )
 
     print("-" * 50)
     if clicvars.is_impurity_model:
         for i in range(clicvars.M_imp * 2):
             print(f"n_imp({i}) = {np.round(rho_imp_thermal[i, i].real, 4)}")
-
 
     if clicvars.is_impurity_model and save_rdm:
         print("Saving thermally-averaged impurity density matrix...")
@@ -251,8 +245,8 @@ def analyze_thermal_gs(states, clicvars, save_rdm=True, thr_print=None):
     print(f"S from <S^2> = {avg_S:.8f}")
     print(f"L from <L^2> = {avg_L:.8f}")
     print(f"<Lz>  = {avg_Lz:.8f}")
-    print(f"J from <J^2> = {avg_J:.8f}")
     print(f"<Jz>  = {avg_Jz:.8f}")
+    print(f"J_eff from <J^2> = {avg_J:.8f}")
     print("-" * 50)
 
     return {

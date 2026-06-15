@@ -13,7 +13,7 @@ np.set_printoptions(precision=3, suppress=True, linewidth=300)
 def prepare_from_rspt(
         n_orb,
         n_orb_full,
-        hyb_rspt,h_imp_rspt,U_imp_rspt,
+        hyb_rspt, h_imp_rspt, U_imp_rspt,
         n_rot_cols,
         rspt_corr_to_spherical_arr,
         rspt_corr_to_cf_arr):
@@ -31,8 +31,6 @@ def prepare_from_rspt(
         corr_to_cf[:, :n_rot_cols] = rspt_corr_to_cf_arr
         corr_to_cf[:, n_rot_cols:] = np.roll(rspt_corr_to_cf_arr, n_rot_cols, axis=0)
 
-
-
     print(f"h_imp shape = {h_imp_rspt.shape}")
     print(f"U_imp.shape = {U_imp_rspt.shape}")
 
@@ -42,23 +40,25 @@ def prepare_from_rspt(
     print(f"n_orb = {n_orb}")
     print(f"corr_to_cf shape = {corr_to_cf.shape}")
 
-    h_imp = basis_change_h0(h_imp_rspt,corr_to_cf)
-    #h_imp = h_imp_rspt
-
-    h_imp = np.ascontiguousarray(h_imp)
+    h_imp = np.ascontiguousarray(basis_change_h0(h_imp_rspt, corr_to_cf))
 
     hyb = np.moveaxis(hyb_rspt, -1, 0)
     hyb = basis_change_h0(hyb, corr_to_cf)
     hyb = np.ascontiguousarray(hyb)
 
-    U_imp = basis_change_U(U_imp_rspt,corr_to_cf)
-    #U_imp = U_imp_rspt
-    U_imp = np.ascontiguousarray(U_imp)
+    U_imp = np.ascontiguousarray(basis_change_U(U_imp_rspt, corr_to_cf))
 
-    # Coefficients transform as v_spherical = cf_to_spherical @ v_cf.
-    cf_to_spherical = corr_to_spherical.conj().T @ corr_to_cf
+    # RSPT stores the two spherical spin blocks in the opposite order to CLIC's
+    # canonical (+1/2 first, -1/2 second) convention.
+    raw_cf_to_spherical = corr_to_spherical.conj().T @ corr_to_cf
+    n_spherical = raw_cf_to_spherical.shape[0] // 2
+    spin_swap = np.block([
+        [np.zeros((n_spherical, n_spherical)), np.eye(n_spherical)],
+        [np.eye(n_spherical), np.zeros((n_spherical, n_spherical))],
+    ])
+    cf_to_spherical = spin_swap @ raw_cf_to_spherical
 
-    return hyb,h_imp,U_imp,corr_to_cf,cf_to_spherical
+    return hyb, h_imp, U_imp, corr_to_cf, cf_to_spherical
  
 CALL_COUNT=0
 
@@ -221,17 +221,25 @@ def solve(label, solver_param_, dc_param, dc_flag,
         print(" [Python] ---------------------------------------------------\n")
 
 
-        hyb_clic,h_imp_clic,U_imp_clic,corr_to_cf,cf_to_spherical = prepare_from_rspt(n_orb,
+        (
+            hyb_clic,
+            h_imp_clic,
+            U_imp_clic,
+            corr_to_cf,
+            cf_to_spherical,
+        ) = prepare_from_rspt(
+            n_orb,
             n_orb_full,
             hyb,
             h_dft,
             U_mat,
             n_rot,
             c2s,
-            c2cf)
+            c2cf,
+        )
         
         
-        res_static,res_sigma,res_sigma_iw = dmft_step(
+        res_static, res_sigma, res_sigma_iw = dmft_step(
             w,
             iw,
             hyb_clic,
@@ -242,10 +250,10 @@ def solve(label, solver_param_, dc_param, dc_flag,
             impurity_to_spherical=cf_to_spherical,
         )
         
-        inv_C = corr_to_cf.conj().T
-        #res_static = basis_change_h0(res_static,inv_C)
-        #res_sigma = basis_change_h0(res_sigma, inv_C)
-        #res_sigma_iw = basis_change_h0(res_sigma_iw, inv_C)
+        cf_to_corr = corr_to_cf.conj().T
+        res_static = basis_change_h0(res_static, cf_to_corr)
+        res_sigma = basis_change_h0(res_sigma, cf_to_corr)
+        res_sigma_iw = basis_change_h0(res_sigma_iw, cf_to_corr)
     
 
     # ------------------------------------------------------------------

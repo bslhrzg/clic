@@ -41,6 +41,7 @@ def test_single_electron_spin_and_orbital_quantum_numbers():
         "J2": 1.75,
         "J": 0.9142135623730951,
         "Jz": -0.5,
+        "LdotS": -0.5,
     }
     for key, value in expected.items():
         assert np.isclose(stats[key], value)
@@ -59,10 +60,43 @@ def test_observables_are_invariant_under_one_particle_basis_rotation():
         beta = [index - 3] if index >= 3 else []
         wf.add_term(cc.SlaterDeterminant(3, alpha, beta), coefficient)
 
-    stats = analyze_spin_and_orbital(
-        wf, 3, list(range(6)), to_spherical=rotation
-    )
+    stats = analyze_spin_and_orbital(wf, 3, list(range(6)), to_spherical=rotation)
 
     expected = {"S2": 0.75, "Sz": 0.5, "L2": 2.0, "Lz": -1.0, "Jz": -0.5}
     for key, value in expected.items():
         assert np.isclose(stats[key], value)
+
+
+def test_reversed_rspt_spin_blocks_preserve_f1_j_quantum_number():
+    l = 3
+    n_orbitals = 2 * l + 1
+    dim = 2 * n_orbitals
+    spin_swap = np.block(
+        [
+            [np.zeros((n_orbitals, n_orbitals)), np.eye(n_orbitals)],
+            [np.eye(n_orbitals), np.zeros((n_orbitals, n_orbitals))],
+        ]
+    )
+
+    # |j=5/2, mj=5/2> in canonical (up block, down block) ordering.
+    canonical = np.zeros(dim, dtype=np.complex128)
+    canonical[2 + l] = np.sqrt(1.0 / 7.0)  # |ml=2, up>
+    canonical[n_orbitals + 3 + l] = -np.sqrt(6.0 / 7.0)  # |ml=3, down>
+    rspt_order = spin_swap @ canonical
+
+    wf = cc.Wavefunction(n_orbitals)
+    for index, coefficient in enumerate(rspt_order):
+        if abs(coefficient) < 1e-14:
+            continue
+        alpha = [index] if index < n_orbitals else []
+        beta = [index - n_orbitals] if index >= n_orbitals else []
+        wf.add_term(cc.SlaterDeterminant(n_orbitals, alpha, beta), coefficient)
+
+    stats = analyze_spin_and_orbital(
+        wf, n_orbitals, list(range(dim)), to_spherical=spin_swap
+    )
+
+    assert np.isclose(stats["J"], 2.5)
+    assert np.isclose(stats["J2"], 8.75)
+    assert np.isclose(stats["Jz"], 2.5)
+    assert np.isclose(stats["LdotS"], -2.0)
