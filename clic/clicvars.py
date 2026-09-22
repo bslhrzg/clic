@@ -187,7 +187,7 @@ class ClicVars:
             setattr(self, key, val)
     
     def __str__(self):
-        excluded = {"ws", "iws"}
+        excluded = {"ws", "iws", "impurity_angular_operators"}
         lines = []
         for key, val in self.__dict__.items():
             if key in excluded:

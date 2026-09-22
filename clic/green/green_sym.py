@@ -20,6 +20,7 @@ def get_green_block(
         coeff_thresh,  # threshold to prune states 
         L,   # number of lanczos iterations
         green_diag_only = False,
+        *, full_block=False,
     ): 
     
 
@@ -31,6 +32,13 @@ def get_green_block(
     blocks = symdict["blocks"] 
     identical_groups = symdict["identical_groups"]
     is_diagonal = symdict["is_diagonal"]
+
+    if full_block:
+        # A shared/asymmetric bath can break symmetries of h_imp alone.
+        # Compute every impurity matrix element without copying blocks.
+        blocks = [list(range(len(target_indices)))]
+        identical_groups = [[0]]
+        is_diagonal = False
 
     if is_diagonal or green_diag_only:
         gfmeth = "scalar_continued_fraction"

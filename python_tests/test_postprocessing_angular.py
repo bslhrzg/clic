@@ -2,11 +2,14 @@ import numpy as np
 import clic_clib as cc
 
 from clic.solve.postprocessing import (
+    analyze_state,
     analyze_spin_and_orbital,
+    analyze_thermal_gs,
     angular_quantum_number,
     get_1p_angular_momentum_matrices,
     get_1p_spin_matrices,
 )
+from clic.clicvars import ClicVars
 
 
 def test_angular_momentum_matrices():
@@ -35,17 +38,61 @@ def test_single_electron_spin_and_orbital_quantum_numbers():
     expected = {
         "S2": 0.75,
         "S": 0.5,
+        "Sx": 0.0,
+        "Sy": 0.0,
         "Sz": 0.5,
         "L2": 2.0,
         "L": 1.0,
+        "Lx": 0.0,
+        "Ly": 0.0,
         "Lz": -1.0,
         "J2": 1.75,
         "J": 0.9142135623730951,
+        "Jx": 0.0,
+        "Jy": 0.0,
         "Jz": -0.5,
         "LdotS": -0.5,
     }
     for key, value in expected.items():
         assert np.isclose(stats[key], value)
+
+
+def test_impurity_occupation_operator_variance():
+    M = 4
+    wf = cc.Wavefunction(M)
+    wf.add_term(cc.SlaterDeterminant(M, [0], []), 1 / np.sqrt(2))
+    wf.add_term(cc.SlaterDeterminant(M, [3], []), 1 / np.sqrt(2))
+    clicvars = ClicVars(M_spatial=M, M_imp=3, is_impurity_model=True)
+
+    state = {"ne": 1, "psi": wf, "e": 0.0, "bw": 1.0}
+    stats = analyze_state(state, clicvars)
+    thermal = analyze_thermal_gs([state], clicvars, save_rdm=False)
+
+    assert np.isclose(stats["occ"], 0.5)
+    assert np.isclose(stats["occ2"], 0.5)
+    assert np.isclose(thermal["avg_occ2"], 0.5)
+    assert np.isclose(thermal["var_occ"], 0.25)
+
+
+def test_spin_x_and_y_expectation_values():
+    M = 3
+    block = list(range(2 * M))
+
+    spin_x = cc.Wavefunction(M)
+    spin_x.add_term(cc.SlaterDeterminant(M, [1], []), 1 / np.sqrt(2))
+    spin_x.add_term(cc.SlaterDeterminant(M, [], [1]), 1 / np.sqrt(2))
+    stats_x = analyze_spin_and_orbital(spin_x, M, block)
+    assert np.isclose(stats_x["Sx"], 0.5)
+    assert np.isclose(stats_x["Sy"], 0.0)
+    assert np.isclose(stats_x["Jx"], 0.5)
+
+    spin_y = cc.Wavefunction(M)
+    spin_y.add_term(cc.SlaterDeterminant(M, [1], []), 1 / np.sqrt(2))
+    spin_y.add_term(cc.SlaterDeterminant(M, [], [1]), 1j / np.sqrt(2))
+    stats_y = analyze_spin_and_orbital(spin_y, M, block)
+    assert np.isclose(stats_y["Sx"], 0.0)
+    assert np.isclose(abs(stats_y["Sy"]), 0.5)
+    assert np.isclose(stats_y["Jy"], stats_y["Sy"])
 
 
 def test_observables_are_invariant_under_one_particle_basis_rotation():

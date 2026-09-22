@@ -254,6 +254,7 @@ def solve(label, solver_param_, dc_param, dc_flag,
             clic_params,
             eim=eim,
             impurity_angular_operators=angular_operators_cf,
+            archive_path=filename,
         )
         
         cf_to_corr = corr_to_cf.conj().T

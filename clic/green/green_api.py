@@ -14,7 +14,7 @@ from clic.symmetries import symmetries
 
 import clic_clib as cc
 
-def get_green(clicvars,Ne_dict,h0_0,U_0,thermal_gs,plot_sf = True):
+def get_green(clicvars,Ne_dict,h0_0,U_0,thermal_gs,plot_sf = True, *, full_block=False):
     """
     Runs the thermally-averaged Green's function calculation.
     
@@ -87,7 +87,8 @@ def get_green(clicvars,Ne_dict,h0_0,U_0,thermal_gs,plot_sf = True):
         G_sub_block_n, G_sub_block_n_iw = green_sym.get_green_block(M, psi_n, e_n, clicvars.NappH, clicvars.eta, 
                                                     h0_n, U_n, ws, iws,  target_indices, 
                                                     one_bh_n, two_bh_n, tables, clicvars.coeff_thresh, clicvars.L_lanczos,
-                                                    clicvars.green_diag_only
+                                                    clicvars.green_diag_only,
+                                                    full_block=full_block,
                                                     )
 
         # Add the weighted contribution to the total Green's function matrix

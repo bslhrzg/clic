@@ -14,7 +14,11 @@ def one_rdm(wf,M,block=None):
         M  : number of spatial orbitals 
         block: if not None, return the rdm only for the block indexes
     Returns:
-        np.ndarray: the 1-rdm
+        np.ndarray: gamma[i,j] = <c_j^dagger c_i>, in the selected block.
+            Observables use Tr(gamma O). The current backend dot conjugates
+            the smaller wavefunction (the argument on ties); a single
+            c_i^dagger c_j cannot increase the determinant count, so
+            wf.dot(phi) below evaluates <phi|wf>.
     """
 
     if block == None : 
@@ -41,7 +45,7 @@ def one_rdm(wf,M,block=None):
             phi_wf = cc.apply_one_body_operator(wf, op_term)
             #phi_wf.normalize()
             
-            # The RDM element is <Ψ|Φ>
+            # Backend dot evaluates <Phi|Psi>, giving <c_j^dagger c_i>.
             rdm[i, j] = wf.dot(phi_wf)
 
     return rdm
@@ -240,7 +244,7 @@ def apply_one_body_matrix(wf, M, matrix, block=None, thr=1e-12):
         orb_j = int(jb if jb < M else jb - M)
         terms.append((orb_i, orb_j, spin_i, spin_j, complex(matrix[i, j])))
     if not terms:
-        return wf.zero_like()
+        return cc.Wavefunction(M)
     return _apply_sum_terms(wf, terms)
 
 def expect_one_body_matrix(wf, M, matrix, block=None):
@@ -284,4 +288,3 @@ def expect_S2(wf, M, block=None):
     psi_sm = apply_one_body_matrix(wf, M, sm, block=block)
     S2 = Sz2 + 0.5 * (np.real(psi_sp.dot(psi_sp)) + np.real(psi_sm.dot(psi_sm)))
     return S2, Sz
-

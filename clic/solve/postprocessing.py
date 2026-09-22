@@ -3,6 +3,11 @@
 
 import numpy as np
 from clic.ops import ops
+from clic.solve.magnetic_dipole import (
+    expect_from_rdm,
+    get_1p_magnetic_dipole_matrices,
+    validate_rdm_observables,
+)
 
 
 def get_1p_angular_momentum_matrices(n_orbitals):
@@ -55,8 +60,17 @@ def _transform_components(components, to_spherical):
     return tuple(rotation.conj().T @ op @ rotation for op in components)
 
 
-def _expect_vector_squared(wf, M, components, block):
-    applied = [ops.apply_one_body_matrix(wf, M, op, block=block) for op in components]
+def _apply_components(wf, M, components, block):
+    return tuple(
+        ops.apply_one_body_matrix(wf, M, op, block=block) for op in components
+    )
+
+
+def _component_expectations(wf, applied):
+    return tuple(float(np.real(wf.dot(phi))) for phi in applied)
+
+
+def _vector_squared(applied):
     return float(sum(np.real(phi.dot(phi)) for phi in applied))
 
 
@@ -73,8 +87,17 @@ def _components_from_z_and_plus(z, plus, name, dim):
 
 
 def analyze_spin_and_orbital(
-    wf, M, block, to_spherical=None, angular_operators=None
+    wf, M, block, to_spherical=None, angular_operators=None, rdm=None,
+    reference_occupation=None,
 ):
+    """Analyze a complete shell and validate its RDM before evaluating T.
+
+    Tx/Ty/Tz use Quanty's spin-dipole convention with hbar=1.  An optional
+    rdm is the untransposed result of ops.one_rdm in block order; passing it
+    avoids recomputing the density.  Occupation and every L/S component must
+    agree with direct wavefunction expectations.  Supplied angular_operators
+    define the physical axes for both the angular and magnetic dipole outputs.
+    """
     n_orbitals = len(block) // 2
     if angular_operators is None:
         l_ops = _transform_components(
@@ -89,27 +112,61 @@ def analyze_spin_and_orbital(
         s_ops = _components_from_z_and_plus(
             angular_operators["Sz"], angular_operators["Splus"], "spin", dim
         )
-    j_ops = tuple(l_op + s_op for l_op, s_op in zip(l_ops, s_ops))
+    l_applied = _apply_components(wf, M, l_ops, block)
+    s_applied = _apply_components(wf, M, s_ops, block)
+    j_applied = tuple(l_phi + s_phi for l_phi, s_phi in zip(l_applied, s_applied))
 
-    L2 = _expect_vector_squared(wf, M, l_ops, block)
-    S2 = _expect_vector_squared(wf, M, s_ops, block)
-    J2 = _expect_vector_squared(wf, M, j_ops, block)
-    Lz, _ = ops.expect_one_body_matrix(wf, M, l_ops[2], block=block)
-    Sz, _ = ops.expect_one_body_matrix(wf, M, s_ops[2], block=block)
-    Jz, _ = ops.expect_one_body_matrix(wf, M, j_ops[2], block=block)
+    L2 = _vector_squared(l_applied)
+    S2 = _vector_squared(s_applied)
+    J2 = _vector_squared(j_applied)
+    Lx, Ly, Lz = _component_expectations(wf, l_applied)
+    Sx, Sy, Sz = _component_expectations(wf, s_applied)
+    Jx, Jy, Jz = _component_expectations(wf, j_applied)
 
-    return {
+    stats = {
         "S2": float(S2),
         "S": float(angular_quantum_number(S2)),
+        "Sx": float(Sx),
+        "Sy": float(Sy),
         "Sz": float(Sz),
         "L2": float(L2),
         "L": float(angular_quantum_number(L2)),
+        "Lx": float(Lx),
+        "Ly": float(Ly),
         "Lz": float(Lz),
         "J2": float(J2),
         "J": float(angular_quantum_number(J2)),
+        "Jx": float(Jx),
+        "Jy": float(Jy),
         "Jz": float(Jz),
         "LdotS": float(0.5 * (J2 - L2 - S2)),
     }
+
+    # Check the same density convention against independent wavefunction
+    # expectations before using it for the magnetic dipole.
+    if rdm is None:
+        rdm = ops.one_rdm(wf, M, block=block)
+    if reference_occupation is None:
+        reference_occupation, _ = ops.expect_one_body_matrix(
+            wf, M, np.eye(len(block)), block=block
+        )
+    density_values = validate_rdm_observables(
+        rdm, l_ops, s_ops, {**stats, "occ": reference_occupation}
+    )
+    if angular_operators is None:
+        t_ops = _transform_components(
+            get_1p_magnetic_dipole_matrices(n_orbitals), to_spherical
+        )
+    else:
+        t_ops = get_1p_magnetic_dipole_matrices(
+            n_orbitals, l_components=l_ops, s_components=s_ops
+        )
+    stats.update({"T" + axis: expect_from_rdm(rdm, op)
+                  for axis, op in zip("xyz", t_ops)})
+    stats["rdm_observables_validated"] = True
+    stats["mS_z_muB"] = density_values["mS_z_muB"]
+    stats["mL_z_muB"] = density_values["mL_z_muB"]
+    return stats
 
 
 def analyze_state(state, clicvars):
@@ -132,6 +189,13 @@ def analyze_state(state, clicvars):
 
         rdm_imp = ops.one_rdm(wf, M, block=imp_spinfull)
         stats["occ"] = float(np.sum(np.real(np.diag(rdm_imp))))
+        occ_direct, occ2 = ops.expect_one_body_matrix(
+            wf,
+            M,
+            np.eye(len(imp_spinfull), dtype=np.complex128),
+            block=imp_spinfull,
+        )
+        stats["occ2"] = float(occ2)
         stats["rdm"] = rdm_imp
         stats.update(
             analyze_spin_and_orbital(
@@ -142,10 +206,13 @@ def analyze_state(state, clicvars):
                 angular_operators=getattr(
                     clicvars, "impurity_angular_operators", None
                 ),
+                rdm=rdm_imp,
+                reference_occupation=occ_direct,
             )
         )
     else:
         stats["occ"] = float(nelec)
+        stats["occ2"] = float(nelec**2)
         stats["rdm"] = None
         stats.update(analyze_spin_and_orbital(wf, M, list(range(2 * M))))
 
@@ -180,14 +247,25 @@ def analyze_thermal_gs(states, clicvars, save_rdm=True, thr_print=None):
         print("No states to analyze.")
         return {
             "avg_occ": None,
+            "avg_occ2": None,
+            "var_occ": None,
+            "avg_Sx": None,
+            "avg_Sy": None,
             "avg_Sz": None,
+            "avg_Tx": None,
+            "avg_Ty": None,
+            "avg_Tz": None,
             "avg_S": None,
             "avg_S2": None,
             "avg_L": None,
             "avg_L2": None,
+            "avg_Lx": None,
+            "avg_Ly": None,
             "avg_Lz": None,
             "avg_J": None,
             "avg_J2": None,
+            "avg_Jx": None,
+            "avg_Jy": None,
             "avg_Jz": None,
             "rho_imp_thermal": None,
             "state_stats": [],
@@ -203,11 +281,21 @@ def analyze_thermal_gs(states, clicvars, save_rdm=True, thr_print=None):
 
     state_stats = []
     avg_occ = 0.0
+    avg_occ2 = 0.0
+    avg_Sx = 0.0
+    avg_Sy = 0.0
     avg_Sz = 0.0
+    avg_Tx = 0.0
+    avg_Ty = 0.0
+    avg_Tz = 0.0
     avg_S2 = 0.0
     avg_L2 = 0.0
+    avg_Lx = 0.0
+    avg_Ly = 0.0
     avg_Lz = 0.0
     avg_J2 = 0.0
+    avg_Jx = 0.0
+    avg_Jy = 0.0
     avg_Jz = 0.0
     rho_imp_thermal = None
 
@@ -225,11 +313,21 @@ def analyze_thermal_gs(states, clicvars, save_rdm=True, thr_print=None):
         state_stats.append(stats)
 
         avg_occ += bw * stats["occ"]
+        avg_occ2 += bw * stats["occ2"]
+        avg_Sx += bw * stats["Sx"]
+        avg_Sy += bw * stats["Sy"]
         avg_Sz += bw * stats["Sz"]
+        avg_Tx += bw * stats["Tx"]
+        avg_Ty += bw * stats["Ty"]
+        avg_Tz += bw * stats["Tz"]
         avg_S2 += bw * stats["S2"]
         avg_L2 += bw * stats["L2"]
+        avg_Lx += bw * stats["Lx"]
+        avg_Ly += bw * stats["Ly"]
         avg_Lz += bw * stats["Lz"]
         avg_J2 += bw * stats["J2"]
+        avg_Jx += bw * stats["Jx"]
+        avg_Jy += bw * stats["Jy"]
         avg_Jz += bw * stats["Jz"]
 
         if clicvars.is_impurity_model:
@@ -241,9 +339,18 @@ def analyze_thermal_gs(states, clicvars, save_rdm=True, thr_print=None):
             f"weight: {bw:10.4f}, "
             f"occ: {stats['occ']:10.4f}, "
             f"S: {stats['S']:10.4f}, "
+            f"Sx: {stats['Sx']:10.4f}, "
+            f"Sy: {stats['Sy']:10.4f}, "
             f"Sz: {stats['Sz']:10.4f}, "
+            f"Tx: {stats['Tx']:10.4f}, "
+            f"Ty: {stats['Ty']:10.4f}, "
+            f"Tz: {stats['Tz']:10.4f}, "
             f"L: {stats['L']:10.4f}, "
+            f"Lx: {stats['Lx']:10.4f}, "
+            f"Ly: {stats['Ly']:10.4f}, "
             f"Lz: {stats['Lz']:10.4f}, "
+            f"Jx: {stats['Jx']:10.4f}, "
+            f"Jy: {stats['Jy']:10.4f}, "
             f"Jz: {stats['Jz']:10.4f}, "
             f"J_eff: {stats['J']:10.4f}, "
             f"<J2>: {stats['J2']:10.4f}, "
@@ -266,25 +373,46 @@ def analyze_thermal_gs(states, clicvars, save_rdm=True, thr_print=None):
     avg_S = angular_quantum_number(avg_S2)
     avg_L = angular_quantum_number(avg_L2)
     avg_J = angular_quantum_number(avg_J2)
+    var_occ = avg_occ2 - avg_occ**2
     print(f"<occ> = {avg_occ:.8f}")
+    print(f"<Sx>  = {avg_Sx:.8f}")
+    print(f"<Sy>  = {avg_Sy:.8f}")
     print(f"<Sz>  = {avg_Sz:.8f}")
+    print(f"<Tx>  = {avg_Tx:.8f}")
+    print(f"<Ty>  = {avg_Ty:.8f}")
+    print(f"<Tz>  = {avg_Tz:.8f}")
     print(f"S from <S^2> = {avg_S:.8f}")
     print(f"L from <L^2> = {avg_L:.8f}")
+    print(f"<Lx>  = {avg_Lx:.8f}")
+    print(f"<Ly>  = {avg_Ly:.8f}")
     print(f"<Lz>  = {avg_Lz:.8f}")
+    print(f"<Jx>  = {avg_Jx:.8f}")
+    print(f"<Jy>  = {avg_Jy:.8f}")
     print(f"<Jz>  = {avg_Jz:.8f}")
     print(f"J_eff from <J^2> = {avg_J:.8f}")
     print("-" * 50)
 
     return {
         "avg_occ": float(avg_occ),
+        "avg_occ2": float(avg_occ2),
+        "var_occ": float(var_occ),
+        "avg_Sx": float(avg_Sx),
+        "avg_Sy": float(avg_Sy),
         "avg_Sz": float(avg_Sz),
+        "avg_Tx": float(avg_Tx),
+        "avg_Ty": float(avg_Ty),
+        "avg_Tz": float(avg_Tz),
         "avg_S": float(avg_S),
         "avg_S2": float(avg_S2),
         "avg_L": float(avg_L),
         "avg_L2": float(avg_L2),
+        "avg_Lx": float(avg_Lx),
+        "avg_Ly": float(avg_Ly),
         "avg_Lz": float(avg_Lz),
         "avg_J": float(avg_J),
         "avg_J2": float(avg_J2),
+        "avg_Jx": float(avg_Jx),
+        "avg_Jy": float(avg_Jy),
         "avg_Jz": float(avg_Jz),
         "rho_imp_thermal": rho_imp_thermal,
         "state_stats": state_stats,

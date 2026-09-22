@@ -15,6 +15,7 @@ authors = [{ name = "Basile Herzog", email = "basile.herzog@gmail.com" }]
 dependencies = [
     "numpy",
     "scipy",
+    "sympy",
     "pydantic",
     "tomli; python_version < '3.11'",
     "clic-clib",

@@ -353,6 +353,7 @@ def set_boltzmann_weights(states, temperature, k_B):
         return 0.0
     
     if len(states) == 1: 
+        states[0]["bw"] = 1.0
         return 1.0
 
     beta = 1.0 / (k_B * temperature)
@@ -519,4 +520,3 @@ def fit_chemical_potential_for_target_N(
 #    self._all_states.sort(key=lambda s: s[0])#
 
 #    return mu, w, Z, avgN
-    

@@ -37,8 +37,8 @@ def cost_function_matsubara(params, n_b, iws, target_delta, weight_str, real_cou
     difference = target_delta - model_delta
 
     if weight_str == "const": weight = 1.0
-    elif weight_str == "inv2": weight = 1.0 / (iws ** 2 + 1e-2)
-    elif weight_str == "inv" : weight = 1.0 / (np.abs(iws) + 1e-2)
+    elif weight_str == "inv2": weight = 1.0 / (iws ** 2)
+    elif weight_str == "inv" : weight = 1.0 / (np.abs(iws))
     else: raise ValueError(f"Unknown weight: {weight_str}")
 
     return np.sum(weight * (np.abs(difference))**2)

@@ -55,3 +55,4 @@ from clic.io_clic.io_utils import *
 from .clicvars import *
 
 from .dmft_step import dmft_step
+from .aimsolve import aimsolve

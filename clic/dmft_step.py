@@ -1,5 +1,7 @@
 import numpy as np
+import h5py
 
+from ._aim_workflow import _solve_aim_green
 from .clicvars import *
 from . import *
 
@@ -13,9 +15,15 @@ def dmft_step(
         eim = None,
         impurity_to_spherical = None,
         impurity_angular_operators = None,
+        archive_path = None,
         ):
+    """Run one DMFT step, optionally saving the fit to an existing HDF5 archive.
 
-
+    ``data/hyb_fit`` and ``data/hyb_fit_iw`` contain the fitted hybridization
+    used for the self energy, in the CLIC impurity basis with frequency first.
+    Their meshes are the archive's ``data/w`` and ``data/iw``, respectively.
+    A fresh fit replaces these datasets before the many-body solver runs.
+    """
 
 
     clicvars = ClicVars.from_sources("input.toml", rspt_clic_params)
@@ -217,6 +225,21 @@ def dmft_step(
                 fit_indices=hyb_fit_indices
             )
 
+        if archive_path is not None:
+            print(f"Saving fitted hybridization to {archive_path}")
+            with h5py.File(archive_path, "r+") as archive:
+                data = archive.require_group("data")
+                for name, values, mesh in (
+                    ("hyb_fit", hyb_approx, "w"),
+                    ("hyb_fit_iw", hyb_approx_iw, "iw"),
+                ):
+                    if name in data:
+                        del data[name]
+                    dataset = data.create_dataset(name, data=values)
+                    dataset.attrs["basis"] = "CLIC impurity basis"
+                    dataset.attrs["axis_order"] = "frequency,orbital,orbital"
+                    dataset.attrs["mesh"] = f"/data/{mesh}"
+
         NF = np.shape(h0_0)[0]
         M_spatial = NF // 2
         iis = clicvars.imp_indices_spatial + [i+M_spatial for i in clicvars.imp_indices_spatial]
@@ -234,8 +257,14 @@ def dmft_step(
         dump(hybdos,hyb_mesh,"imhyb_0_dos",output_dir=clicvars.dirdump)
         dump(hybappdos,hyb_mesh,"imhyb_fit_dos",output_dir=clicvars.dirdump)
         
-        dump(np.imag(hyb_approx_dump),hyb_mesh,'imag-hyb_app',output_dir=clicvars.dirdump)
-        dump(np.real(hyb_approx_dump),hyb_mesh,'real-hyb_app',output_dir=clicvars.dirdump)
+        #dump(np.imag(hyb_approx_dump),hyb_mesh,'imag-hyb_app',output_dir=clicvars.dirdump)
+        #dump(np.real(hyb_approx_dump),hyb_mesh,'real-hyb_app',output_dir=clicvars.dirdump)
+        
+        # Save the real-frequency hybridization, independently of the fitting axis.
+        dump(np.imag(hyb_approx), ws, 'imag-hyb_app',
+            output_dir=clicvars.dirdump)
+        dump(np.real(hyb_approx), ws, 'real-hyb_app',
+            output_dir=clicvars.dirdump)
 
         dump(np.imag(hyb_approx_iw),iws,'imag-hyb-mats_app',output_dir=clicvars.dirdump)
         dump(np.real(hyb_approx_iw),iws,'real-hyb-mats_app',output_dir=clicvars.dirdump)
@@ -289,53 +318,11 @@ def dmft_step(
    
 
    
-    N_target = clicvars.Nelec_target #13.3
-    NF = np.shape(h0_0)[0]
-    M_spatial = NF // 2 
-    clicvars.M_spatial = M_spatial
-    clicvars.NF = NF 
-    U_0 = np.zeros((NF,NF,NF,NF),dtype=complex)
-    clicvars.imp_indices_spinfull = clicvars.imp_indices_spatial + [i+M_spatial for i in clicvars.imp_indices_spatial]
-    iis =  clicvars.imp_indices_spinfull
-
-    print(f"imp_spinorb_index = {clicvars.imp_indices_spinfull}")
-    U_0[np.ix_(iis,iis,iis,iis)] = U_imp
-
-    h0_0 = np.ascontiguousarray(h0_0, dtype=np.complex128)
-    U_0 = np.ascontiguousarray(U_0, dtype=np.complex128)
-
-
-    print(f"DEBUG: NF = {NF}, h0_0.shape = {h0_0.shape}")
-    nelecs_resuls = solve_fockspace(h0_0,U_0,clicvars)
-    thermal_gs, Ne_dict = build_state_list_and_ne_dict(nelecs_resuls)
-    k_B_IN_RY_PER_K = 0.0000063336   # Ry/K 
-    set_boltzmann_weights(thermal_gs, clicvars.temperature, k_B_IN_RY_PER_K)
-
-    prn_tgs_thr=1e-3
-    thermal_gs = prune_states(thermal_gs, prn_tgs_thr)
-    set_boltzmann_weights(thermal_gs, clicvars.temperature, k_B_IN_RY_PER_K)
-
-    print("\n--- Post-Solver Analysis ---")
-    thermal_avgs = analyze_thermal_gs(thermal_gs, clicvars)
-
-    clicvars.green_block_indices = clicvars.imp_indices_spinfull
-
-    ws, G_imp, G_imp_iw, A_imp = get_green(clicvars,Ne_dict,h0_0,U_0,thermal_gs,plot_sf = True)
-
-    n_orb, n_tot = occupation_from_green(ws, G_imp, beta=np.inf, mu=0.0)
-    print("Occupation from Green function:")
-    for i, n in enumerate(n_orb):
-        print(f"  orb {i:3d}: {n:.8f}")
-    print(f"Total occupation from G: {n_tot:.8f}")
-
-    dump(np.real(G_imp),ws,'real-G_real',output_dir=clicvars.dirdump)
-    dump(np.imag(G_imp),ws,'imag-G_real',output_dir=clicvars.dirdump)
-    dump(np.real(G_imp_iw),iws,'real-G_mats',output_dir=clicvars.dirdump)
-    dump(np.imag(G_imp_iw),iws,'imag-G_mats',output_dir=clicvars.dirdump)
-
-
-
-
+    result = _solve_aim_green(h0_0, U_imp, clicvars)
+    ws = result["ws"]
+    G_imp = result["G_imp"]
+    G_imp_iw = result["G_imp_iw"]
+    thermal_avgs = result["thermal_avgs"]
 
     # ==============================================================================
     # 4. CALCULATE SELF ENERGY
